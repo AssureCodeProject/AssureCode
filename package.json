@@ -1,26 +1,30 @@
 {
   "name": "assurecode",
+  "version": "1.0.0-alpha.0",
   "private": true,
-  "version": "1.0.0",
   "type": "module",
+  "description": "Trust-Code 2.0 — Zero-Trust, Event-Driven Multi-Agent Freelance Ecosystem",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
-  },
-  "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "framer-motion": "^11.18.0",
-    "lucide-react": "^0.469.0"
+    "dev:web": "npm -w @assurecode/web run dev",
+    "build:web": "npm -w @assurecode/web run build",
+    "dev:gateway": "npm -w @assurecode/api-gateway run dev",
+    "dev:ci": "npm -w @assurecode/ci-worker run dev",
+    "dev:settlement": "npm -w @assurecode/settlement-worker run dev",
+    "verify": "node scripts/verify-web.js && python tools/test_100_freelancers_matchmaking.py && python tools/test-qr-ngc-protocol.py && node tools/benchmark.js",
+    "benchmark": "node tools/benchmark.js",
+    "build": "npm run build --workspaces --if-present --include-workspace-root=false",
+    "test": "npm run test --workspaces --if-present --include-workspace-root=false",
+    "infra:up": "docker compose --env-file .env -f infra/docker-compose.yml up -d",
+    "infra:down": "docker compose -f infra/docker-compose.yml down"
   },
   "devDependencies": {
-    "@types/react": "^18.3.18",
-    "@types/react-dom": "^18.3.5",
-    "@vitejs/plugin-react": "^4.3.4",
-    "autoprefixer": "^10.4.20",
-    "postcss": "^8.4.49",
-    "tailwindcss": "^3.4.17",
-    "vite": "^6.0.5"
+    "neo4j-driver": "^5.28.3"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

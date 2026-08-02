@@ -1,0 +1,68 @@
+sequenceDiagram
+    autonumber
+    actor Dev as Developer / GitHub
+    participant Ingest as webhook-ingest
+    participant GW as api-gateway
+    participant Scope as scope-guard
+    participant Bus as EventBus (Redis/Kafka)
+    participant CI as ci-worker
+    participant Settle as settlement-worker
+    participant DB as PostgreSQL
+    participant Stripe as Stripe Adapter
+
+    %% Step 1: Webhook Push
+    Dev->>Ingest: POST /webhooks/github (HMAC SHA-256 Header)
+    Ingest->>Ingest: verifyGitHubSignature()
+    Ingest->>Bus: Publish code.push.received
+    Ingest-->>Dev: HTTP 202 Accepted
+
+    %% Step 2: CI Pipeline
+    Bus->>CI: Consume code.push.received
+    CI->>CI: Step 1: Run Sandbox (sandbox-runner.ts)
+    CI->>Bus: Publish ci.sandbox.ready
+    CI->>CI: Step 2: Analyze AST (ast-analyzer.ts)
+    CI->>Bus: Publish ci.ast.completed
+    CI->>CI: Step 3: Run Tests (sandbox-runner.ts)
+    CI->>Bus: Publish ci.tests.completed
+    CI->>CI: Step 4: Security Scan (security-auditor.ts)
+    CI->>Bus: Publish security.scan.completed
+    CI->>CI: Step 5: Visual Proof Video (video-recorder.ts)
+    CI->>Bus: Publish video.verified
+    CI->>Bus: Publish audit.completed (Aggregated Metrics)
+
+    %% Step 3: Chat Scope Verification
+    Dev->>GW: POST /api/contracts/:contractId/chat
+    GW->>Scope: POST /scope/check
+    Scope-->>GW: { allowed: true, similarity_score: 0.94 }
+    GW->>Bus: Publish scope.checked (allowed: true)
+    GW-->>Dev: HTTP 200 OK
+
+    %% Step 4: Oracle Ingestion
+    Bus->>Settle: Consume audit.completed (Set AST, Tests, Security signals)
+    Bus->>Settle: Consume scope.checked (Set Scope signal)
+    Bus->>Settle: Consume video.verified (Set Video signal)
+
+    %% Step 5: Settlement Request & Guard Acquisition
+    Dev->>GW: POST /api/contracts/:contractId/settle
+    GW->>DB: Query merkle_ledger for existing INVOICE entry
+    GW->>Bus: Publish settlement.requested
+    GW-->>Dev: HTTP 202 Settlement Requested
+
+    Bus->>Settle: Consume settlement.requested
+    Settle->>Settle: Check 5-Signal Boolean AND Criteria
+    alt Oracle Approval (All 5 Signals True)
+        Settle->>DB: INSERT INTO settlements (contract_id, status) VALUES ($1, 'PROCESSING') ON CONFLICT DO NOTHING
+        alt Lock Acquired (rowCount == 1)
+            Settle->>Stripe: transferToFreelancer(amountCents, destinationAccountId)
+            Stripe-->>Settle: { transferId: 'tr_123', amountCents }
+            Settle->>DB: BEGIN Transaction
+            Settle->>DB: SELECT append_ledger(contractId, 'INVOICE', payload)
+            Settle->>DB: UPDATE settlements SET status = 'COMPLETED', transfer_id = 'tr_123'
+            Settle->>DB: COMMIT Transaction
+            Settle->>Bus: Publish settlement.completed
+        else Lock Blocked (rowCount == 0)
+            Settle->>Settle: Halt Execution (Prevent Double-Payout)
+        end
+    else Oracle Rejection (Any Signal False)
+        Settle->>Bus: Publish settlement.rejected
+    end

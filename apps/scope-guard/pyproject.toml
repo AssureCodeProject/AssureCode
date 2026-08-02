@@ -1,0 +1,30 @@
+[project]
+name = "assurecode-scope-guard"
+version = "1.0.0a0"
+description = "AssureCode scope guard (FastAPI): chat mediator + cosine-similarity scope check."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+    "pgvector>=0.3.6",
+    "psycopg[binary]>=3.2.0",
+    "sentence-transformers>=3.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.27.0",
+    "ruff>=0.8.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

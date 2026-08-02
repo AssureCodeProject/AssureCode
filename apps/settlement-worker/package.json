@@ -1,0 +1,19 @@
+{
+  "name": "@assurecode/settlement-worker",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/worker.js",
+  "scripts": {
+    "dev": "node src/worker.js",
+    "start": "node src/worker.js"
+  },
+  "dependencies": {
+    "@assurecode/config": "*",
+    "@assurecode/event-bus": "*",
+    "@assurecode/ledger-client": "*",
+    "@assurecode/shared": "*",
+    "@assurecode/stripe-adapter": "*",
+    "pg": "^8.12.0"
+  }
+}

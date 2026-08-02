@@ -1,0 +1,96 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ───────────────────────────────────────────────
+   Global Base Styles — Audit Ledger Theme
+   ─────────────────────────────────────────────── */
+@layer base {
+  * {
+    @apply box-border;
+  }
+
+  html {
+    @apply scroll-smooth antialiased;
+    background-color: #0E1116;
+  }
+
+  body {
+    background-color: #0E1116;
+    color: #E8EBF0;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    line-height: 1.5;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11', 'tnum';
+  }
+
+  h1, h2, h3, h4, .font-heading, .font-display {
+    font-family: 'Geist', 'Inter', sans-serif;
+    letter-spacing: -0.02em;
+  }
+
+  /* Monochromatic graphite scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background-color: #0E1116;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: #1F242C;
+    border-radius: 2px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: #2A3038;
+  }
+
+  ::selection {
+    background: rgba(194, 255, 110, 0.2);
+    color: #E8EBF0;
+  }
+}
+
+/* ───────────────────────────────────────────────
+   Audit-Ledger Utility Classes
+   ─────────────────────────────────────────────── */
+@layer utilities {
+  /* Panel & Hairline Rules */
+  .panel-ledger {
+    background-color: #161A21;
+    border: 1px solid #1F242C;
+  }
+
+  /* Legacy glass class mapped to clean panel-ledger for backward compatibility */
+  .glass {
+    background-color: #161A21;
+    border: 1px solid #1F242C;
+    box-shadow: none;
+    backdrop-filter: none;
+  }
+
+  .glass-light {
+    background-color: #1B2028;
+    border: 1px solid #1F242C;
+    box-shadow: none;
+    backdrop-filter: none;
+  }
+
+  .glass-glow {
+    background-color: #161A21;
+    border: 1px solid #2A3038;
+    box-shadow: none;
+  }
+
+  .gradient-border {
+    border: 1px solid #1F242C;
+  }
+
+  .scan-overlay {
+    /* Intentionally empty — scanline overlays removed per design spec */
+  }
+
+  .shadow-glow-green, .shadow-glow-cyan, .shadow-glow-red, .shadow-glow-yellow, .shadow-glow-purple, .shadow-glass {
+    box-shadow: none !important;
+  }
+}
+

@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "type": "module",
+  "comment": "Marks scripts in tools/ as ESM so import.meta.dirname resolves under NodeNext tsconfig."
+}

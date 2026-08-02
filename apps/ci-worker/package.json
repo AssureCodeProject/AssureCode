@@ -1,0 +1,17 @@
+{
+  "name": "@assurecode/ci-worker",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/worker.js",
+  "scripts": {
+    "dev": "node src/worker.js",
+    "start": "node src/worker.js"
+  },
+  "dependencies": {
+    "@assurecode/config": "*",
+    "@assurecode/event-bus": "*",
+    "@assurecode/shared": "*",
+    "@assurecode/telemetry": "*"
+  }
+}

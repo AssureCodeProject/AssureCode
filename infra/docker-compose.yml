@@ -1,0 +1,101 @@
+# =============================================================================
+# AssureCode — Docker Compose (development)
+#
+# Usage:
+#   cp .env.example .env          # configure secrets / ports
+#   docker compose -f infra/docker-compose.yml up -d
+#
+# Services:
+#   postgres      PostgreSQL 16 with pgvector extension
+#   neo4j         Knowledge graph for matchmaking
+#   redis         Event bus (Redis Streams) + caching
+#   localstack    S3-compatible artifact storage
+#
+# App services (run via `npm -w <pkg> run dev` outside Docker for fast DX;
+#                these service definitions are for production-like compose):
+#   api-gateway       Node/Fastify on :4000
+#   ci-worker         Node worker (no exposed port)
+#   webhook-ingest    Node/Fastify on :9000
+#   ai-service        Python/FastAPI on :8000
+#   scope-guard       Python/FastAPI on :8001
+#   settlement-worker Node worker (no exposed port)
+# =============================================================================
+
+services:
+  # ── Infrastructure ────────────────────────────────────────────
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: assurecode-postgres
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-assurecode}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-assurecode_local_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-assurecode}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-assurecode}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  neo4j:
+    image: neo4j:5-community
+    container_name: assurecode-neo4j
+    restart: unless-stopped
+    ports:
+      - "${NEO4J_HTTP_PORT:-7474}:7474"
+      - "${NEO4J_BOLT_PORT:-7687}:7687"
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-assurecode_local_dev}
+      NEO4J_PLUGINS: '["apoc"]'
+    volumes:
+      - neo4j-data:/data
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "${NEO4J_USER:-neo4j}", "-p", "${NEO4J_PASSWORD:-assurecode_local_dev}", "RETURN 1"]
+      interval: 8s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: assurecode-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  localstack:
+    image: localstack/localstack:latest
+    container_name: assurecode-localstack
+    restart: unless-stopped
+    ports:
+      - "${LOCALSTACK_PORT:-4566}:4566"
+    environment:
+      SERVICES: s3
+      AWS_DEFAULT_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+    volumes:
+      - localstack-data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres-data:
+  neo4j-data:
+  redis-data:
+  localstack-data:

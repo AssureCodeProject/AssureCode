@@ -1,0 +1,42 @@
+rules:
+  - id: hardcoded-secret-key
+    patterns:
+      - pattern-either:
+          - pattern: const $X = "sk_live_..."
+          - pattern: const $X = "pk_live_..."
+          - pattern: const $X = "AIzaSy..."
+    message: "Hardcoded production API key found! Use process.env variables instead."
+    languages: [javascript, typescript]
+    severity: ERROR
+
+  - id: unsafe-eval-execution
+    patterns:
+      - pattern-either:
+          - pattern: eval(...)
+          - pattern: new Function(...)
+    message: "Dynamic evaluation via eval() or new Function() poses Remote Code Execution (RCE) risk."
+    languages: [javascript, typescript]
+    severity: ERROR
+
+  - id: wildcard-cors-production
+    patterns:
+      - pattern: |
+          origin: true
+    message: "Wildcard CORS (origin: true) is enabled. Ensure process.env.ALLOWED_ORIGINS is enforced in production."
+    languages: [javascript, typescript]
+    severity: WARNING
+
+  - id: insecure-random-crypto
+    patterns:
+      - pattern: Math.random()
+    message: "Math.random() is cryptographically weak. Use crypto.randomBytes() or crypto.randomUUID() for security contexts."
+    languages: [javascript, typescript]
+    severity: WARNING
+
+  - id: sql-injection-string-concat
+    patterns:
+      - pattern: |
+          $POOL.query(`... ${$VAR} ...`)
+    message: "SQL Query construction via string interpolation detected. Use parameterized queries ($1, $2) to prevent SQL Injection."
+    languages: [javascript, typescript]
+    severity: ERROR

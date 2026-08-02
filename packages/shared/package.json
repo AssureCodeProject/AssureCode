@@ -1,0 +1,16 @@
+{
+  "name": "@assurecode/shared",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  }
+}

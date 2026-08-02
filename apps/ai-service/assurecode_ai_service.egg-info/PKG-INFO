@@ -1,0 +1,21 @@
+Metadata-Version: 2.4
+Name: assurecode-ai-service
+Version: 1.0.0a0
+Summary: AssureCode AI service (FastAPI): NLP matchmaker, test generation, security audit, RAG, XAI judge.
+Requires-Python: >=3.11
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: uvicorn[standard]>=0.32.0
+Requires-Dist: pydantic>=2.9.0
+Requires-Dist: pydantic-settings>=2.6.0
+Requires-Dist: numpy>=1.26.0
+Requires-Dist: httpx>=0.27.0
+Provides-Extra: test
+Requires-Dist: pytest>=8.3.0; extra == "test"
+Requires-Dist: pytest-asyncio>=0.24.0; extra == "test"
+Requires-Dist: ruff>=0.8.0; extra == "test"
+Provides-Extra: full
+Requires-Dist: sentence-transformers>=3.3.0; extra == "full"
+Requires-Dist: neo4j>=5.26.0; extra == "full"
+Requires-Dist: psycopg[binary]>=3.2.0; extra == "full"
+Requires-Dist: pgvector>=0.3.6; extra == "full"
+Requires-Dist: boto3>=1.35.0; extra == "full"

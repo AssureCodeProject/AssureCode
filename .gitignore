@@ -14,6 +14,19 @@ env/
 dist/
 build/
 out/
+
+# Emitted JS must never sit beside its .ts source. packages/telemetry had no
+# outDir and emitted in place, and those stale files then shadowed the real
+# TypeScript at runtime (vitest and node both resolved the .js first). The
+# tsconfigs now all emit to dist/; these patterns stop a regression from being
+# committed again.
+apps/*/src/**/*.js
+apps/*/src/**/*.d.ts
+apps/*/src/**/*.js.map
+!apps/web/src/**/*.js
+packages/*/src/**/*.js
+packages/*/src/**/*.d.ts
+packages/*/src/**/*.js.map
 .next/
 .nuxt/
 *.tsbuildinfo

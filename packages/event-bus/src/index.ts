@@ -39,10 +39,8 @@ export function buildEnvelope(
     topic,
     timestamp: new Date().toISOString(),
     correlationId,
-    payload: {
-      ...payload,
-      _traceContext: carrier,
-    },
+    payload,
+    traceContext: carrier,
   };
 }
 
@@ -72,7 +70,7 @@ export class InMemoryBus implements EventBus {
           metrics.eventBusLagSeconds.observe({ topic }, lagSeconds);
           metrics.eventLagGauge.set({ topic }, lagSeconds);
 
-          const traceContext = (envelope.payload as any)._traceContext || {};
+          const traceContext = envelope.traceContext ?? {};
           const parentContext = propagation.extract(context.active(), traceContext);
 
           await context.with(parentContext, async () => {
@@ -207,7 +205,7 @@ export class RedisStreamsBus implements EventBus {
             let success = false;
             let lastError: unknown = null;
 
-            const traceContext = (envelope.payload as any)?._traceContext || {};
+            const traceContext = envelope.traceContext ?? {};
             const parentContext = propagation.extract(context.active(), traceContext);
 
             await context.with(parentContext, async () => {
@@ -373,7 +371,7 @@ export class KafkaBus implements EventBus {
           const lagSeconds = Math.max(0, (Date.now() - publishedAt) / 1000);
           metrics.eventBusLagSeconds.observe({ topic }, lagSeconds);
 
-          const traceContext = (envelope.payload as any)?._traceContext || {};
+          const traceContext = envelope.traceContext ?? {};
           const parentContext = propagation.extract(context.active(), traceContext);
 
           await context.with(parentContext, async () => {

@@ -16,7 +16,7 @@
     "dev:settlement": "npm -w @assurecode/settlement-worker run dev",
     "verify": "node scripts/verify-web.js && python tools/test_100_freelancers_matchmaking.py && python tools/test-qr-ngc-protocol.py && node tools/benchmark.js",
     "benchmark": "node tools/benchmark.js",
-    "build": "npm run build --workspaces --if-present --include-workspace-root=false",
+    "build": "node scripts/build-workspaces.mjs",
     "test": "npm run test --workspaces --if-present --include-workspace-root=false",
     "infra:up": "docker compose --env-file .env -f infra/docker-compose.yml up -d",
     "infra:down": "docker compose -f infra/docker-compose.yml down"

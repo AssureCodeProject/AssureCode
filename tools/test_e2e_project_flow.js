@@ -3,13 +3,19 @@ import pg from 'pg';
 
 const API_BASE = 'http://localhost:4000';
 
+if (!process.env.DATABASE_URL) {
+  console.error('DATABASE_URL is not set. Export it before running this script, e.g.');
+  console.error('  export DATABASE_URL="postgresql://user:pass@host:5432/postgres?sslmode=verify-full"');
+  process.exit(1);
+}
+
 const DB_CONFIG = {
-  host: 'db.ukwxevtwfnaptodclxwl.supabase.co',
-  port: 5432,
-  user: 'postgres',
-  password: '5Jh6@$fYUi8#fAS',
-  database: 'postgres',
-  ssl: { rejectUnauthorized: false },
+  connectionString: process.env.DATABASE_URL,
+  // Certificate verification stays ON. Supabase serves a publicly-trusted chain,
+  // so this needs no custom CA. If you are pointing at a self-signed local
+  // instance, add its CA here via `ssl: { ca: fs.readFileSync(...) }` —
+  // do not switch rejectUnauthorized off.
+  ssl: { rejectUnauthorized: true },
   connectionTimeoutMillis: 10000
 };
 

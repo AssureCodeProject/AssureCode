@@ -1,8 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import server from '../src/server.js';
 import { IdempotencyKeyHeaderSchema } from '@assurecode/shared';
+import { postgresAvailable, announceSkip } from '../../../tools/test-support/infra.js';
 
-describe('Sprint 6.1 — Idempotency Keys End-to-End', () => {
+const PG_UP = await postgresAvailable();
+if (!PG_UP) announceSkip('Sprint 6.1 — Idempotency Keys End-to-End', 'a running PostgreSQL on DATABASE_URL');
+
+describe.skipIf(!PG_UP)('Sprint 6.1 — Idempotency Keys End-to-End', () => {
   it('validates IdempotencyKeyHeaderSchema correctly', () => {
     const validHeader1 = IdempotencyKeyHeaderSchema.parse({ 'idempotency-key': 'key-12345' });
     expect(validHeader1['idempotency-key']).toBe('key-12345');

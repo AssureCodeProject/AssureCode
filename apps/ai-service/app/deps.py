@@ -10,7 +10,13 @@ from functools import lru_cache
 from app.ports.artifact_store import ArtifactStore, InMemoryArtifactStore, S3ArtifactStore
 from app.ports.embedder import Embedder, FakeEmbedder, SentenceTransformerEmbedder
 from app.ports.graph_repo import GraphRepo, InMemoryGraphRepo, Neo4jGraphRepo
-from app.ports.llm_client import FakeLlmClient, GeminiClient, LlmClient, OpenAIClient
+from app.ports.llm_client import (
+    CloudflareWorkersAiClient,
+    FakeLlmClient,
+    GeminiClient,
+    LlmClient,
+    OpenAIClient,
+)
 from app.ports.rag_store import InMemoryRagStore, PostgresRagStore, RagStore
 from app.services.matchmaker import Matchmaker
 from app.settings import Settings, get_settings

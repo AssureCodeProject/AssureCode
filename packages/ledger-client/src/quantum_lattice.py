@@ -18,7 +18,7 @@ class PostQuantumLatticeSigner:
         self.public_key_hash = hashlib.sha3_256(b"ML-DSA-PUBKEY:" + self.seed).hexdigest()
         self._private_key_hash = hashlib.sha3_256(b"ML-DSA-PRIVKEY:" + self.seed).hexdigest()
 
-    def sign_contract_state(self, contract_id: string, payload_hash: str) -> dict[str, str]:
+    def sign_contract_state(self, contract_id: str, payload_hash: str) -> dict[str, str]:
         """Generates Post-Quantum ML-DSA Signature over contract state payload."""
         message = f"{contract_id}:{payload_hash}:{self.public_key_hash}".encode("utf-8")
         # Lattice polynomial commitment simulation

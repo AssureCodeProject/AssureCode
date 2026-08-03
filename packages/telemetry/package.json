@@ -3,9 +3,12 @@
   "version": "1.0.0-alpha.0",
   "private": true,
   "type": "module",
-  "main": "./src/index.js",
+  "main": "./dist/index.js",
   "exports": {
-    ".": "./src/index.js"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
   },
   "dependencies": {
     "@opentelemetry/api": "~1.8.0",
@@ -18,5 +21,17 @@
     "@opentelemetry/sdk-node": "^0.51.1",
     "@opentelemetry/semantic-conventions": "^1.24.1",
     "prom-client": "^15.1.2"
+  },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
   }
 }

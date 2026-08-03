@@ -61,11 +61,36 @@ def test_match_respects_top_k() -> None:
 
 
 def test_match_python_requirements_prefer_python_freelancer() -> None:
-    # Marcus is the Python/FastAPI expert — should outrank React specialists.
+    """A Python/FastAPI brief must rank Python specialists above React ones.
+
+    This deliberately asserts the ranking *property* rather than naming a single
+    freelancer. The previous version asserted `== "freelancer-marcus"`, which was
+    true only for the original 5-freelancer fixture; once chen was seeded, chen
+    legitimately outranked marcus on identical matched skills (python, fastapi)
+    plus higher trust (0.89 vs 0.81) and more deliveries (15 vs 11). Pinning the
+    id made fixture growth look like a ranking regression.
+    """
     response = client.post(
         "/match",
-        json={"requirements": "Python FastAPI backend API"},
+        json={"requirements": "Python FastAPI backend API", "top_k": 8},
     )
     assert response.status_code == 200
-    top = response.json()["results"][0]
-    assert top["freelancer_id"] == "freelancer-marcus"
+    results = response.json()["results"]
+
+    ranks = {r["freelancer_id"]: i for i, r in enumerate(results)}
+
+    # The top match must actually match on the Python side of the brief.
+    top = results[0]
+    assert {"python", "fastapi"} & set(top["explanation"]["matched_skills"]), (
+        f"top match {top['freelancer_id']} shares no python/fastapi skill with the brief"
+    )
+
+    # Every Python/FastAPI specialist outranks every React-only specialist.
+    python_specialists = ["freelancer-marcus", "freelancer-chen"]
+    react_specialists = ["freelancer-priya", "freelancer-aisha", "freelancer-tomas"]
+    for py in python_specialists:
+        for react in react_specialists:
+            assert ranks[py] < ranks[react], (
+                f"{py} (python/fastapi) ranked below {react} (react) "
+                f"for a Python brief: {ranks[py]} vs {ranks[react]}"
+            )

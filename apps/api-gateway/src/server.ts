@@ -655,7 +655,11 @@ server.get<{
       createdAt: job.created_at,
     });
   } catch (err) {
-    return reply.status(404).send({ error: 'Job not found' });
+    // A query failure means we could not determine whether the job exists.
+    // Reporting 404 here would assert a fact we have not established — the
+    // caller would treat "database unreachable" as "job definitively absent".
+    request.log.error({ err, jobId }, 'Job lookup failed');
+    return reply.status(503).send({ error: 'Job lookup unavailable' });
   }
 });
 

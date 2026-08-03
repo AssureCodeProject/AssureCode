@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { InMemoryBus } from '../src/index.js';
 import { EVENT_TOPICS } from '@assurecode/shared';
+import { redisAvailable, announceSkip } from '../../../tools/test-support/infra.js';
+
+// Probed once at module load: the RedisStreamsBus suite drives a live Redis
+// connection, and without one ioredis emits an unhandled 'error' that kills the
+// vitest worker outright rather than failing a single test.
+const REDIS_UP = await redisAvailable();
+if (!REDIS_UP) announceSkip('RedisStreamsBus — Bounded Retries & DLQ', 'a running Redis on REDIS_URL');
 
 describe('InMemoryBus', () => {
   it('publishes and delivers events to subscribers', async () => {
@@ -51,7 +58,7 @@ describe('InMemoryBus', () => {
   });
 });
 
-describe('RedisStreamsBus — Bounded Retries & DLQ', () => {
+describe.skipIf(!REDIS_UP)('RedisStreamsBus — Bounded Retries & DLQ', () => {
   it('retries failing handlers up to 3 times before sending to *.dlq and ACKing', async () => {
     const { RedisStreamsBus } = await import('../src/index.js');
     const bus = new RedisStreamsBus('redis://localhost:6379');

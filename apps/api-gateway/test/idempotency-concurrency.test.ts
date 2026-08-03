@@ -2,8 +2,12 @@ import { describe, it, expect, vi } from 'vitest';
 import server from '../src/server.js';
 import pg from 'pg';
 import { loadConfig, getDatabaseUrl } from '@assurecode/config';
+import { postgresAvailable, announceSkip } from '../../../tools/test-support/infra.js';
 
-describe('Sprint 6.1 — Idempotency Concurrency & Race Condition Challenge', () => {
+const PG_UP = await postgresAvailable();
+if (!PG_UP) announceSkip('Sprint 6.1 — Idempotency Concurrency & Race Condition Challenge', 'a running PostgreSQL on DATABASE_URL');
+
+describe.skipIf(!PG_UP)('Sprint 6.1 — Idempotency Concurrency & Race Condition Challenge', () => {
   it('empirically challenges 5 concurrent requests with exact same idempotency key', async () => {
     const key = `test-concurrent-key-${Date.now()}`;
     const contractId = `AC-CONCURRENCY-${Date.now()}`;

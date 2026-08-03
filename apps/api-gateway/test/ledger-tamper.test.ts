@@ -2,8 +2,12 @@ import { describe, it, expect, vi } from 'vitest';
 import server from '../src/server.js';
 import pg from 'pg';
 import { getDatabaseUrl, loadConfig } from '@assurecode/config';
+import { postgresAvailable, announceSkip } from '../../../tools/test-support/infra.js';
 
-describe('Sprint 6.4 — Ledger Verification Endpoint & Tamper Red-Team Test', () => {
+const PG_UP = await postgresAvailable();
+if (!PG_UP) announceSkip('Sprint 6.4 — Ledger Verification Endpoint & Tamper Red-Team Test', 'a running PostgreSQL on DATABASE_URL');
+
+describe.skipIf(!PG_UP)('Sprint 6.4 — Ledger Verification Endpoint & Tamper Red-Team Test', () => {
   it('returns HTTP 200 { contractId, valid: true } when chain is untampered', async () => {
     const contractId = `AC-VALID-${Date.now()}`;
 

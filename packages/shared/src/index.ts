@@ -36,6 +36,15 @@ export const EventEnvelopeSchema = z.object({
   timestamp: z.string().datetime({ offset: true }),
   correlationId: z.string(),
   payload: z.record(z.unknown()),
+  /**
+   * W3C trace-context carrier for distributed tracing.
+   *
+   * Deliberately a sibling of `payload`, not a key inside it. The payload is the
+   * domain event and is hashed into the Merkle ledger; trace context changes on
+   * every publish, so folding it into the payload would make the ledger hash of
+   * an otherwise-identical event unreproducible.
+   */
+  traceContext: z.record(z.string()).optional(),
 });
 export type EventEnvelope = z.infer<typeof EventEnvelopeSchema>;
 

@@ -7,6 +7,7 @@
  * below is load-bearing: a package must be built before anything importing it.
  */
 import { spawnSync } from 'node:child_process';
+import { copyFileSync, mkdirSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -41,6 +42,30 @@ for (const workspace of ORDER) {
     process.exit(1);
   }
   console.log('ok');
+}
+
+/**
+ * Assets tsc does not emit.
+ *
+ * egress-guard.cjs is authored as CommonJS and preloaded into the sandbox child
+ * via --require. It is not part of any TypeScript program, so tsc ignores it —
+ * but without it in dist/, the built sandbox has no network isolation. The
+ * runner refuses to start when the guard is missing rather than running
+ * untrusted code unguarded, so a missed copy fails loudly; copying it here
+ * means it never comes up.
+ */
+const ASSETS = [['apps/ci-worker/src/sandbox/egress-guard.cjs', 'apps/ci-worker/dist/sandbox/egress-guard.cjs']];
+
+for (const [from, to] of ASSETS) {
+  const src = path.join(repoRoot, from);
+  const dest = path.join(repoRoot, to);
+  if (!existsSync(src)) {
+    console.error(`missing build asset: ${from}`);
+    process.exit(1);
+  }
+  mkdirSync(path.dirname(dest), { recursive: true });
+  copyFileSync(src, dest);
+  console.log(`copied ${from} -> ${to}`);
 }
 
 console.log(`\nBuilt ${ORDER.length} workspaces.`);

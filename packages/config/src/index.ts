@@ -20,6 +20,9 @@ export const AppConfigSchema = z.object({
   // Redis
   REDIS_URL: z.string().default('redis://localhost:6379'),
 
+  // ai-service base URL — Layer 2 of the OWASP scan is delegated to it.
+  AI_SERVICE_URL: z.string().default('http://localhost:8000'),
+
   // Neo4j
   NEO4J_URI: z.string().default('bolt://localhost:7687'),
   NEO4J_USER: z.string().default('neo4j'),

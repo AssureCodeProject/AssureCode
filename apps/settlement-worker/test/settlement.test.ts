@@ -58,41 +58,32 @@ describe('Sprint 6.3 — Single-Fire Settlement & Double Payout Prevention', () 
     }
   });
 
-  it('guarantees 5-signal oracle evaluation logic before settlement', () => {
+  it('requires every oracle signal before settlement', () => {
+    // Four signals, not five: videoPassed is gone along with the Playwright
+    // "visual proof" that returned verified: true without recording anything.
     interface OracleState {
       astPassed: boolean;
       testsPassed: boolean;
       securityPassed: boolean;
       scopePassed: boolean;
-      videoPassed: boolean;
     }
 
-    const checkOracle = (state: OracleState): boolean => {
-      return (
-        state.astPassed &&
-        state.testsPassed &&
-        state.securityPassed &&
-        state.scopePassed &&
-        state.videoPassed
+    const checkOracle = (state: OracleState): boolean =>
+      state.astPassed && state.testsPassed && state.securityPassed && state.scopePassed;
+
+    const allPassing: OracleState = {
+      astPassed: true,
+      testsPassed: true,
+      securityPassed: true,
+      scopePassed: true,
+    };
+    expect(checkOracle(allPassing)).toBe(true);
+
+    // Withholding any single signal must block settlement.
+    for (const signal of Object.keys(allPassing) as Array<keyof OracleState>) {
+      expect(checkOracle({ ...allPassing, [signal]: false }), `${signal} must gate settlement`).toBe(
+        false,
       );
-    };
-
-    const incompleteState: OracleState = {
-      astPassed: true,
-      testsPassed: true,
-      securityPassed: true,
-      scopePassed: true,
-      videoPassed: false,
-    };
-    expect(checkOracle(incompleteState)).toBe(false);
-
-    const completeState: OracleState = {
-      astPassed: true,
-      testsPassed: true,
-      securityPassed: true,
-      scopePassed: true,
-      videoPassed: true,
-    };
-    expect(checkOracle(completeState)).toBe(true);
+    }
   });
 });

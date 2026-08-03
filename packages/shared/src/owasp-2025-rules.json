@@ -1,0 +1,194 @@
+{
+  "$comment": "Layer 1 static detection rules for OWASP Top 10:2025. Loaded by both apps/ci-worker/src/security-auditor.ts and apps/ai-service/app/services/owasp_static.py so the two scanners cannot drift apart. Patterns stay within the regex subset common to JavaScript and Python: no lookbehind, no named groups, no possessive quantifiers. `caseInsensitive` is applied by each loader in its own dialect.",
+  "taxonomyVersion": "OWASP Top 10:2025",
+  "categories": [
+    { "id": "A01:2025", "name": "Broken Access Control" },
+    { "id": "A02:2025", "name": "Security Misconfiguration" },
+    { "id": "A03:2025", "name": "Software Supply Chain Failures" },
+    { "id": "A04:2025", "name": "Cryptographic Failures" },
+    { "id": "A05:2025", "name": "Injection" },
+    { "id": "A06:2025", "name": "Insecure Design" },
+    { "id": "A07:2025", "name": "Authentication Failures" },
+    { "id": "A08:2025", "name": "Software and Data Integrity Failures" },
+    { "id": "A09:2025", "name": "Security Logging and Alerting Failures" },
+    { "id": "A10:2025", "name": "Mishandling of Exceptional Conditions" }
+  ],
+  "rules": [
+    {
+      "type": "SSRF_UNVALIDATED_FETCH",
+      "category": "A01:2025",
+      "severity": "HIGH",
+      "pattern": "(?:fetch|axios(?:\\.get|\\.post)?|got|request)\\s*\\(\\s*(?:req|request)\\.(?:query|body|params)\\.",
+      "caseInsensitive": true,
+      "message": "Outbound request to a user-supplied URL (SSRF)"
+    },
+    {
+      "type": "MISSING_AUTHORIZATION_CHECK",
+      "category": "A01:2025",
+      "severity": "MEDIUM",
+      "pattern": "\\.(?:get|post|put|patch|delete)\\s*\\(\\s*['\"][^'\"]*/(?:admin|internal|_debug)[^'\"]*['\"]\\s*,\\s*(?:async\\s*)?\\(",
+      "caseInsensitive": true,
+      "message": "Privileged route registered with no authorization middleware"
+    },
+    {
+      "type": "WILDCARD_CORS",
+      "category": "A02:2025",
+      "severity": "MEDIUM",
+      "pattern": "origin\\s*:\\s*['\"]\\*['\"]|Access-Control-Allow-Origin['\"]?\\s*[,:]\\s*['\"]\\*['\"]",
+      "caseInsensitive": true,
+      "message": "CORS configured to allow any origin"
+    },
+    {
+      "type": "STACK_TRACE_LEAK",
+      "category": "A02:2025",
+      "severity": "MEDIUM",
+      "pattern": "(?:res|response)\\s*\\.[a-zA-Z]*\\s*\\(\\s*\\{[^}]*(?:err\\.stack|error\\.stack|process\\.env)",
+      "caseInsensitive": false,
+      "message": "Stack trace or environment returned to the client"
+    },
+    {
+      "type": "TLS_VERIFICATION_DISABLED",
+      "category": "A02:2025",
+      "severity": "HIGH",
+      "pattern": "rejectUnauthorized\\s*:\\s*false|NODE_TLS_REJECT_UNAUTHORIZED['\"]?\\s*\\]?\\s*=\\s*['\"]?0|verify\\s*=\\s*False",
+      "caseInsensitive": false,
+      "message": "TLS certificate verification disabled"
+    },
+    {
+      "type": "UNTRUSTED_PACKAGE_INSTALL",
+      "category": "A03:2025",
+      "severity": "CRITICAL",
+      "pattern": "(?:npm|yarn|pnpm|pip)\\s+(?:install|add)\\s+(?:http|git\\+|\\$\\{|['\"]\\s*\\+)",
+      "caseInsensitive": true,
+      "message": "Package installed from an unverified or user-controlled source"
+    },
+    {
+      "type": "REMOTE_SCRIPT_EXECUTION",
+      "category": "A03:2025",
+      "severity": "CRITICAL",
+      "pattern": "curl[^\\n|]*\\|\\s*(?:ba)?sh|wget[^\\n|]*\\|\\s*(?:ba)?sh",
+      "caseInsensitive": true,
+      "message": "Remote script piped directly into a shell"
+    },
+    {
+      "type": "HARDCODED_SECRET",
+      "category": "A04:2025",
+      "severity": "HIGH",
+      "pattern": "(?:api[_-]?key|secret|password|passwd|token|private[_-]?key)\\s*[:=]\\s*['\"][a-zA-Z0-9_\\-/+=]{8,}['\"]",
+      "caseInsensitive": true,
+      "message": "Hardcoded credential or API key"
+    },
+    {
+      "type": "WEAK_HASH_ALGORITHM",
+      "category": "A04:2025",
+      "severity": "MEDIUM",
+      "pattern": "createHash\\s*\\(\\s*['\"](?:md5|sha1)['\"]|hashlib\\.(?:md5|sha1)\\s*\\(",
+      "caseInsensitive": true,
+      "message": "Broken hash algorithm (MD5/SHA-1) used"
+    },
+    {
+      "type": "INSECURE_RANDOMNESS",
+      "category": "A04:2025",
+      "severity": "MEDIUM",
+      "pattern": "Math\\.random\\s*\\(\\s*\\)[^\\n]*(?:token|secret|password|key|nonce|salt|otp)|(?:token|secret|password|key|nonce|salt|otp)[^\\n]*Math\\.random\\s*\\(",
+      "caseInsensitive": true,
+      "message": "Math.random() used for a security-sensitive value"
+    },
+    {
+      "type": "SQL_INJECTION",
+      "category": "A05:2025",
+      "severity": "CRITICAL",
+      "pattern": "(?:SELECT|INSERT|UPDATE|DELETE)\\s+[^;'\"]*(?:FROM|INTO|SET)\\s+[^;'\"]*(?:\\$\\{|['\"]\\s*\\+\\s*[a-zA-Z_]|%\\s*\\()",
+      "caseInsensitive": true,
+      "message": "SQL built by string concatenation or interpolation"
+    },
+    {
+      "type": "COMMAND_INJECTION",
+      "category": "A05:2025",
+      "severity": "CRITICAL",
+      "pattern": "(?:child_process\\.)?exec(?:Sync)?\\s*\\(\\s*[`'\"][^`'\"]*(?:\\$\\{|['\"]\\s*\\+)|os\\.system\\s*\\(|subprocess\\.[a-zA-Z_]+\\([^)]*shell\\s*=\\s*True",
+      "caseInsensitive": false,
+      "message": "Shell command assembled from untrusted input"
+    },
+    {
+      "type": "PATH_TRAVERSAL",
+      "category": "A06:2025",
+      "severity": "HIGH",
+      "pattern": "(?:readFile|readFileSync|createReadStream|sendFile|open)\\s*\\(\\s*(?:[a-zA-Z_.]*\\s*\\+\\s*)?(?:req|request)\\.(?:query|body|params)\\.|path\\.join\\s*\\([^)]*(?:req|request)\\.(?:query|body|params)\\.",
+      "caseInsensitive": true,
+      "message": "Filesystem path derived from user input without normalization"
+    },
+    {
+      "type": "MISSING_RATE_LIMIT",
+      "category": "A06:2025",
+      "severity": "LOW",
+      "pattern": "\\.(?:post|put)\\s*\\(\\s*['\"][^'\"]*(?:login|signin|reset|otp|verify)[^'\"]*['\"]",
+      "caseInsensitive": true,
+      "message": "Authentication endpoint with no visible rate limiting"
+    },
+    {
+      "type": "WEAK_AUTH_COMPARISON",
+      "category": "A07:2025",
+      "severity": "HIGH",
+      "pattern": "(?:password|passwd|token|secret|apikey|api_key)\\s*(?:===?|!==?)\\s*(?:req|request)\\.|(?:req|request)\\.[a-zA-Z.]*(?:password|token)\\s*(?:===?|!==?)",
+      "caseInsensitive": true,
+      "message": "Credential compared with a plain equality operator, not a constant-time check"
+    },
+    {
+      "type": "JWT_VERIFICATION_SKIPPED",
+      "category": "A07:2025",
+      "severity": "CRITICAL",
+      "pattern": "jwt\\.decode\\s*\\(|algorithms\\s*:\\s*\\[\\s*['\"]none['\"]|verify_signature['\"]?\\s*:\\s*False",
+      "caseInsensitive": true,
+      "message": "JWT decoded without signature verification"
+    },
+    {
+      "type": "DYNAMIC_CODE_EXECUTION",
+      "category": "A08:2025",
+      "severity": "CRITICAL",
+      "pattern": "\\beval\\s*\\(|new\\s+Function\\s*\\(|vm\\.runInThisContext\\s*\\(|\\bexec\\s*\\(\\s*compile\\s*\\(",
+      "caseInsensitive": false,
+      "message": "Dynamic code execution via eval or the Function constructor"
+    },
+    {
+      "type": "INSECURE_DESERIALIZATION",
+      "category": "A08:2025",
+      "severity": "CRITICAL",
+      "pattern": "pickle\\.loads?\\s*\\(|yaml\\.load\\s*\\((?![^)]*Loader\\s*=)|unserialize\\s*\\(|node-serialize",
+      "caseInsensitive": false,
+      "message": "Untrusted data deserialized without a safe loader"
+    },
+    {
+      "type": "UNVERIFIED_UPDATE_SOURCE",
+      "category": "A08:2025",
+      "severity": "HIGH",
+      "pattern": "(?:integrity|checksum|signature)\\s*[:=]\\s*(?:null|None|false|['\"]['\"])",
+      "caseInsensitive": true,
+      "message": "Integrity or signature check explicitly disabled"
+    },
+    {
+      "type": "SENSITIVE_DATA_LOGGED",
+      "category": "A09:2025",
+      "severity": "MEDIUM",
+      "pattern": "console\\.(?:log|info|debug)\\s*\\([^)]*(?:password|passwd|secret|api[_-]?key|token|ssn|credit[_-]?card)|logger?\\.[a-z]+\\s*\\([^)]*(?:password|passwd|api[_-]?key)",
+      "caseInsensitive": true,
+      "message": "Credential or sensitive field written to logs"
+    },
+    {
+      "type": "SILENT_EXCEPTION_SWALLOW",
+      "category": "A10:2025",
+      "severity": "MEDIUM",
+      "pattern": "catch\\s*\\([^)]*\\)\\s*\\{\\s*\\}|catch\\s*\\{\\s*\\}|except[^:]*:\\s*pass\\b",
+      "caseInsensitive": false,
+      "message": "Exception caught and discarded, hiding the failure"
+    },
+    {
+      "type": "AUTH_FAILS_OPEN",
+      "category": "A10:2025",
+      "severity": "CRITICAL",
+      "pattern": "catch\\s*\\([^)]*\\)\\s*\\{[^}]*(?:return\\s+true|isValid\\s*=\\s*true|authenticated\\s*=\\s*true|next\\s*\\(\\s*\\))",
+      "caseInsensitive": true,
+      "message": "Error handler grants access instead of denying it (fails open)"
+    }
+  ]
+}

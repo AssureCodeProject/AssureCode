@@ -24,7 +24,6 @@ interface ContractOracleState {
   testsPassed: boolean;
   securityPassed: boolean;
   scopePassed: boolean;
-  videoPassed: boolean;
 }
 
 const oracleStore = new Map<string, ContractOracleState>();
@@ -36,14 +35,13 @@ function getState(contractId: string): ContractOracleState {
       testsPassed: false,
       securityPassed: false,
       scopePassed: false,
-      videoPassed: false,
     });
   }
   return oracleStore.get(contractId)!;
 }
 
 async function start() {
-  logger.info('Starting 5-Signal Oracle Settlement Worker...');
+  logger.info('Starting 4-Signal Oracle Settlement Worker...');
 
   // 1. Listen for Audit Completed (AST, Tests, Security)
   eventBus.subscribe(EVENT_TOPICS.AUDIT_COMPLETED, async (event: EventEnvelope) => {
@@ -81,15 +79,6 @@ async function start() {
     logger.info({ contractId, state }, 'Oracle ingested SCOPE_CHECKED');
   });
 
-  // 3. Listen for Video Verified (ONLY explicit VIDEO_VERIFIED event alters state)
-  eventBus.subscribe(EVENT_TOPICS.VIDEO_VERIFIED, async (event: EventEnvelope) => {
-    const payload = event.payload as any;
-    const contractId = payload.contractId;
-    if (!contractId) return;
-    getState(contractId).videoPassed = true;
-    logger.info({ contractId }, 'Oracle ingested VIDEO_VERIFIED');
-  });
-
   // 4. Listen for Settlement Requested
   eventBus.subscribe(EVENT_TOPICS.SETTLEMENT_REQUESTED, async (event: EventEnvelope) => {
     const payload = event.payload as SettlementRequested;
@@ -98,13 +87,14 @@ async function start() {
     logger.info({ contractId }, 'Evaluating 5-Signal Oracle for settlement');
     const state = getState(contractId);
     
-    // Strict Boolean AND
-    const isApproved = 
-      state.astPassed && 
-      state.testsPassed && 
-      state.securityPassed && 
-      state.scopePassed && 
-      state.videoPassed;
+    // Strict Boolean AND. The former fifth signal, videoPassed, is gone along
+    // with the Playwright "visual proof" that always returned verified: true —
+    // it asserted a fact it never established, and no objective required it.
+    const isApproved =
+      state.astPassed &&
+      state.testsPassed &&
+      state.securityPassed &&
+      state.scopePassed;
 
     const correlationId = randomUUID();
 

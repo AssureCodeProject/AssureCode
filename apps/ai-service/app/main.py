@@ -16,6 +16,7 @@ from fastapi import FastAPI
 from app.routes import embed as embed_routes
 from app.routes import match as match_routes
 from app.routes import rag as rag_routes
+from app.routes import security_scan as security_scan_routes
 from app.routes import test_gen as test_gen_routes
 from app.routes import xai as xai_routes
 
@@ -28,6 +29,7 @@ app = FastAPI(
 app.include_router(embed_routes.router)
 app.include_router(match_routes.router)
 app.include_router(rag_routes.router)
+app.include_router(security_scan_routes.router)
 app.include_router(test_gen_routes.router)
 app.include_router(xai_routes.router)
 

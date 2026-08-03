@@ -18,7 +18,6 @@ export const EVENT_TOPICS = {
   AUDIT_COMPLETED: 'audit.completed',
   TESTS_GENERATED: 'tests.generated',
   SCOPE_CHECKED: 'scope.checked',
-  VIDEO_VERIFIED: 'video.verified',
   XAI_SCORED: 'xai.scored',
   SETTLEMENT_REQUESTED: 'settlement.requested',
   SETTLEMENT_REJECTED: 'settlement.rejected',

@@ -1,12 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { analyzeAST } from '../src/ast-analyzer.js';
 import { performSecurityScan } from '../src/security-auditor.js';
-import { runInSandbox } from '../src/sandbox-runner.js';
+import { runInSandbox, selectSandboxRunner } from '../src/sandbox-runner.js';
 import { processCodePush } from '../src/worker.js';
-import { dockerAvailable, announceSkip } from '../../../tools/test-support/infra.js';
-
-const DOCKER_UP = dockerAvailable();
-if (!DOCKER_UP) announceSkip('sandbox provisioning', 'a running Docker daemon');
 
 describe('ci-worker modules', () => {
   it('analyzes AST cyclomatic complexity and maintainability index', () => {
@@ -37,19 +33,25 @@ describe('ci-worker modules', () => {
     expect(scan.vulnerabilities.some((v) => v.type === 'DYNAMIC_CODE_EXECUTION' || v.type === 'HARDCODED_SECRET')).toBe(true);
   });
 
-  it.skipIf(!DOCKER_UP)('provisions sandbox runner successfully', async () => {
-    const res = await runInSandbox('c123', { networkDisabled: true });
-    expect(res.provisioned).toBe(true);
+  it('selects a sandbox runner on this host', async () => {
+    // Docker where a daemon exists, the Node permission model otherwise. One of
+    // the two must always be available, so selection never legitimately fails.
+    const runner = await selectSandboxRunner();
+    expect(['docker', 'node-permission']).toContain(runner.name);
+    expect(await runner.isAvailable()).toBe(true);
   });
 
-  it.skipIf(DOCKER_UP)('reports the sandbox as unprovisioned when Docker is absent', async () => {
-    // The honest failure mode: no daemon means no isolation, so the runner must
-    // say so rather than return a result that looks like a passing test run.
-    const res = await runInSandbox('c123', { networkDisabled: true });
+  it('records which runner produced a result', async () => {
+    const res = await runInSandbox('c123', {});
+    expect(res.runner).toBeTruthy();
+    // No workDir was supplied, so this must not claim to have run anything.
     expect(res.provisioned).toBe(false);
+    expect(res.totalTests).toBe(0);
   });
 
-  it('executes full processCodePush pipeline without errors', async () => {
-    await expect(processCodePush('contract_test', 'corr_test')).resolves.not.toThrow();
+  it('refuses to emit audit telemetry when no code was submitted', async () => {
+    // Previously this fell back to a hardcoded sample and published complexity
+    // and security numbers for code the freelancer never wrote.
+    await expect(processCodePush('contract_test', 'corr_test')).rejects.toThrow(/No code supplied/);
   });
 });

@@ -88,18 +88,23 @@ class GeminiClient:
     def __init__(self, api_key: str, model: str = "gemini-2.0-flash") -> None:
         self._api_key = api_key
         self._model = model
-        self._fallback = FakeLlmClient()
 
     def generate(self, prompt: str, max_tokens: int = 2048) -> str:
+        """Call Gemini, or raise. See CloudflareWorkersAiClient.generate on why
+        there is no FakeLlmClient fallback here."""
         import httpx
 
         if not self._api_key:
-            return self._fallback.generate(prompt, max_tokens)
-        try:  # pragma: no cover — live API only
-            url = (
-                f"https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{self._model}:generateContent?key={self._api_key}"
+            raise LlmUnavailableError(
+                "Gemini is not configured: set GEMINI_API_KEY, or set "
+                "LLM_PROVIDER=fake for offline runs."
             )
+
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{self._model}:generateContent?key={self._api_key}"
+        )
+        try:  # pragma: no cover — live API only
             resp = httpx.post(
                 url,
                 json={
@@ -108,11 +113,16 @@ class GeminiClient:
                 },
                 timeout=30.0,
             )
-            resp.raise_for_status()
-            data = resp.json()
-            return data["candidates"][0]["content"]["parts"][0]["text"]
-        except Exception:
-            return self._fallback.generate(prompt, max_tokens)
+        except httpx.HTTPError as err:
+            raise LlmUnavailableError(f"Gemini request failed: {err}") from err
+
+        if resp.status_code != 200:
+            raise LlmUnavailableError(f"Gemini returned HTTP {resp.status_code}: {resp.text[:300]}")
+
+        try:
+            return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+        except (ValueError, KeyError, IndexError) as err:
+            raise LlmUnavailableError(f"Gemini returned an unexpected body: {resp.text[:300]}") from err
 
 
 class OpenAIClient:
@@ -124,13 +134,18 @@ class OpenAIClient:
     def __init__(self, api_key: str, model: str = "gpt-4o-mini") -> None:
         self._api_key = api_key
         self._model = model
-        self._fallback = FakeLlmClient()
 
     def generate(self, prompt: str, max_tokens: int = 2048) -> str:
+        """Call OpenAI, or raise. See CloudflareWorkersAiClient.generate on why
+        there is no FakeLlmClient fallback here."""
         import httpx
 
         if not self._api_key:
-            return self._fallback.generate(prompt, max_tokens)
+            raise LlmUnavailableError(
+                "OpenAI is not configured: set OPENAI_API_KEY, or set "
+                "LLM_PROVIDER=fake for offline runs."
+            )
+
         try:  # pragma: no cover — live API only
             resp = httpx.post(
                 "https://api.openai.com/v1/chat/completions",
@@ -149,11 +164,16 @@ class OpenAIClient:
                 },
                 timeout=30.0,
             )
-            resp.raise_for_status()
-            data = resp.json()
-            return data["choices"][0]["message"]["content"]
-        except Exception:
-            return self._fallback.generate(prompt, max_tokens)
+        except httpx.HTTPError as err:
+            raise LlmUnavailableError(f"OpenAI request failed: {err}") from err
+
+        if resp.status_code != 200:
+            raise LlmUnavailableError(f"OpenAI returned HTTP {resp.status_code}: {resp.text[:300]}")
+
+        try:
+            return resp.json()["choices"][0]["message"]["content"]
+        except (ValueError, KeyError, IndexError) as err:
+            raise LlmUnavailableError(f"OpenAI returned an unexpected body: {resp.text[:300]}") from err
 
 
 class CloudflareWorkersAiClient:
@@ -172,15 +192,28 @@ class CloudflareWorkersAiClient:
         self._account_id = account_id
         self._api_token = api_token
         self._model = model
-        self._fallback = FakeLlmClient()
 
     def generate(self, prompt: str, max_tokens: int = 2048) -> str:
+        """Call Workers AI, or raise.
+
+        This deliberately has no FakeLlmClient fallback. It used to answer every
+        failure — missing credentials, network error, HTTP 4xx/5xx, unexpected
+        response shape — by returning FakeLlmClient's hardcoded Jest fixture.
+        Callers could not tell a real model response from a canned string, so a
+        revoked API token would have quietly turned every security scan into a
+        fixture that reports whatever the fixture says. Failures are now visible
+        and routes translate them into HTTP 503.
+        """
         import httpx
 
         if not self._account_id or not self._api_token:
-            return self._fallback.generate(prompt, max_tokens)
+            raise LlmUnavailableError(
+                "Cloudflare Workers AI is not configured: set CLOUDFLARE_ACCOUNT_ID "
+                "and CLOUDFLARE_API_TOKEN, or set LLM_PROVIDER=fake for offline runs."
+            )
+
+        url = f"https://api.cloudflare.com/client/v4/accounts/{self._account_id}/ai/run/{self._model}"
         try:
-            url = f"https://api.cloudflare.com/client/v4/accounts/{self._account_id}/ai/run/{self._model}"
             resp = httpx.post(
                 url,
                 headers={"Authorization": f"Bearer {self._api_token}"},
@@ -196,11 +229,39 @@ class CloudflareWorkersAiClient:
                 },
                 timeout=30.0,
             )
-            resp.raise_for_status()
+        except httpx.HTTPError as err:
+            raise LlmUnavailableError(f"Cloudflare Workers AI request failed: {err}") from err
+
+        if resp.status_code != 200:
+            detail = resp.text[:300]
+            raise LlmUnavailableError(
+                f"Cloudflare Workers AI returned HTTP {resp.status_code}: {detail}"
+            )
+
+        try:
             data = resp.json()
-            if "result" in data and "response" in data["result"]:
-                return data["result"]["response"]
-            return self._fallback.generate(prompt, max_tokens)
-        except Exception:
-            return self._fallback.generate(prompt, max_tokens)
+        except ValueError as err:
+            raise LlmUnavailableError("Cloudflare Workers AI returned a non-JSON body") from err
+
+        # Workers AI answers in two shapes depending on the model and account:
+        # the flat {"result": {"response": "..."}} form, and an OpenAI-style
+        # {"result": {"choices": [{"message": {"content": "..."}}]}}. Both are
+        # live in production, so accept either rather than treating the second
+        # as a failure — which is what happened to every scan in the OWASP
+        # harness until this was found.
+        result = data.get("result") or {}
+
+        response = result.get("response")
+        if isinstance(response, str) and response != "":
+            return response
+
+        choices = result.get("choices")
+        if isinstance(choices, list) and choices:
+            content = (choices[0] or {}).get("message", {}).get("content")
+            if isinstance(content, str) and content != "":
+                return content
+
+        raise LlmUnavailableError(
+            f"Cloudflare Workers AI returned no usable response field: {str(data)[:300]}"
+        )
 

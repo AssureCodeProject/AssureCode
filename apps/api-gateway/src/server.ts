@@ -16,7 +16,9 @@ import fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
 import fastifyWebsocket from '@fastify/websocket';
 import { randomUUID } from 'node:crypto';
+import net from 'node:net';
 import pg from 'pg';
+import { ZodError } from 'zod';
 import {
   loadConfig,
   createLogger,
@@ -72,8 +74,11 @@ const redisHealthUrl = (() => {
 async function pingRedis(): Promise<'ok' | 'error' | 'not_configured'> {
   if (!redisHealthUrl) return 'not_configured';
   return new Promise<'ok' | 'error'>((resolve) => {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const net = require('node:net') as typeof import('node:net');
+    // `require` is not defined in an ES module, so this threw ReferenceError on
+    // every call and /readyz answered 500 unconditionally — for a probe whose
+    // entire job is to report whether the service is ready. An orchestrator
+    // would never have routed traffic here. Static import instead; `net` is a
+    // builtin, so there is nothing to defer.
     const socket = net.createConnection(
       { host: redisHealthUrl!.hostname, port: Number(redisHealthUrl!.port || 6379), timeout: 2000 },
       () => { socket.destroy(); resolve('ok'); },
@@ -133,6 +138,27 @@ void server.register(fastifyCors, {
       : true, // reflect Origin header in development
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-correlation-id', 'idempotency-key', 'x-idempotency-key'],
+});
+
+// A rejected request body is the caller's error, not the server's.
+//
+// Routes parse their bodies with Zod and let a ZodError propagate. Fastify's
+// default handler turns any uncaught throw into HTTP 500, so a request missing
+// a required field was reported as an internal server error — which sends the
+// caller looking at our logs for a fault that is in their payload, and inflates
+// the server-error rate in any benchmark or SLO built on status codes.
+server.setErrorHandler((error, request, reply) => {
+  if (error instanceof ZodError) {
+    request.log.info({ issues: error.issues }, 'Rejected malformed request body');
+    return reply.status(400).send({
+      error: 'Invalid request body',
+      issues: error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
+    });
+  }
+  request.log.error({ err: error }, 'Unhandled error');
+  return reply.status(error.statusCode ?? 500).send({
+    error: error.statusCode && error.statusCode < 500 ? error.message : 'Internal Server Error',
+  });
 });
 
 // Correlation ID middleware hook
@@ -957,6 +983,73 @@ server.get<{
       highVulns: audit.highVulns,
     },
   });
+});
+
+// ── Scope Drift (C1) ────────────────────────────────────────────────────
+//
+// Assess cumulative drift over the contract's recorded scope decisions, then
+// anchor the assessment in the Merkle ledger.
+//
+// The anchoring is the point, and it is why this route exists in the gateway
+// rather than inside the scope guard. A scope flag that freezes a payment has
+// to be re-derivable in a dispute: the ledger entry binds the decision to the
+// contract's genesis hash and to the statistics that produced it, so a later
+// reader can recompute rather than take it on trust. It also keeps the RFC 8785
+// canonical serializer a single implementation — a Python copy in the scope
+// guard could disagree, and a hash chain with two serializers is exactly the
+// defect V009 removed.
+server.post<{
+  Params: { contractId: string };
+  Reply: { assessment: Record<string, unknown>; ledgerId: number; currentHash: string } | { error: string };
+}>('/api/contracts/:contractId/drift', async (request, reply) => {
+  const { contractId } = request.params;
+  const scopeGuardUrl = process.env.SCOPE_GUARD_URL || 'http://localhost:8001';
+
+  let assessment: Record<string, unknown>;
+  try {
+    const res = await fetch(
+      `${scopeGuardUrl}/scope/drift/${encodeURIComponent(contractId)}`,
+      { signal: AbortSignal.timeout(10_000) },
+    );
+
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      // 409 (nothing recorded yet) and 503 (no calibration set) are both
+      // propagated rather than flattened: "there is no sequence to assess" and
+      // "there is no calibrated guarantee available" are different answers and
+      // the caller must be able to tell them apart.
+      return reply
+        .status(res.status === 409 || res.status === 503 ? res.status : 502)
+        .send({ error: `Drift assessment unavailable: scope guard returned ${res.status}. ${detail}` });
+    }
+
+    assessment = (await res.json()) as Record<string, unknown>;
+  } catch (err) {
+    request.log.error({ err, contractId }, 'Scope guard unreachable for drift assessment');
+    return reply.status(502).send({ error: 'Drift assessment unavailable: scope guard unreachable' });
+  }
+
+  const ledgerPayload = assessment.ledger_payload as Record<string, unknown> | undefined;
+  if (!ledgerPayload) {
+    return reply.status(502).send({ error: 'Scope guard returned no ledger payload to anchor' });
+  }
+
+  try {
+    const row = await ledgerClient.append(contractId, 'SCOPE_DRIFT_ASSESSED', ledgerPayload);
+    return reply.status(200).send({
+      assessment,
+      ledgerId: row.ledgerId,
+      currentHash: row.currentHash,
+    });
+  } catch (err) {
+    // The assessment is not returned if it could not be anchored. An
+    // unanchored drift flag is an assertion, and the whole claim of this
+    // endpoint is that it is evidence.
+    request.log.error({ err, contractId }, 'Failed to anchor drift assessment');
+    return reply.status(503).send({
+      error: 'Drift assessment computed but could not be anchored to the ledger; not returning an unanchored flag.',
+    });
+  }
 });
 
 // ── Settlement Oracle State ─────────────────────────────────────────────

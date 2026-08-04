@@ -155,6 +155,32 @@ class PostgresScopeLog:
             raise ScopeLogUnavailable(f"failed to read scope adherence: {err}") from err
         return ScopeAdherence(contract_id=contract_id, allowed=int(row[0]), total=int(row[1]))
 
+    def residuals(self, contract_id: str) -> list[float]:
+        """Per-message residuals s_t = 1 - similarity, oldest first.
+
+        The drift detector (C1) needs the *sequence*, not the summary, and the
+        sequence is already here: every scope decision recorded its best
+        retrieved similarity. Re-deriving residuals from the log rather than
+        holding them in memory means the detector has no state of its own to
+        drift from the decisions it is reasoning about, and a restart does not
+        reset a partially accumulated alarm.
+        """
+        conn = self._connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT similarity FROM scope_checks
+                     WHERE contract_id = %s
+                     ORDER BY check_id ASC
+                    """,
+                    (contract_id,),
+                )
+                return [1.0 - float(r[0]) for r in cur.fetchall()]
+        except Exception as err:
+            self._conn = None
+            raise ScopeLogUnavailable(f"failed to read scope residuals: {err}") from err
+
 
 class InMemoryScopeLog:
     """Process-local log for tests and offline runs."""
@@ -173,3 +199,6 @@ class InMemoryScopeLog:
             allowed=sum(1 for r in rows if r.allowed),
             total=len(rows),
         )
+
+    def residuals(self, contract_id: str) -> list[float]:
+        return [1.0 - float(r.similarity) for r in self._rows if r.contract_id == contract_id]

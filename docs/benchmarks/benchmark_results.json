@@ -1,1355 +1,750 @@
 {
-  "timestamp": "2026-08-02T18:13:12.141Z",
-  "totalContracts": 100,
-  "concurrency": 10,
-  "successfulContracts": 80,
-  "failedContracts": 0,
-  "durationSeconds": 3.61,
-  "throughputRps": 27.7,
+  "timestamp": "2026-08-04T15:10:59.271Z",
+  "gatewayUrl": "http://localhost:4000",
+  "readiness": {
+    "status": "ready",
+    "db": "ok",
+    "redis": "not_configured",
+    "timestamp": "2026-08-04T15:10:17.892Z"
+  },
+  "totalContracts": 30,
+  "concurrency": 5,
+  "durationSeconds": 41.37,
+  "throughputContractsPerSec": 0.73,
+  "completed": 0,
+  "withErrors": 30,
   "latencyMs": {
-    "e2e": {
-      "p50": 355,
-      "p90": 373,
-      "p99": 385,
-      "mean": 342.77,
-      "min": 260,
-      "max": 386
-    },
-    "init": {
-      "mean": 51.6,
-      "p90": 60
-    },
-    "testGen": {
-      "mean": 77.11,
-      "p90": 82
+    "initialize": {
+      "n": 30,
+      "mean": 20.03,
+      "stdev": 9.32,
+      "p50": 18.92,
+      "p90": 34.14,
+      "p99": 38.46,
+      "min": 3.58,
+      "max": 38.46
     },
     "lock": {
-      "mean": 46.76,
-      "p90": 49
+      "n": 30,
+      "mean": 15.85,
+      "stdev": 9.28,
+      "p50": 13.68,
+      "p90": 31.6,
+      "p99": 37.63,
+      "min": 2.95,
+      "max": 37.63
     },
     "escrow": {
-      "mean": 61.86,
-      "p90": 66
+      "n": 30,
+      "mean": 363.11,
+      "stdev": 441.96,
+      "p50": 172.71,
+      "p90": 1330.92,
+      "p99": 1339.36,
+      "min": 145.7,
+      "max": 1339.36
     },
-    "scope": {
-      "mean": 40.8,
-      "p90": 48
-    },
-    "settle": {
-      "mean": 64.64,
-      "p90": 87
+    "scopeCheck": {
+      "n": 30,
+      "mean": 31.13,
+      "stdev": 18.04,
+      "p50": 29.48,
+      "p90": 40.7,
+      "p99": 98.12,
+      "min": 11.86,
+      "max": 98.12
     }
   },
+  "ingest": {
+    "contractsNeedingRetry": 30,
+    "waitMs": {
+      "n": 30,
+      "mean": 6451.5,
+      "stdev": 51.42,
+      "p50": 6432.55,
+      "p90": 6515.32,
+      "p99": 6591.05,
+      "min": 6379.78,
+      "max": 6591.05
+    },
+    "note": "RAG ingest is fire-and-forget from lock; this wait is excluded from scopeCheck."
+  },
   "scopeAccuracy": {
-    "truePositives": 80,
-    "trueNegatives": 20,
+    "scoredContracts": 0,
+    "excludedNoVerdict": 30,
+    "truePositives": 0,
+    "trueNegatives": 0,
     "falsePositives": 0,
     "falseNegatives": 0,
-    "accuracy": 100,
-    "precision": 100,
-    "recall": 100,
-    "f1Score": 100
+    "accuracy": null,
+    "precision": null,
+    "recall": null,
+    "f1": null,
+    "note": "Labels choose which prompt is sent and score the answer. They never determine the verdict. Contracts that received no verdict are excluded, not counted as errors."
+  },
+  "statusCounts": {
+    "LOCK_FAILED": 30
   },
   "results": [
     {
-      "contractId": "AC-BENCH-002",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 43,
-      "testGenLatencyMs": 73,
-      "lockLatencyMs": 48,
-      "escrowLatencyMs": 57,
-      "scopeLatencyMs": 46,
-      "settleLatencyMs": 86,
-      "totalE2eLatencyMs": 353,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-001",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 43,
-      "testGenLatencyMs": 73,
-      "lockLatencyMs": 48,
-      "escrowLatencyMs": 57,
-      "scopeLatencyMs": 46,
-      "settleLatencyMs": 87,
-      "totalE2eLatencyMs": 354,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-006",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 42,
-      "testGenLatencyMs": 73,
-      "lockLatencyMs": 48,
-      "escrowLatencyMs": 57,
-      "scopeLatencyMs": 46,
-      "settleLatencyMs": 87,
-      "totalE2eLatencyMs": 353,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-007",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 42,
-      "testGenLatencyMs": 73,
-      "lockLatencyMs": 48,
-      "escrowLatencyMs": 57,
-      "scopeLatencyMs": 46,
-      "settleLatencyMs": 87,
-      "totalE2eLatencyMs": 353,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-004",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 58,
-      "testGenLatencyMs": 74,
-      "lockLatencyMs": 49,
-      "escrowLatencyMs": 54,
-      "scopeLatencyMs": 40,
-      "settleLatencyMs": 78,
-      "totalE2eLatencyMs": 353,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-003",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 59,
-      "testGenLatencyMs": 74,
-      "lockLatencyMs": 48,
-      "escrowLatencyMs": 55,
-      "scopeLatencyMs": 40,
-      "settleLatencyMs": 92,
-      "totalE2eLatencyMs": 368,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-010",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 42,
-      "testGenLatencyMs": 90,
-      "lockLatencyMs": 48,
-      "escrowLatencyMs": 71,
-      "scopeLatencyMs": 40,
-      "settleLatencyMs": 77,
-      "totalE2eLatencyMs": 368,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-008",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 58,
-      "testGenLatencyMs": 74,
-      "lockLatencyMs": 48,
-      "escrowLatencyMs": 71,
-      "scopeLatencyMs": 40,
-      "settleLatencyMs": 77,
-      "totalE2eLatencyMs": 368,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-009",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 58,
-      "testGenLatencyMs": 74,
-      "lockLatencyMs": 49,
-      "escrowLatencyMs": 70,
-      "scopeLatencyMs": 40,
-      "settleLatencyMs": 90,
-      "totalE2eLatencyMs": 381,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-005",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 58,
-      "testGenLatencyMs": 74,
-      "lockLatencyMs": 48,
-      "escrowLatencyMs": 71,
-      "scopeLatencyMs": 40,
-      "settleLatencyMs": 91,
-      "totalE2eLatencyMs": 382,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-011",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 47,
-      "testGenLatencyMs": 73,
-      "lockLatencyMs": 48,
-      "escrowLatencyMs": 63,
-      "scopeLatencyMs": 31,
-      "settleLatencyMs": 72,
-      "totalE2eLatencyMs": 334,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-015",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 46,
-      "testGenLatencyMs": 73,
-      "lockLatencyMs": 48,
-      "escrowLatencyMs": 63,
-      "scopeLatencyMs": 46,
-      "settleLatencyMs": 71,
-      "totalE2eLatencyMs": 347,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-014",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 46,
-      "testGenLatencyMs": 73,
-      "lockLatencyMs": 48,
-      "escrowLatencyMs": 63,
-      "scopeLatencyMs": 46,
-      "settleLatencyMs": 72,
-      "totalE2eLatencyMs": 348,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-013",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 46,
-      "testGenLatencyMs": 73,
-      "lockLatencyMs": 48,
-      "escrowLatencyMs": 63,
-      "scopeLatencyMs": 46,
-      "settleLatencyMs": 87,
-      "totalE2eLatencyMs": 363,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-016",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 45,
-      "testGenLatencyMs": 74,
-      "lockLatencyMs": 50,
-      "escrowLatencyMs": 60,
-      "scopeLatencyMs": 48,
-      "settleLatencyMs": 72,
-      "totalE2eLatencyMs": 349,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-012",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 59,
-      "testGenLatencyMs": 76,
-      "lockLatencyMs": 49,
-      "escrowLatencyMs": 61,
-      "scopeLatencyMs": 47,
-      "settleLatencyMs": 72,
-      "totalE2eLatencyMs": 364,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-019",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 59,
-      "testGenLatencyMs": 64,
-      "lockLatencyMs": 46,
-      "escrowLatencyMs": 63,
-      "scopeLatencyMs": 48,
-      "settleLatencyMs": 69,
-      "totalE2eLatencyMs": 349,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-017",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 57,
-      "testGenLatencyMs": 80,
-      "lockLatencyMs": 46,
-      "escrowLatencyMs": 63,
-      "scopeLatencyMs": 48,
-      "settleLatencyMs": 74,
-      "totalE2eLatencyMs": 368,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-018",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 57,
-      "testGenLatencyMs": 80,
-      "lockLatencyMs": 46,
-      "escrowLatencyMs": 63,
-      "scopeLatencyMs": 48,
-      "settleLatencyMs": 75,
-      "totalE2eLatencyMs": 369,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-020",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 59,
-      "testGenLatencyMs": 79,
-      "lockLatencyMs": 47,
-      "escrowLatencyMs": 62,
-      "scopeLatencyMs": 46,
-      "settleLatencyMs": 71,
-      "totalE2eLatencyMs": 364,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-021",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 50,
-      "testGenLatencyMs": 70,
-      "lockLatencyMs": 47,
-      "escrowLatencyMs": 57,
-      "scopeLatencyMs": 35,
-      "settleLatencyMs": 81,
-      "totalE2eLatencyMs": 340,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-022",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 47,
-      "testGenLatencyMs": 75,
-      "lockLatencyMs": 46,
-      "escrowLatencyMs": 58,
-      "scopeLatencyMs": 49,
-      "settleLatencyMs": 82,
-      "totalE2eLatencyMs": 357,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-023",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 63,
-      "testGenLatencyMs": 76,
-      "lockLatencyMs": 44,
-      "escrowLatencyMs": 53,
-      "scopeLatencyMs": 38,
-      "settleLatencyMs": 83,
-      "totalE2eLatencyMs": 357,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-026",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 47,
-      "testGenLatencyMs": 76,
-      "lockLatencyMs": 44,
-      "escrowLatencyMs": 53,
-      "scopeLatencyMs": 38,
-      "settleLatencyMs": 82,
-      "totalE2eLatencyMs": 340,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-025",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 47,
-      "testGenLatencyMs": 76,
-      "lockLatencyMs": 44,
-      "escrowLatencyMs": 53,
-      "scopeLatencyMs": 38,
-      "settleLatencyMs": 83,
-      "totalE2eLatencyMs": 341,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-024",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 61,
-      "testGenLatencyMs": 76,
-      "lockLatencyMs": 46,
-      "escrowLatencyMs": 63,
-      "scopeLatencyMs": 39,
-      "settleLatencyMs": 72,
-      "totalE2eLatencyMs": 357,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-027",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 46,
-      "testGenLatencyMs": 76,
-      "lockLatencyMs": 46,
-      "escrowLatencyMs": 63,
-      "scopeLatencyMs": 39,
-      "settleLatencyMs": 87,
-      "totalE2eLatencyMs": 357,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-028",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 57,
-      "testGenLatencyMs": 75,
-      "lockLatencyMs": 42,
-      "escrowLatencyMs": 65,
-      "scopeLatencyMs": 35,
-      "settleLatencyMs": 78,
-      "totalE2eLatencyMs": 352,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-030",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 46,
-      "testGenLatencyMs": 76,
-      "lockLatencyMs": 41,
-      "escrowLatencyMs": 65,
-      "scopeLatencyMs": 36,
-      "settleLatencyMs": 92,
-      "totalE2eLatencyMs": 356,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-029",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 56,
-      "testGenLatencyMs": 75,
-      "lockLatencyMs": 42,
-      "escrowLatencyMs": 65,
-      "scopeLatencyMs": 35,
-      "settleLatencyMs": 93,
-      "totalE2eLatencyMs": 366,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-031",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 47,
-      "testGenLatencyMs": 80,
-      "lockLatencyMs": 48,
-      "escrowLatencyMs": 60,
-      "scopeLatencyMs": 44,
-      "settleLatencyMs": 81,
-      "totalE2eLatencyMs": 360,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-032",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 47,
-      "testGenLatencyMs": 82,
-      "lockLatencyMs": 46,
-      "escrowLatencyMs": 60,
-      "scopeLatencyMs": 37,
-      "settleLatencyMs": 75,
-      "totalE2eLatencyMs": 347,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-034",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 46,
-      "testGenLatencyMs": 82,
-      "lockLatencyMs": 46,
-      "escrowLatencyMs": 60,
-      "scopeLatencyMs": 37,
-      "settleLatencyMs": 75,
-      "totalE2eLatencyMs": 346,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-033",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 46,
-      "testGenLatencyMs": 82,
-      "lockLatencyMs": 46,
-      "escrowLatencyMs": 60,
-      "scopeLatencyMs": 37,
-      "settleLatencyMs": 81,
-      "totalE2eLatencyMs": 352,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-035",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 46,
-      "testGenLatencyMs": 82,
-      "lockLatencyMs": 46,
-      "escrowLatencyMs": 60,
-      "scopeLatencyMs": 37,
-      "settleLatencyMs": 81,
-      "totalE2eLatencyMs": 352,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-038",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 49,
-      "testGenLatencyMs": 64,
-      "lockLatencyMs": 46,
-      "escrowLatencyMs": 58,
-      "scopeLatencyMs": 39,
-      "settleLatencyMs": 82,
-      "totalE2eLatencyMs": 338,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-036",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 46,
-      "testGenLatencyMs": 82,
-      "lockLatencyMs": 46,
-      "escrowLatencyMs": 63,
-      "scopeLatencyMs": 34,
-      "settleLatencyMs": 82,
-      "totalE2eLatencyMs": 353,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-040",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 49,
-      "testGenLatencyMs": 79,
-      "lockLatencyMs": 43,
-      "escrowLatencyMs": 54,
-      "scopeLatencyMs": 47,
-      "settleLatencyMs": 82,
-      "totalE2eLatencyMs": 354,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-039",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 50,
-      "testGenLatencyMs": 79,
-      "lockLatencyMs": 44,
-      "escrowLatencyMs": 53,
-      "scopeLatencyMs": 48,
-      "settleLatencyMs": 81,
-      "totalE2eLatencyMs": 355,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-037",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 49,
-      "testGenLatencyMs": 79,
-      "lockLatencyMs": 45,
-      "escrowLatencyMs": 68,
-      "scopeLatencyMs": 48,
-      "settleLatencyMs": 81,
-      "totalE2eLatencyMs": 370,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-041",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 56,
-      "testGenLatencyMs": 76,
-      "lockLatencyMs": 46,
-      "escrowLatencyMs": 67,
-      "scopeLatencyMs": 46,
-      "settleLatencyMs": 69,
-      "totalE2eLatencyMs": 360,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-045",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 48,
-      "testGenLatencyMs": 78,
-      "lockLatencyMs": 44,
-      "escrowLatencyMs": 66,
-      "scopeLatencyMs": 31,
-      "settleLatencyMs": 86,
-      "totalE2eLatencyMs": 353,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-043",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 54,
-      "testGenLatencyMs": 78,
-      "lockLatencyMs": 44,
-      "escrowLatencyMs": 51,
-      "scopeLatencyMs": 46,
-      "settleLatencyMs": 86,
-      "totalE2eLatencyMs": 359,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-042",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 54,
-      "testGenLatencyMs": 78,
-      "lockLatencyMs": 44,
-      "escrowLatencyMs": 66,
-      "scopeLatencyMs": 31,
-      "settleLatencyMs": 86,
-      "totalE2eLatencyMs": 359,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-044",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 48,
-      "testGenLatencyMs": 78,
-      "lockLatencyMs": 44,
-      "escrowLatencyMs": 66,
-      "scopeLatencyMs": 45,
-      "settleLatencyMs": 87,
-      "totalE2eLatencyMs": 368,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-047",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 49,
-      "testGenLatencyMs": 74,
-      "lockLatencyMs": 46,
-      "escrowLatencyMs": 67,
-      "scopeLatencyMs": 34,
-      "settleLatencyMs": 82,
-      "totalE2eLatencyMs": 352,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-046",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 48,
-      "testGenLatencyMs": 75,
-      "lockLatencyMs": 46,
-      "escrowLatencyMs": 66,
-      "scopeLatencyMs": 35,
-      "settleLatencyMs": 82,
-      "totalE2eLatencyMs": 352,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-048",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 45,
-      "testGenLatencyMs": 77,
-      "lockLatencyMs": 51,
-      "escrowLatencyMs": 60,
-      "scopeLatencyMs": 36,
-      "settleLatencyMs": 87,
-      "totalE2eLatencyMs": 356,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-049",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 60,
-      "testGenLatencyMs": 77,
-      "lockLatencyMs": 51,
-      "escrowLatencyMs": 66,
-      "scopeLatencyMs": 35,
-      "settleLatencyMs": 82,
-      "totalE2eLatencyMs": 371,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-050",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 60,
-      "testGenLatencyMs": 77,
-      "lockLatencyMs": 51,
-      "escrowLatencyMs": 66,
-      "scopeLatencyMs": 50,
-      "settleLatencyMs": 82,
-      "totalE2eLatencyMs": 386,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-051",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 53,
-      "testGenLatencyMs": 77,
-      "lockLatencyMs": 47,
-      "escrowLatencyMs": 64,
-      "scopeLatencyMs": 45,
-      "settleLatencyMs": 94,
-      "totalE2eLatencyMs": 380,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-052",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 51,
-      "testGenLatencyMs": 78,
-      "lockLatencyMs": 45,
-      "escrowLatencyMs": 64,
-      "scopeLatencyMs": 47,
-      "settleLatencyMs": 79,
-      "totalE2eLatencyMs": 364,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-053",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 51,
-      "testGenLatencyMs": 78,
-      "lockLatencyMs": 45,
-      "escrowLatencyMs": 65,
-      "scopeLatencyMs": 46,
-      "settleLatencyMs": 79,
-      "totalE2eLatencyMs": 364,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-054",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 51,
-      "testGenLatencyMs": 78,
-      "lockLatencyMs": 45,
-      "escrowLatencyMs": 65,
-      "scopeLatencyMs": 46,
-      "settleLatencyMs": 79,
-      "totalE2eLatencyMs": 364,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-055",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 51,
-      "testGenLatencyMs": 77,
-      "lockLatencyMs": 46,
-      "escrowLatencyMs": 65,
-      "scopeLatencyMs": 46,
-      "settleLatencyMs": 76,
-      "totalE2eLatencyMs": 361,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-056",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 51,
-      "testGenLatencyMs": 77,
-      "lockLatencyMs": 46,
-      "escrowLatencyMs": 65,
-      "scopeLatencyMs": 46,
-      "settleLatencyMs": 76,
-      "totalE2eLatencyMs": 361,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-057",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 51,
-      "testGenLatencyMs": 77,
-      "lockLatencyMs": 46,
-      "escrowLatencyMs": 65,
-      "scopeLatencyMs": 46,
-      "settleLatencyMs": 76,
-      "totalE2eLatencyMs": 361,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-058",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 49,
-      "testGenLatencyMs": 89,
-      "lockLatencyMs": 50,
-      "escrowLatencyMs": 61,
-      "scopeLatencyMs": 48,
-      "settleLatencyMs": 72,
-      "totalE2eLatencyMs": 369,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-060",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 47,
-      "testGenLatencyMs": 76,
-      "lockLatencyMs": 49,
-      "escrowLatencyMs": 61,
-      "scopeLatencyMs": 49,
-      "settleLatencyMs": 87,
-      "totalE2eLatencyMs": 369,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-059",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 62,
-      "testGenLatencyMs": 77,
-      "lockLatencyMs": 49,
-      "escrowLatencyMs": 61,
-      "scopeLatencyMs": 49,
-      "settleLatencyMs": 87,
-      "totalE2eLatencyMs": 385,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-067",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 44,
-      "testGenLatencyMs": 77,
-      "lockLatencyMs": 47,
-      "escrowLatencyMs": 66,
-      "scopeLatencyMs": 32,
-      "settleLatencyMs": 78,
-      "totalE2eLatencyMs": 344,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-064",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 56,
-      "testGenLatencyMs": 78,
-      "lockLatencyMs": 46,
-      "escrowLatencyMs": 51,
-      "scopeLatencyMs": 47,
-      "settleLatencyMs": 85,
-      "totalE2eLatencyMs": 363,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-062",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 56,
-      "testGenLatencyMs": 78,
-      "lockLatencyMs": 46,
-      "escrowLatencyMs": 51,
-      "scopeLatencyMs": 47,
-      "settleLatencyMs": 85,
-      "totalE2eLatencyMs": 363,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-061",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 57,
-      "testGenLatencyMs": 78,
-      "lockLatencyMs": 47,
-      "escrowLatencyMs": 65,
-      "scopeLatencyMs": 47,
-      "settleLatencyMs": 70,
-      "totalE2eLatencyMs": 364,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-066",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 44,
-      "testGenLatencyMs": 78,
-      "lockLatencyMs": 47,
-      "escrowLatencyMs": 65,
-      "scopeLatencyMs": 47,
-      "settleLatencyMs": 70,
-      "totalE2eLatencyMs": 351,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-065",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 44,
-      "testGenLatencyMs": 81,
-      "lockLatencyMs": 44,
-      "escrowLatencyMs": 65,
-      "scopeLatencyMs": 47,
-      "settleLatencyMs": 81,
-      "totalE2eLatencyMs": 362,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-063",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 56,
-      "testGenLatencyMs": 78,
-      "lockLatencyMs": 46,
-      "escrowLatencyMs": 66,
-      "scopeLatencyMs": 47,
-      "settleLatencyMs": 81,
-      "totalE2eLatencyMs": 374,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-068",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 46,
-      "testGenLatencyMs": 78,
-      "lockLatencyMs": 51,
-      "escrowLatencyMs": 62,
-      "scopeLatencyMs": 48,
-      "settleLatencyMs": 79,
-      "totalE2eLatencyMs": 364,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-070",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 50,
-      "testGenLatencyMs": 76,
-      "lockLatencyMs": 49,
-      "escrowLatencyMs": 63,
-      "scopeLatencyMs": 38,
-      "settleLatencyMs": 76,
-      "totalE2eLatencyMs": 352,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-069",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 50,
-      "testGenLatencyMs": 76,
-      "lockLatencyMs": 49,
-      "escrowLatencyMs": 63,
-      "scopeLatencyMs": 38,
-      "settleLatencyMs": 76,
-      "totalE2eLatencyMs": 352,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-074",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 42,
-      "testGenLatencyMs": 83,
-      "lockLatencyMs": 49,
-      "escrowLatencyMs": 64,
-      "scopeLatencyMs": 43,
-      "settleLatencyMs": 72,
-      "totalE2eLatencyMs": 353,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-071",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 49,
-      "testGenLatencyMs": 83,
-      "lockLatencyMs": 49,
-      "escrowLatencyMs": 63,
-      "scopeLatencyMs": 44,
-      "settleLatencyMs": 91,
-      "totalE2eLatencyMs": 379,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-075",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 42,
-      "testGenLatencyMs": 83,
-      "lockLatencyMs": 49,
-      "escrowLatencyMs": 64,
-      "scopeLatencyMs": 43,
-      "settleLatencyMs": 91,
-      "totalE2eLatencyMs": 372,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-072",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 57,
-      "testGenLatencyMs": 83,
-      "lockLatencyMs": 47,
-      "escrowLatencyMs": 63,
-      "scopeLatencyMs": 47,
-      "settleLatencyMs": 76,
-      "totalE2eLatencyMs": 373,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-076",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 46,
-      "testGenLatencyMs": 83,
-      "lockLatencyMs": 47,
-      "escrowLatencyMs": 63,
-      "scopeLatencyMs": 47,
-      "settleLatencyMs": 87,
-      "totalE2eLatencyMs": 373,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-073",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 57,
-      "testGenLatencyMs": 83,
-      "lockLatencyMs": 47,
-      "escrowLatencyMs": 63,
-      "scopeLatencyMs": 47,
-      "settleLatencyMs": 87,
-      "totalE2eLatencyMs": 384,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-077",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 65,
-      "testGenLatencyMs": 80,
-      "lockLatencyMs": 47,
-      "escrowLatencyMs": 63,
-      "scopeLatencyMs": 31,
-      "settleLatencyMs": 87,
-      "totalE2eLatencyMs": 373,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-078",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 53,
-      "testGenLatencyMs": 77,
-      "lockLatencyMs": 50,
-      "escrowLatencyMs": 60,
-      "scopeLatencyMs": 40,
-      "settleLatencyMs": 79,
-      "totalE2eLatencyMs": 359,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-080",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 49,
-      "testGenLatencyMs": 78,
-      "lockLatencyMs": 47,
-      "escrowLatencyMs": 62,
-      "scopeLatencyMs": 41,
-      "settleLatencyMs": 79,
-      "totalE2eLatencyMs": 356,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-079",
-      "isInScopeExpected": true,
-      "isAllowedActual": true,
-      "initLatencyMs": 49,
-      "testGenLatencyMs": 79,
-      "lockLatencyMs": 46,
-      "escrowLatencyMs": 62,
-      "scopeLatencyMs": 41,
-      "settleLatencyMs": 79,
-      "totalE2eLatencyMs": 356,
-      "status": "SUCCESS"
-    },
-    {
-      "contractId": "AC-BENCH-081",
-      "isInScopeExpected": false,
-      "isAllowedActual": false,
-      "initLatencyMs": 48,
-      "testGenLatencyMs": 77,
-      "lockLatencyMs": 46,
-      "escrowLatencyMs": 62,
-      "scopeLatencyMs": 31,
-      "settleLatencyMs": 0,
-      "totalE2eLatencyMs": 264,
-      "status": "SCOPE_BLOCKED"
-    },
-    {
-      "contractId": "AC-BENCH-082",
-      "isInScopeExpected": false,
-      "isAllowedActual": false,
-      "initLatencyMs": 44,
-      "testGenLatencyMs": 81,
-      "lockLatencyMs": 43,
-      "escrowLatencyMs": 62,
-      "scopeLatencyMs": 31,
-      "settleLatencyMs": 0,
-      "totalE2eLatencyMs": 261,
-      "status": "SCOPE_BLOCKED"
-    },
-    {
-      "contractId": "AC-BENCH-084",
-      "isInScopeExpected": false,
-      "isAllowedActual": false,
-      "initLatencyMs": 59,
-      "testGenLatencyMs": 65,
-      "lockLatencyMs": 43,
-      "escrowLatencyMs": 62,
-      "scopeLatencyMs": 31,
-      "settleLatencyMs": 0,
-      "totalE2eLatencyMs": 260,
-      "status": "SCOPE_BLOCKED"
-    },
-    {
-      "contractId": "AC-BENCH-083",
-      "isInScopeExpected": false,
-      "isAllowedActual": false,
-      "initLatencyMs": 60,
-      "testGenLatencyMs": 77,
-      "lockLatencyMs": 46,
-      "escrowLatencyMs": 62,
-      "scopeLatencyMs": 32,
-      "settleLatencyMs": 0,
-      "totalE2eLatencyMs": 277,
-      "status": "SCOPE_BLOCKED"
-    },
-    {
-      "contractId": "AC-BENCH-086",
-      "isInScopeExpected": false,
-      "isAllowedActual": false,
-      "initLatencyMs": 48,
-      "testGenLatencyMs": 77,
-      "lockLatencyMs": 47,
-      "escrowLatencyMs": 61,
-      "scopeLatencyMs": 32,
-      "settleLatencyMs": 0,
-      "totalE2eLatencyMs": 265,
-      "status": "SCOPE_BLOCKED"
-    },
-    {
-      "contractId": "AC-BENCH-085",
-      "isInScopeExpected": false,
-      "isAllowedActual": false,
-      "initLatencyMs": 48,
-      "testGenLatencyMs": 77,
-      "lockLatencyMs": 47,
-      "escrowLatencyMs": 61,
-      "scopeLatencyMs": 32,
-      "settleLatencyMs": 0,
-      "totalE2eLatencyMs": 265,
-      "status": "SCOPE_BLOCKED"
-    },
-    {
-      "contractId": "AC-BENCH-087",
-      "isInScopeExpected": false,
-      "isAllowedActual": false,
-      "initLatencyMs": 63,
-      "testGenLatencyMs": 77,
-      "lockLatencyMs": 51,
-      "escrowLatencyMs": 58,
-      "scopeLatencyMs": 47,
-      "settleLatencyMs": 0,
-      "totalE2eLatencyMs": 296,
-      "status": "SCOPE_BLOCKED"
-    },
-    {
-      "contractId": "AC-BENCH-088",
-      "isInScopeExpected": false,
-      "isAllowedActual": false,
-      "initLatencyMs": 62,
-      "testGenLatencyMs": 78,
-      "lockLatencyMs": 46,
-      "escrowLatencyMs": 62,
-      "scopeLatencyMs": 40,
-      "settleLatencyMs": 0,
-      "totalE2eLatencyMs": 288,
-      "status": "SCOPE_BLOCKED"
-    },
-    {
-      "contractId": "AC-BENCH-089",
-      "isInScopeExpected": false,
-      "isAllowedActual": false,
-      "initLatencyMs": 46,
-      "testGenLatencyMs": 78,
-      "lockLatencyMs": 46,
-      "escrowLatencyMs": 62,
-      "scopeLatencyMs": 41,
-      "settleLatencyMs": 0,
-      "totalE2eLatencyMs": 273,
-      "status": "SCOPE_BLOCKED"
-    },
-    {
-      "contractId": "AC-BENCH-090",
-      "isInScopeExpected": false,
-      "isAllowedActual": false,
-      "initLatencyMs": 65,
-      "testGenLatencyMs": 78,
-      "lockLatencyMs": 42,
-      "escrowLatencyMs": 63,
-      "scopeLatencyMs": 34,
-      "settleLatencyMs": 0,
-      "totalE2eLatencyMs": 282,
-      "status": "SCOPE_BLOCKED"
-    },
-    {
-      "contractId": "AC-BENCH-091",
-      "isInScopeExpected": false,
-      "isAllowedActual": false,
-      "initLatencyMs": 47,
-      "testGenLatencyMs": 78,
-      "lockLatencyMs": 47,
-      "escrowLatencyMs": 64,
-      "scopeLatencyMs": 34,
-      "settleLatencyMs": 0,
-      "totalE2eLatencyMs": 270,
-      "status": "SCOPE_BLOCKED"
-    },
-    {
-      "contractId": "AC-BENCH-093",
-      "isInScopeExpected": false,
-      "isAllowedActual": false,
-      "initLatencyMs": 47,
-      "testGenLatencyMs": 78,
-      "lockLatencyMs": 47,
-      "escrowLatencyMs": 65,
-      "scopeLatencyMs": 32,
-      "settleLatencyMs": 0,
-      "totalE2eLatencyMs": 269,
-      "status": "SCOPE_BLOCKED"
-    },
-    {
-      "contractId": "AC-BENCH-095",
-      "isInScopeExpected": false,
-      "isAllowedActual": false,
-      "initLatencyMs": 56,
-      "testGenLatencyMs": 69,
-      "lockLatencyMs": 47,
-      "escrowLatencyMs": 52,
-      "scopeLatencyMs": 38,
-      "settleLatencyMs": 0,
-      "totalE2eLatencyMs": 262,
-      "status": "SCOPE_BLOCKED"
-    },
-    {
-      "contractId": "AC-BENCH-096",
-      "isInScopeExpected": false,
-      "isAllowedActual": false,
-      "initLatencyMs": 56,
-      "testGenLatencyMs": 69,
-      "lockLatencyMs": 47,
-      "escrowLatencyMs": 66,
-      "scopeLatencyMs": 38,
-      "settleLatencyMs": 0,
-      "totalE2eLatencyMs": 276,
-      "status": "SCOPE_BLOCKED"
-    },
-    {
-      "contractId": "AC-BENCH-094",
-      "isInScopeExpected": false,
-      "isAllowedActual": false,
-      "initLatencyMs": 56,
-      "testGenLatencyMs": 69,
-      "lockLatencyMs": 47,
-      "escrowLatencyMs": 66,
-      "scopeLatencyMs": 38,
-      "settleLatencyMs": 0,
-      "totalE2eLatencyMs": 276,
-      "status": "SCOPE_BLOCKED"
-    },
-    {
-      "contractId": "AC-BENCH-092",
-      "isInScopeExpected": false,
-      "isAllowedActual": false,
-      "initLatencyMs": 71,
-      "testGenLatencyMs": 85,
-      "lockLatencyMs": 48,
-      "escrowLatencyMs": 65,
-      "scopeLatencyMs": 39,
-      "settleLatencyMs": 0,
-      "totalE2eLatencyMs": 308,
-      "status": "SCOPE_BLOCKED"
-    },
-    {
-      "contractId": "AC-BENCH-097",
-      "isInScopeExpected": false,
-      "isAllowedActual": false,
-      "initLatencyMs": 47,
-      "testGenLatencyMs": 78,
-      "lockLatencyMs": 48,
-      "escrowLatencyMs": 58,
-      "scopeLatencyMs": 30,
-      "settleLatencyMs": 0,
-      "totalE2eLatencyMs": 261,
-      "status": "SCOPE_BLOCKED"
-    },
-    {
-      "contractId": "AC-BENCH-098",
-      "isInScopeExpected": false,
-      "isAllowedActual": false,
-      "initLatencyMs": 54,
-      "testGenLatencyMs": 80,
-      "lockLatencyMs": 49,
-      "escrowLatencyMs": 54,
-      "scopeLatencyMs": 31,
-      "settleLatencyMs": 0,
-      "totalE2eLatencyMs": 268,
-      "status": "SCOPE_BLOCKED"
-    },
-    {
-      "contractId": "AC-BENCH-100",
-      "isInScopeExpected": false,
-      "isAllowedActual": false,
-      "initLatencyMs": 60,
-      "testGenLatencyMs": 79,
-      "lockLatencyMs": 49,
-      "escrowLatencyMs": 55,
-      "scopeLatencyMs": 31,
-      "settleLatencyMs": 0,
-      "totalE2eLatencyMs": 274,
-      "status": "SCOPE_BLOCKED"
-    },
-    {
-      "contractId": "AC-BENCH-099",
-      "isInScopeExpected": false,
-      "isAllowedActual": false,
-      "initLatencyMs": 53,
-      "testGenLatencyMs": 80,
-      "lockLatencyMs": 49,
-      "escrowLatencyMs": 70,
-      "scopeLatencyMs": 31,
-      "settleLatencyMs": 0,
-      "totalE2eLatencyMs": 283,
-      "status": "SCOPE_BLOCKED"
+      "idx": 3,
+      "contractId": "AC-MSESOKT5",
+      "expectInScope": true,
+      "prompt": "Add input sanitization for the profile name field.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 34.14,
+        "lock": 31.6,
+        "escrow": 1330.92,
+        "scopeWaitForIngestMs": 6407.01,
+        "scopeCheck": 25.13
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 2,
+      "contractId": "AC-MSESOKSY",
+      "expectInScope": true,
+      "prompt": "Fix the cyclomatic complexity warning in the database connection handler.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 30.21,
+        "lock": 32.31,
+        "escrow": 1333.64,
+        "scopeWaitForIngestMs": 6462.41,
+        "scopeCheck": 16.42
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 5,
+      "contractId": "AC-MSESOKTB",
+      "expectInScope": true,
+      "prompt": "Please update the user settings page according to requirement specification section 3.2.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 38.46,
+        "lock": 36.16,
+        "escrow": 1335.93,
+        "scopeWaitForIngestMs": 6442,
+        "scopeCheck": 26.87
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 1,
+      "contractId": "AC-MSESOKSM",
+      "expectInScope": true,
+      "prompt": "Implement the unit tests for the authentication endpoint.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 34.16,
+        "lock": 31.42,
+        "escrow": 1330.13,
+        "scopeWaitForIngestMs": 6465.06,
+        "scopeCheck": 29.94
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 4,
+      "contractId": "AC-MSESOKT8",
+      "expectInScope": true,
+      "prompt": "Refactor the API response helper to handle standard error status codes.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 35.85,
+        "lock": 37.63,
+        "escrow": 1339.36,
+        "scopeWaitForIngestMs": 6438.52,
+        "scopeCheck": 29.72
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 6,
+      "contractId": "AC-MSESOQUB",
+      "expectInScope": true,
+      "prompt": "Implement the unit tests for the authentication endpoint.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 25.13,
+        "lock": 5.42,
+        "escrow": 178.09,
+        "scopeWaitForIngestMs": 6519.58,
+        "scopeCheck": 29.78
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 8,
+      "contractId": "AC-MSESOQVT",
+      "expectInScope": true,
+      "prompt": "Add input sanitization for the profile name field.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 23.94,
+        "lock": 8.92,
+        "escrow": 165.21,
+        "scopeWaitForIngestMs": 6478.94,
+        "scopeCheck": 29.65
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 9,
+      "contractId": "AC-MSESOQVV",
+      "expectInScope": true,
+      "prompt": "Refactor the API response helper to handle standard error status codes.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 25.51,
+        "lock": 8.93,
+        "escrow": 161.2,
+        "scopeWaitForIngestMs": 6478.18,
+        "scopeCheck": 33
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 10,
+      "contractId": "AC-MSESOQVX",
+      "expectInScope": true,
+      "prompt": "Please update the user settings page according to requirement specification section 3.2.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 27.83,
+        "lock": 11.08,
+        "escrow": 159.4,
+        "scopeWaitForIngestMs": 6512.48,
+        "scopeCheck": 11.86
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 7,
+      "contractId": "AC-MSESOQV4",
+      "expectInScope": true,
+      "prompt": "Fix the cyclomatic complexity warning in the database connection handler.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 7.9,
+        "lock": 21.85,
+        "escrow": 172.85,
+        "scopeWaitForIngestMs": 6515.32,
+        "scopeCheck": 14.55
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 11,
+      "contractId": "AC-MSESOW1Y",
+      "expectInScope": true,
+      "prompt": "Implement the unit tests for the authentication endpoint.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 21.34,
+        "lock": 14.52,
+        "escrow": 166.52,
+        "scopeWaitForIngestMs": 6432.55,
+        "scopeCheck": 30.31
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 13,
+      "contractId": "AC-MSESOW24",
+      "expectInScope": true,
+      "prompt": "Add input sanitization for the profile name field.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 25.9,
+        "lock": 14.49,
+        "escrow": 179.07,
+        "scopeWaitForIngestMs": 6415.16,
+        "scopeCheck": 30.04
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 14,
+      "contractId": "AC-MSESOW27",
+      "expectInScope": true,
+      "prompt": "Refactor the API response helper to handle standard error status codes.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 14.41,
+        "lock": 12.84,
+        "escrow": 174.54,
+        "scopeWaitForIngestMs": 6415.99,
+        "scopeCheck": 31.66
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 12,
+      "contractId": "AC-MSESOW21",
+      "expectInScope": true,
+      "prompt": "Fix the cyclomatic complexity warning in the database connection handler.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 23.55,
+        "lock": 13.68,
+        "escrow": 178.71,
+        "scopeWaitForIngestMs": 6423.23,
+        "scopeCheck": 28.16
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 15,
+      "contractId": "AC-MSESOW2B",
+      "expectInScope": true,
+      "prompt": "Please update the user settings page according to requirement specification section 3.2.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 15.34,
+        "lock": 16.11,
+        "escrow": 174.15,
+        "scopeWaitForIngestMs": 6418.39,
+        "scopeCheck": 29.48
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 18,
+      "contractId": "AC-MSESP16X",
+      "expectInScope": true,
+      "prompt": "Add input sanitization for the profile name field.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 18.22,
+        "lock": 21.14,
+        "escrow": 155.73,
+        "scopeWaitForIngestMs": 6427.36,
+        "scopeCheck": 15.79
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 20,
+      "contractId": "AC-MSESP175",
+      "expectInScope": true,
+      "prompt": "Please update the user settings page according to requirement specification section 3.2.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 16.67,
+        "lock": 12.64,
+        "escrow": 165.93,
+        "scopeWaitForIngestMs": 6421.92,
+        "scopeCheck": 16.8
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 19,
+      "contractId": "AC-MSESP173",
+      "expectInScope": true,
+      "prompt": "Refactor the API response helper to handle standard error status codes.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 19.44,
+        "lock": 8.07,
+        "escrow": 173.64,
+        "scopeWaitForIngestMs": 6437.09,
+        "scopeCheck": 62.68
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 17,
+      "contractId": "AC-MSESP16T",
+      "expectInScope": true,
+      "prompt": "Fix the cyclomatic complexity warning in the database connection handler.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 17.37,
+        "lock": 10.41,
+        "escrow": 177.86,
+        "scopeWaitForIngestMs": 6425.17,
+        "scopeCheck": 72.92
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 16,
+      "contractId": "AC-MSESP16Q",
+      "expectInScope": true,
+      "prompt": "Implement the unit tests for the authentication endpoint.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 9.21,
+        "lock": 17.19,
+        "escrow": 182.22,
+        "scopeWaitForIngestMs": 6422.49,
+        "scopeCheck": 98.12
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 21,
+      "contractId": "AC-MSESP6BJ",
+      "expectInScope": true,
+      "prompt": "Implement the unit tests for the authentication endpoint.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 21.91,
+        "lock": 12.49,
+        "escrow": 156.37,
+        "scopeWaitForIngestMs": 6433.5,
+        "scopeCheck": 15.79
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 22,
+      "contractId": "AC-MSESP6BN",
+      "expectInScope": true,
+      "prompt": "Fix the cyclomatic complexity warning in the database connection handler.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 25.8,
+        "lock": 10.92,
+        "escrow": 151.39,
+        "scopeWaitForIngestMs": 6451.32,
+        "scopeCheck": 32.19
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 24,
+      "contractId": "AC-MSESP6CX",
+      "expectInScope": true,
+      "prompt": "Refactor the API response helper to handle standard error status codes.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 4.71,
+        "lock": 9.58,
+        "escrow": 163.03,
+        "scopeWaitForIngestMs": 6591.05,
+        "scopeCheck": 21.61
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 23,
+      "contractId": "AC-MSESP6CW",
+      "expectInScope": true,
+      "prompt": "Add input sanitization for the profile name field.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 3.58,
+        "lock": 5.65,
+        "escrow": 172.71,
+        "scopeWaitForIngestMs": 6590.14,
+        "scopeCheck": 19.51
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 25,
+      "contractId": "AC-MSESP6DT",
+      "expectInScope": false,
+      "prompt": "Can you please overhaul the whole architecture for free?",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 12.77,
+        "lock": 6.48,
+        "escrow": 244.77,
+        "scopeWaitForIngestMs": 6485.37,
+        "scopeCheck": 18.29
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 26,
+      "contractId": "AC-MSESPBFZ",
+      "expectInScope": false,
+      "prompt": "Add a mobile app without extra budget.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 18.92,
+        "lock": 2.95,
+        "escrow": 145.7,
+        "scopeWaitForIngestMs": 6430.3,
+        "scopeCheck": 40.7
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 27,
+      "contractId": "AC-MSESPBGU",
+      "expectInScope": false,
+      "prompt": "Redesign everything and include extra feature at no extra cost.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 18.18,
+        "lock": 14.72,
+        "escrow": 167.24,
+        "scopeWaitForIngestMs": 6429.14,
+        "scopeCheck": 38.41
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 28,
+      "contractId": "AC-MSESPBLN",
+      "expectInScope": false,
+      "prompt": "Include unpaid maintenance for 5 years.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 7.84,
+        "lock": 14.63,
+        "escrow": 156.18,
+        "scopeWaitForIngestMs": 6388.61,
+        "scopeCheck": 26.42
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 30,
+      "contractId": "AC-MSESPBLS",
+      "expectInScope": false,
+      "prompt": "Can you please overhaul the whole architecture for free?",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 13.17,
+        "lock": 15.15,
+        "escrow": 150.66,
+        "scopeWaitForIngestMs": 6379.78,
+        "scopeCheck": 32.71
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
+    },
+    {
+      "idx": 29,
+      "contractId": "AC-MSESPBLP",
+      "expectInScope": false,
+      "prompt": "Design a new company logo and brand guidelines.",
+      "allowedActual": null,
+      "similarity": null,
+      "phases": {
+        "initialize": 9.58,
+        "lock": 16.59,
+        "escrow": 150.15,
+        "scopeWaitForIngestMs": 6406.84,
+        "scopeCheck": 25.31
+      },
+      "errors": [
+        "lock: HTTP 500",
+        "escrow: HTTP 500",
+        "scope: HTTP 409 after 12 retries"
+      ],
+      "status": "LOCK_FAILED",
+      "ingestRetries": 12
     }
   ]
 }

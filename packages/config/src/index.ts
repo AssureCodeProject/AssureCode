@@ -3,6 +3,49 @@
  */
 import { z } from 'zod';
 import pino from 'pino';
+import { readFileSync, existsSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// ── .env ───────────────────────────────────────────────────────
+//
+// Nothing loaded this. Every Node service read process.env directly, so
+// starting one without exporting the environment first — `node
+// apps/api-gateway/dist/server.js`, which is what `npm start` does — silently
+// took every default in the schema below. DATABASE_URL fell back to
+// localhost:5432, the service reported healthy on /healthz, and then every
+// request failed with ECONNREFUSED against a database that was never there.
+//
+// The failure mode is what makes this worth fixing in the shared package
+// rather than per service: a missing .env does not look like a configuration
+// error, it looks like the database is down.
+//
+// Real environment variables always win, so containers and CI are unaffected.
+
+let dotenvLoaded = false;
+
+/** Load repo-root .env into process.env, without overwriting anything set. */
+export function loadDotEnv(explicitPath?: string): void {
+  if (dotenvLoaded && !explicitPath) return;
+  dotenvLoaded = true;
+
+  // packages/config/dist/index.js -> packages/config -> packages -> repo root
+  const here = dirname(fileURLToPath(import.meta.url));
+  const envPath = explicitPath ?? resolve(here, '..', '..', '..', '.env');
+  if (!existsSync(envPath)) return;
+
+  for (const line of readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#') || !trimmed.includes('=')) continue;
+    const eq = trimmed.indexOf('=');
+    const key = trimmed.slice(0, eq).trim();
+    if (process.env[key] !== undefined) continue;
+    process.env[key] = trimmed
+      .slice(eq + 1)
+      .trim()
+      .replace(/^["']|["']$/g, '');
+  }
+}
 
 // ── Environment schema ─────────────────────────────────────────
 export const AppConfigSchema = z.object({
@@ -55,6 +98,9 @@ export type AppConfig = z.infer<typeof AppConfigSchema>;
 
 /** Load + validate environment. Throws on invalid config in production. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
+  // Before reading, not after: the schema's defaults would otherwise win over
+  // values that are sitting in .env unread.
+  if (env === process.env) loadDotEnv();
   const parsed = AppConfigSchema.safeParse(env);
   if (!parsed.success) {
     if (env.NODE_ENV === 'production') {

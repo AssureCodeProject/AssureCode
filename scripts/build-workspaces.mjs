@@ -20,6 +20,7 @@ const ORDER = [
   'packages/config',
   'packages/event-bus',
   'packages/ledger-client',
+  'packages/oracle',
   'apps/api-gateway',
   'apps/ci-worker',
   'apps/settlement-worker',

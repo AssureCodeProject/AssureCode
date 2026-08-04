@@ -34,6 +34,7 @@ which per-message thresholding cannot do.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 
@@ -80,6 +81,14 @@ class ScopeAdherence:
 class PostgresScopeLog:
     """Writes to and reads from the scope_checks table (V008)."""
 
+    # Bounded, because libpq's default is to wait indefinitely. Without this the
+    # trust score endpoint hung for as long as the client would hold the socket
+    # open — measured at over 60 seconds against an unresponsive Supabase host —
+    # rather than raising ScopeLogUnavailable and being turned into the 503 the
+    # callers already handle. An unreachable log has to fail, and failing has to
+    # take a bounded amount of time or it is indistinguishable from working.
+    CONNECT_TIMEOUT_SECONDS = int(os.environ.get("SCOPE_LOG_CONNECT_TIMEOUT", "10"))
+
     def __init__(self, database_url: str) -> None:
         self._database_url = database_url
         self._conn = None
@@ -92,7 +101,11 @@ class PostgresScopeLog:
         except ImportError as err:  # pragma: no cover — packaging issue
             raise ScopeLogUnavailable("psycopg is not installed") from err
         try:
-            self._conn = psycopg.connect(self._database_url, autocommit=True)
+            self._conn = psycopg.connect(
+                self._database_url,
+                autocommit=True,
+                connect_timeout=self.CONNECT_TIMEOUT_SECONDS,
+            )
         except Exception as err:
             self._conn = None
             raise ScopeLogUnavailable(f"cannot connect to the scope log: {err}") from err

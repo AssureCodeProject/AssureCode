@@ -20,7 +20,7 @@ import { createEscrowAdapter } from '@assurecode/stripe-adapter';
 import { EVENT_TOPICS, EventEnvelope, SettlementRequested } from '@assurecode/shared';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
-import { OracleStore } from './oracle-store.js';
+import { OracleStore } from '@assurecode/oracle';
 
 const config = loadConfig();
 const logger = createLogger('settlement-worker', config.LOG_LEVEL);

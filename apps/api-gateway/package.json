@@ -15,6 +15,7 @@
     "@assurecode/config": "*",
     "@assurecode/event-bus": "*",
     "@assurecode/ledger-client": "*",
+    "@assurecode/oracle": "*",
     "@assurecode/shared": "*",
     "@assurecode/stripe-adapter": "*",
     "@assurecode/telemetry": "*",

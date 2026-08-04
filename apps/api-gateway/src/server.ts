@@ -25,6 +25,7 @@ import {
   getCorrelationId,
 } from '@assurecode/config';
 import { LedgerClient } from '@assurecode/ledger-client';
+import { OracleStore, TRUST_SCORE_THRESHOLD } from '@assurecode/oracle';
 import { createEscrowAdapter, type EscrowPort } from '@assurecode/stripe-adapter';
 import { createEventBus, OutboxRelay, InMemoryBus } from '@assurecode/event-bus';
 import {
@@ -47,6 +48,10 @@ const logger = createLogger('api-gateway', config.LOG_LEVEL);
 const databaseUrl = getDatabaseUrl(config);
 const dbPool = new pg.Pool({ connectionString: databaseUrl });
 const ledgerClient = new LedgerClient(databaseUrl);
+// Read-only here. The settlement worker owns writing oracle state and acting on
+// the verdict; the gateway shares the same `evaluate()` so what the UI shows and
+// what releases the money cannot disagree.
+const oracleStore = new OracleStore(dbPool);
 const escrowAdapter: EscrowPort = createEscrowAdapter({
   secretKey: config.STRIPE_SECRET_KEY || 'sk_test_mock',
   webhookSecret: config.STRIPE_WEBHOOK_SECRET || 'whsec_mock',
@@ -775,6 +780,27 @@ server.get<{
         freelancerId: string;
         trustScore: number;
         criticalVulns: number;
+        scopeMeasured: boolean;
+        threshold: number;
+        // The per-term arithmetic that produced the score. This is the whole
+        // interpretability claim, so it is forwarded rather than reduced to a
+        // single number the caller has to take on trust.
+        terms: Array<{
+          name: string;
+          value: number;
+          weight: number;
+          contribution: number;
+          justification: string;
+        }>;
+        telemetry: {
+          maintainability: number;
+          cyclomaticComplexity: number;
+          passedTests: number;
+          totalTests: number;
+          vulnerabilities: number;
+          criticalVulns: number;
+          highVulns: number;
+        };
         justifications: string[];
         scoredAt: string;
       }
@@ -851,7 +877,19 @@ server.get<{
   }
 
   const aiServiceUrl = process.env.AI_SERVICE_URL || 'http://localhost:8000';
-  let scored: { trust_score: number; justifications: string[]; critical_vulnerabilities: number };
+  let scored: {
+    trust_score: number;
+    justifications: string[];
+    critical_vulnerabilities: number;
+    scope_measured: boolean;
+    terms: Array<{
+      name: string;
+      value: number;
+      weight: number;
+      contribution: number;
+      justification: string;
+    }>;
+  };
 
   try {
     const aiRes = await fetch(`${aiServiceUrl}/xai/score`, {
@@ -904,7 +942,133 @@ server.get<{
 
   await eventBus.publish(EVENT_TOPICS.XAI_SCORED, scorePayload, correlationId);
 
-  return reply.status(200).send(scorePayload);
+  return reply.status(200).send({
+    ...scorePayload,
+    scopeMeasured: scored.scope_measured,
+    threshold: TRUST_SCORE_THRESHOLD,
+    terms: scored.terms,
+    telemetry: {
+      maintainability: audit.maintainability,
+      cyclomaticComplexity: audit.cyclomaticComplexity,
+      passedTests: audit.passedTests,
+      totalTests: audit.totalTests,
+      vulnerabilities: audit.vulnerabilities,
+      criticalVulns: audit.criticalVulns,
+      highVulns: audit.highVulns,
+    },
+  });
+});
+
+// ── Settlement Oracle State ─────────────────────────────────────────────
+//
+// The settlement UI previously rendered five hardcoded "VERIFIED" oracle cards
+// from a mock module, so it showed a passing oracle for contracts that had
+// never been audited. This is the same verdict the settlement worker acts on —
+// `OracleStore.evaluate` — read through the shared package, so the screen and
+// the payment cannot disagree.
+server.get<{
+  Params: { contractId: string };
+  Reply:
+    | {
+        contractId: string;
+        freelancerId: string | null;
+        approved: boolean;
+        threshold: number;
+        signals: {
+          astPassed: boolean;
+          testsPassed: boolean;
+          securityPassed: boolean;
+          scopePassed: boolean;
+          trustScore: number | null;
+          criticalVulns: number | null;
+        };
+        blockers: string[];
+        scopeChecks: { allowed: number; rejected: number; total: number };
+        escrow: {
+          paymentIntentId: string;
+          amountCents: number;
+          status: string;
+          createdAt: string;
+        } | null;
+        settlement: { status: string; transferId: string | null; updatedAt: string } | null;
+      }
+    | { error: string };
+}>('/api/contracts/:contractId/oracle', async (request, reply) => {
+  const { contractId } = request.params;
+
+  const chain = await ledgerClient.getChain(contractId);
+  if (chain.length === 0) {
+    return reply.status(404).send({ error: 'Contract not found' });
+  }
+
+  try {
+    const verdict = await oracleStore.evaluate(contractId);
+
+    const scopeRes = await dbPool.query(
+      `SELECT count(*) FILTER (WHERE allowed)     AS allowed,
+              count(*) FILTER (WHERE NOT allowed) AS rejected,
+              count(*)                            AS total
+         FROM scope_checks WHERE contract_id = $1`,
+      [contractId],
+    );
+    const sc = scopeRes.rows[0] ?? {};
+
+    // Any escrow row, not just PENDING: after a capture the row is RELEASED,
+    // and the UI needs to be able to say so.
+    const escrowRes = await dbPool.query(
+      `SELECT payment_intent_id, amount_cents, status, created_at
+         FROM escrow WHERE contract_id = $1
+        ORDER BY created_at DESC LIMIT 1`,
+      [contractId],
+    );
+    const settlementRes = await dbPool.query(
+      `SELECT status, transfer_id, updated_at FROM settlements WHERE contract_id = $1`,
+      [contractId],
+    );
+
+    // The settlement UI needs the payee. It used to send the literal 'f_alex'.
+    const contractRes = await dbPool.query(
+      `SELECT freelancer_id FROM contracts WHERE contract_id = $1`,
+      [contractId],
+    );
+
+    return reply.status(200).send({
+      contractId,
+      freelancerId: contractRes.rows[0]?.freelancer_id ?? null,
+      approved: verdict.approved,
+      threshold: TRUST_SCORE_THRESHOLD,
+      signals: verdict.signals,
+      blockers: verdict.blockers,
+      scopeChecks: {
+        allowed: Number(sc.allowed ?? 0),
+        rejected: Number(sc.rejected ?? 0),
+        total: Number(sc.total ?? 0),
+      },
+      escrow:
+        escrowRes.rowCount === 0
+          ? null
+          : {
+              paymentIntentId: escrowRes.rows[0].payment_intent_id,
+              amountCents: Number(escrowRes.rows[0].amount_cents),
+              status: escrowRes.rows[0].status,
+              createdAt: new Date(escrowRes.rows[0].created_at).toISOString(),
+            },
+      settlement:
+        settlementRes.rowCount === 0
+          ? null
+          : {
+              status: settlementRes.rows[0].status,
+              transferId: settlementRes.rows[0].transfer_id,
+              updatedAt: new Date(settlementRes.rows[0].updated_at).toISOString(),
+            },
+    });
+  } catch (err) {
+    // An unreadable oracle is not an approving one, and it is not an empty one
+    // either — returning a body of `false` signals would render as a definite
+    // rejection rather than as "we could not find out".
+    request.log.error({ err, contractId }, 'Oracle state lookup failed');
+    return reply.status(503).send({ error: 'Oracle state unavailable' });
+  }
 });
 
 // ── Chat & Scope Guard Interceptors (Tasks 3.2 & 3.4) ────────────────────
@@ -928,6 +1092,20 @@ server.post<{
 
   const scopeGuardUrl = process.env.SCOPE_GUARD_URL || 'http://localhost:8001';
 
+  // No permissive fallback. This used to deliver the message when the guard was
+  // unreachable *and* when it answered with any non-2xx — logging "allowing with
+  // default check", which is not a check. Two things went wrong at once: an
+  // out-of-scope request got through whenever the guard was down, and because
+  // the guard is what writes scope_checks, the trust score's adherence term was
+  // computed over a history that silently omitted those messages. An
+  // unavailable guard is an unavailable guard; say so.
+  let checkResult: {
+    allowed: boolean;
+    similarity_score: number;
+    reason: string;
+    suggested_mediation?: string;
+  };
+
   try {
     const scopeRes = await fetch(`${scopeGuardUrl}/scope/check`, {
       method: 'POST',
@@ -936,40 +1114,50 @@ server.post<{
       signal: AbortSignal.timeout(5000),
     });
 
-    if (scopeRes.ok) {
-      const checkResult = (await scopeRes.json()) as {
-        allowed: boolean;
-        similarity_score: number;
-        reason: string;
-        suggested_mediation?: string;
-      };
-
-      if (!checkResult.allowed) {
-        logger.warn({ contractId, reason: checkResult.reason }, 'Scope Guard intercepted off-scope message');
-
-        const correlationId = randomUUID();
-        await eventBus.publish(
-          EVENT_TOPICS.SCOPE_CHECKED,
-          {
-            contractId,
-            message,
-            allowed: false,
-            reason: checkResult.reason,
-            mediation: checkResult.suggested_mediation,
-          },
-          correlationId,
-        );
-
-        return reply.status(403).send({
-          delivered: false,
-          blocked: true,
-          reason: checkResult.reason,
-          mediation: checkResult.suggested_mediation || 'Off-scope change request blocked by automated Scope Guard.',
-        });
-      }
+    if (!scopeRes.ok) {
+      const detail = await scopeRes.text().catch(() => '');
+      logger.warn({ contractId, status: scopeRes.status, detail }, 'Scope Guard declined to check');
+      // 409 means the guard has no indexed contract to compare against — a
+      // caller-fixable state, so it is propagated rather than flattened to 503.
+      return reply.status(scopeRes.status === 409 ? 409 : 503).send({
+        error:
+          `Message not delivered: the scope guard returned ${scopeRes.status} and the request ` +
+          `was therefore never checked. ${detail}`,
+      });
     }
+
+    checkResult = (await scopeRes.json()) as typeof checkResult;
   } catch (err) {
-    logger.warn({ contractId, err }, 'Scope Guard service unreachable, allowing with default check');
+    logger.error({ contractId, err }, 'Scope Guard unreachable');
+    return reply.status(503).send({
+      error:
+        'Message not delivered: the scope guard is unreachable, so this request could not be ' +
+        'checked against the contract.',
+    });
+  }
+
+  if (!checkResult.allowed) {
+    logger.warn({ contractId, reason: checkResult.reason }, 'Scope Guard intercepted off-scope message');
+
+    const rejectionId = randomUUID();
+    await eventBus.publish(
+      EVENT_TOPICS.SCOPE_CHECKED,
+      {
+        contractId,
+        message,
+        allowed: false,
+        reason: checkResult.reason,
+        mediation: checkResult.suggested_mediation,
+      },
+      rejectionId,
+    );
+
+    return reply.status(403).send({
+      delivered: false,
+      blocked: true,
+      reason: checkResult.reason,
+      mediation: checkResult.suggested_mediation || 'Off-scope change request blocked by automated Scope Guard.',
+    });
   }
 
   const correlationId = randomUUID();

@@ -1,26 +1,24 @@
 {
-  "name": "@assurecode/settlement-worker",
+  "name": "@assurecode/oracle",
   "version": "1.0.0-alpha.0",
   "private": true,
   "type": "module",
-  "main": "./dist/worker.js",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
   "scripts": {
-    "dev": "tsx watch src/worker.ts",
-    "start": "node dist/worker.js",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@assurecode/config": "*",
-    "@assurecode/event-bus": "*",
-    "@assurecode/ledger-client": "*",
-    "@assurecode/oracle": "*",
-    "@assurecode/shared": "*",
-    "@assurecode/stripe-adapter": "*",
     "pg": "^8.12.0"
   },
-  "types": "./dist/worker.d.ts",
   "devDependencies": {
     "@types/node": "^22.10.2",
     "@types/pg": "^8.11.10",

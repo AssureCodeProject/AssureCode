@@ -7,6 +7,7 @@ abstracts where that data comes from:
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Protocol, Sequence, runtime_checkable
 
@@ -165,7 +166,24 @@ class Neo4jGraphRepo:
         try:
             from neo4j import GraphDatabase
 
-            self._driver = GraphDatabase.driver(self._uri, auth=(self._user, self._password))
+            # Bounded timeouts, because `GraphDatabase.driver()` does not connect
+            # — the first query does. With the library defaults (30s connection
+            # timeout, 60s acquisition, 30s of transaction retries) an
+            # unreachable Neo4j stalled the caller for ~90 seconds before the
+            # `except` below could fall back. That was measured on the trust
+            # score endpoint, where persisting the score to the graph is a side
+            # effect: the score itself was already computed, and the request
+            # hung anyway. A degradation path that takes longer than the client
+            # is willing to wait is not a degradation path.
+            self._driver = GraphDatabase.driver(
+                self._uri,
+                auth=(self._user, self._password),
+                connection_timeout=float(os.environ.get("NEO4J_CONNECTION_TIMEOUT", "3.0")),
+                connection_acquisition_timeout=float(
+                    os.environ.get("NEO4J_ACQUISITION_TIMEOUT", "5.0")
+                ),
+                max_transaction_retry_time=float(os.environ.get("NEO4J_RETRY_TIME", "2.0")),
+            )
         except Exception:  # pragma: no cover — import/connect failures are environment-bound
             self._driver = None
 

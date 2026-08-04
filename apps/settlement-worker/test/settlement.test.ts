@@ -16,7 +16,7 @@ import pg from 'pg';
 import { loadDotEnv } from '../../../tools/test-support/env.js';
 import { postgresAvailable, announceSkip } from '../../../tools/test-support/infra.js';
 import { buildDbConfig } from '@assurecode/config';
-import { OracleStore, TRUST_SCORE_THRESHOLD } from '../src/oracle-store.js';
+import { OracleStore, TRUST_SCORE_THRESHOLD } from '@assurecode/oracle';
 
 loadDotEnv();
 

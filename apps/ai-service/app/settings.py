@@ -6,14 +6,27 @@ a fake adapter in via EMBED_PROVIDER= fake and a real Neo4j/Postgres in dev.
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# app/settings.py -> apps/ai-service -> apps -> repo root.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
 
 class Settings(BaseSettings):
+    # env_file paths are resolved against the *process* working directory, so a
+    # bare ".env" meant the service's configuration depended on where uvicorn
+    # was launched from. Started from apps/ai-service — which is what the README
+    # says to do — no .env was found and every setting silently took its
+    # default, including DATABASE_URL. The service then reported healthy while
+    # pointing at a localhost Postgres that does not exist, and the first
+    # symptom was a request that hung. Anchor to the repo root instead.
+    #
+    # A service-local .env still wins, for per-service overrides.
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(_REPO_ROOT / ".env", _REPO_ROOT / "apps" / "ai-service" / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,

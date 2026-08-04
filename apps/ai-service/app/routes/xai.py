@@ -110,6 +110,7 @@ class XaiScoreResponse(BaseModel):
     trust_score: float
     critical_vulnerabilities: int
     scope_measured: bool
+    trust_score_persisted: bool
     terms: List[TermBreakdown]
     justifications: List[str]
     scored_at: str
@@ -237,8 +238,15 @@ def calculate_xai_score(
         )
 
     # Persist the score on the freelancer node where the graph repo supports it.
+    #
+    # This is a side effect, not part of the score, so a graph outage must not
+    # fail the request — but it must not be reported as a success either.
+    # Neo4jGraphRepo degrades to an in-process mirror that nothing else reads,
+    # so without this flag a caller has no way to distinguish "written to the
+    # graph" from "written to a dictionary that dies with the process".
+    trust_score_persisted = False
     if hasattr(graph_repo, "update_trust_score"):
-        graph_repo.update_trust_score(req.freelancer_id, trust_score)
+        trust_score_persisted = bool(graph_repo.update_trust_score(req.freelancer_id, trust_score))
 
     return XaiScoreResponse(
         contract_id=req.contract_id,
@@ -246,6 +254,7 @@ def calculate_xai_score(
         trust_score=trust_score,
         critical_vulnerabilities=tel.critical_vulnerabilities,
         scope_measured=s_scope is not None,
+        trust_score_persisted=trust_score_persisted,
         terms=terms,
         justifications=justifications,
         scored_at=datetime.now(timezone.utc).isoformat(),

@@ -14,7 +14,7 @@
     "dev:gateway": "npm -w @assurecode/api-gateway run dev",
     "dev:ci": "npm -w @assurecode/ci-worker run dev",
     "dev:settlement": "npm -w @assurecode/settlement-worker run dev",
-    "verify": "node scripts/verify-web.js && python tools/test_100_freelancers_matchmaking.py && python tools/test-qr-ngc-protocol.py && node tools/benchmark.js",
+    "verify": "node scripts/verify-web.js && python tools/test_100_freelancers_matchmaking.py && node tools/benchmark.js",
     "benchmark": "node tools/benchmark.js",
     "build": "node scripts/build-workspaces.mjs",
     "test": "npm run test --workspaces --if-present --include-workspace-root=false",

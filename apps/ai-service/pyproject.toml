@@ -27,6 +27,10 @@ full = [
     "psycopg[binary]>=3.2.0",
     "pgvector>=0.3.6",
     "boto3>=1.35.0",
+    # FIPS 204 ML-DSA-87 for the ledger's Merkle-root signatures. Pure Python,
+    # so it installs on Windows without a toolchain, which liboqs-python does
+    # not. See packages/ledger-client/src/ml_dsa.py.
+    "dilithium-py>=1.4.0",
 ]
 
 [tool.pytest.ini_options]

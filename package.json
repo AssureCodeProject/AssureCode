@@ -22,6 +22,7 @@
     "infra:down": "docker compose -f infra/docker-compose.yml down"
   },
   "devDependencies": {
+    "@types/pg": "^8.11.10",
     "neo4j-driver": "^5.28.3"
   },
   "engines": {

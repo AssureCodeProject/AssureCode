@@ -454,6 +454,17 @@ server.post<{
       { paymentIntentId: pi.paymentIntentId, amountCents, status: pi.status },
     );
 
+    // The escrow table has existed since V001 and was never written to, so the
+    // settlement worker had no way to look up which PaymentIntent to capture —
+    // which is why it only ever called transferToFreelancer with a placeholder
+    // destination account. Record it here; capture needs it.
+    await dbPool.query(
+      `INSERT INTO escrow (payment_intent_id, contract_id, amount_cents, status)
+       VALUES ($1, $2, $3, 'PENDING')
+       ON CONFLICT (payment_intent_id) DO NOTHING`,
+      [pi.paymentIntentId, contractId, amountCents],
+    );
+
     try {
       await dbPool.query(
         `INSERT INTO payment_events (contract_id, event_type, amount_cents, payload, correlation_id, created_at)
@@ -710,23 +721,28 @@ server.get<{
     return reply.status(404).send({ error: 'Contract not found' });
   }
 
-  // Retrieve latest audit event from merkle_ledger
-  const auditEntry = chain.slice().reverse().find(
-    (entry) => entry.actionType === 'AUDIT_COMPLETED' || entry.actionType === 'CI_PASSED'
-  );
-
-  if (!auditEntry) {
-    return reply.status(200).send({
-      maintainability: 0,
-      passedTests: 0,
-      totalTests: 0,
-      vulnerabilities: 0,
-      passed: false,
-      scanDuration: 0,
-    });
+  // audit_results is the record of what the pipeline measured. This used to
+  // reconstruct the numbers by scanning the ledger for an AUDIT_COMPLETED
+  // action and, failing that, returned a body of zeros with HTTP 200 — which
+  // reads as "maintainability 0, no vulnerabilities" rather than "never ran".
+  let res: Record<string, unknown>;
+  try {
+    const auditRes = await dbPool.query(
+      `SELECT payload FROM audit_results
+        WHERE contract_id = $1
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      [contractId],
+    );
+    if (auditRes.rowCount === 0) {
+      return reply.status(404).send({ error: `No audit has been run for ${contractId}` });
+    }
+    res = auditRes.rows[0].payload as Record<string, unknown>;
+  } catch (err) {
+    request.log.error({ err, contractId }, 'Audit results lookup failed');
+    return reply.status(503).send({ error: 'Audit results unavailable' });
   }
 
-  const res = (auditEntry.payload.auditResults as any) || auditEntry.payload;
   const maintainability = Number(res.maintainability ?? 0);
   const passedTests = Number(res.passedTests ?? 0);
   const totalTests = Number(res.totalTests ?? 0);
@@ -758,6 +774,7 @@ server.get<{
         contractId: string;
         freelancerId: string;
         trustScore: number;
+        criticalVulns: number;
         justifications: string[];
         scoredAt: string;
       }
@@ -770,14 +787,71 @@ server.get<{
     return reply.status(404).send({ error: 'Contract not found' });
   }
 
+  // ── Real telemetry, or no score at all ────────────────────────────────
+  //
+  // This endpoint used to post a hardcoded telemetry literal to the AI service
+  // and fall back to the constant 0.92 whenever that call failed for any
+  // reason — including when it succeeded but returned non-2xx. Every contract
+  // in the system therefore scored 0.92, and that number reached the
+  // specification as a measured result. Objective 4 says the score comes from
+  // telemetry, so the absence of telemetry has to be an error, not a default.
+  let audit: {
+    maintainability: number;
+    cyclomaticComplexity: number;
+    passedTests: number;
+    totalTests: number;
+    vulnerabilities: number;
+    criticalVulns: number;
+    highVulns: number;
+  };
+  let freelancerId: string;
+
+  try {
+    const auditRes = await dbPool.query(
+      `SELECT payload FROM audit_results
+        WHERE contract_id = $1
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      [contractId],
+    );
+
+    if (auditRes.rowCount === 0) {
+      return reply.status(409).send({
+        error:
+          `No audit results recorded for ${contractId}. The trust score is computed from CI ` +
+          `telemetry; run the pipeline before requesting a score.`,
+      });
+    }
+
+    const p = auditRes.rows[0].payload as Record<string, unknown>;
+    audit = {
+      maintainability: Number(p.maintainability),
+      cyclomaticComplexity: Number(p.cyclomaticComplexity),
+      passedTests: Number(p.passedTests),
+      totalTests: Number(p.totalTests),
+      vulnerabilities: Number(p.vulnerabilities),
+      criticalVulns: Number(p.criticalVulns ?? 0),
+      highVulns: Number(p.highVulns ?? 0),
+    };
+
+    const contractRes = await dbPool.query(
+      `SELECT freelancer_id FROM contracts WHERE contract_id = $1`,
+      [contractId],
+    );
+    freelancerId = contractRes.rows[0]?.freelancer_id ?? '';
+  } catch (err) {
+    request.log.error({ err, contractId }, 'Failed to read audit telemetry');
+    return reply.status(503).send({ error: 'Audit telemetry unavailable' });
+  }
+
+  if (!freelancerId) {
+    return reply.status(409).send({
+      error: `Contract ${contractId} has no assigned freelancer, so there is nobody to score.`,
+    });
+  }
+
   const aiServiceUrl = process.env.AI_SERVICE_URL || 'http://localhost:8000';
-  let trustScore = 0.92;
-  let justifications = [
-    'CI Pass Rate: 5/5 tests passed (100%).',
-    'Code Quality: Maintainability index scored 85/100.',
-    'Security Audit: 0 vulnerabilities detected.',
-    'Communication: Sentiment index scored 0.95/1.00.',
-  ];
+  let scored: { trust_score: number; justifications: string[]; critical_vulnerabilities: number };
 
   try {
     const aiRes = await fetch(`${aiServiceUrl}/xai/score`, {
@@ -785,29 +859,35 @@ server.get<{
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contract_id: contractId,
-        freelancer_id: 'f_alex',
+        freelancer_id: freelancerId,
         telemetry: {
-          maintainability: 85,
-          cyclomatic_complexity: 5,
-          passed_tests: 5,
-          total_tests: 5,
-          vulnerabilities: 0,
-          chat_sentiment: 0.95,
+          maintainability: audit.maintainability,
+          cyclomatic_complexity: Math.max(1, audit.cyclomaticComplexity),
+          passed_tests: audit.passedTests,
+          total_tests: audit.totalTests,
+          total_vulnerabilities: audit.vulnerabilities,
+          critical_vulnerabilities: audit.criticalVulns,
+          high_vulnerabilities: audit.highVulns,
         },
       }),
       signal: AbortSignal.timeout(5000),
     });
 
-    if (aiRes.ok) {
-      const data = (await aiRes.json()) as {
-        trust_score: number;
-        justifications: string[];
-      };
-      trustScore = data.trust_score;
-      justifications = data.justifications;
+    if (!aiRes.ok) {
+      // Propagate the scorer's own refusal rather than overriding it. A 409
+      // from the scorer means it declined to score, and answering that with a
+      // number would defeat the point of it having declined.
+      const detail = await aiRes.text().catch(() => '');
+      request.log.warn({ contractId, status: aiRes.status, detail }, 'XAI scorer declined');
+      return reply
+        .status(aiRes.status === 409 || aiRes.status === 422 ? aiRes.status : 502)
+        .send({ error: `Trust score unavailable: scorer returned ${aiRes.status}. ${detail}` });
     }
+
+    scored = (await aiRes.json()) as typeof scored;
   } catch (err) {
-    logger.warn({ contractId, err }, 'AI Service XAI score endpoint unavailable, using calculated score fallback');
+    request.log.error({ contractId, err }, 'XAI scorer unreachable');
+    return reply.status(502).send({ error: 'Trust score unavailable: scorer unreachable' });
   }
 
   const scoredAt = new Date().toISOString();
@@ -815,9 +895,10 @@ server.get<{
 
   const scorePayload = {
     contractId,
-    freelancerId: 'f_alex',
-    trustScore,
-    justifications,
+    freelancerId,
+    trustScore: scored.trust_score,
+    criticalVulns: scored.critical_vulnerabilities,
+    justifications: scored.justifications,
     scoredAt,
   };
 

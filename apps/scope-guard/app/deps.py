@@ -32,17 +32,27 @@ from app.ports.rag_store import (  # noqa: E402
     RagStore,
     RagStoreUnavailable,
 )
+from app.ports.scope_log import (  # noqa: E402
+    InMemoryScopeLog,
+    PostgresScopeLog,
+    ScopeDecisionRecord,
+    ScopeLogUnavailable,
+)
 
 __all__ = [
     "Embedder",
     "InMemoryLedgerAnchor",
     "InMemoryRagStore",
+    "InMemoryScopeLog",
     "LedgerAnchorUnavailable",
     "RagStore",
     "RagStoreUnavailable",
+    "ScopeDecisionRecord",
+    "ScopeLogUnavailable",
     "get_embedder",
     "get_ledger_anchor",
     "get_rag_store",
+    "get_scope_log",
     "get_settings",
     "reset_deps_cache",
 ]
@@ -113,8 +123,17 @@ def get_ledger_anchor():
     return PostgresLedgerAnchor(database_url=settings.database_url)
 
 
+@lru_cache(maxsize=1)
+def get_scope_log():
+    settings = get_settings()
+    if settings.is_test or not settings.database_url:
+        return InMemoryScopeLog()
+    return PostgresScopeLog(database_url=settings.database_url)
+
+
 def reset_deps_cache() -> None:
     get_settings.cache_clear()
     get_embedder.cache_clear()
     get_rag_store.cache_clear()
     get_ledger_anchor.cache_clear()
+    get_scope_log.cache_clear()

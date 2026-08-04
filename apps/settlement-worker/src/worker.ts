@@ -1,16 +1,32 @@
+/**
+ * Settlement oracle.
+ *
+ * Objective 4: the trust score triggers a Node.js oracle that releases escrow.
+ * The gate is `trustScore >= 85 && criticalVulns === 0`, evaluated alongside the
+ * four CI signals, against state held in Postgres rather than in this process.
+ *
+ * Release is a *capture*, not a transfer. StripeEscrowAdapter creates the
+ * PaymentIntent with `capture_method: 'manual'`, which is what makes the funds
+ * genuinely held: the money is authorised at contract time and only moves when
+ * the oracle captures it. The previous implementation skipped the capture and
+ * called transferToFreelancer with the hardcoded destination
+ * 'acct_freelancer_123', so the escrow was never actually released and every
+ * settlement paid the same placeholder account.
+ */
 import { createEventBus } from '@assurecode/event-bus';
-import { loadConfig, createLogger, getDatabaseUrl } from '@assurecode/config';
+import { loadConfig, createLogger, getDatabaseUrl, buildDbConfig } from '@assurecode/config';
 import { LedgerClient } from '@assurecode/ledger-client';
 import { createEscrowAdapter } from '@assurecode/stripe-adapter';
 import { EVENT_TOPICS, EventEnvelope, SettlementRequested } from '@assurecode/shared';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
+import { OracleStore } from './oracle-store.js';
 
 const config = loadConfig();
 const logger = createLogger('settlement-worker', config.LOG_LEVEL);
 const databaseUrl = getDatabaseUrl(config);
 
-const dbPool = new pg.Pool({ connectionString: databaseUrl });
+const dbPool = new pg.Pool(buildDbConfig(databaseUrl));
 const ledgerClient = new LedgerClient(databaseUrl);
 const escrowAdapter = createEscrowAdapter({
   secretKey: config.STRIPE_SECRET_KEY ?? '',
@@ -18,97 +34,116 @@ const escrowAdapter = createEscrowAdapter({
 });
 
 const eventBus = createEventBus(config.REDIS_URL);
-
-interface ContractOracleState {
-  astPassed: boolean;
-  testsPassed: boolean;
-  securityPassed: boolean;
-  scopePassed: boolean;
-}
-
-const oracleStore = new Map<string, ContractOracleState>();
-
-function getState(contractId: string): ContractOracleState {
-  if (!oracleStore.has(contractId)) {
-    oracleStore.set(contractId, {
-      astPassed: false,
-      testsPassed: false,
-      securityPassed: false,
-      scopePassed: false,
-    });
-  }
-  return oracleStore.get(contractId)!;
-}
+const oracle = new OracleStore(dbPool);
 
 async function start() {
-  logger.info('Starting 4-Signal Oracle Settlement Worker...');
+  logger.info('Starting settlement oracle...');
 
-  // 1. Listen for Audit Completed (AST, Tests, Security)
+  // ── 1. CI signals ──────────────────────────────────────────────────
   eventBus.subscribe(EVENT_TOPICS.AUDIT_COMPLETED, async (event: EventEnvelope) => {
     const payload = event.payload as any;
     const contractId = payload.contractId || payload.auditResults?.contractId;
     if (!contractId) return;
-    const state = getState(contractId);
-    
-    // BUG-004: ci-worker publishes audit data FLAT on the payload object, not nested
-    // under payload.auditResults. Support both shapes for robustness.
+
+    // ci-worker publishes audit fields flat on the payload; older producers
+    // nested them under auditResults. Accept both.
     const auditData: any = payload.auditResults ?? payload;
     const maintainability = Number(auditData.maintainability ?? -1);
-    const passedTests    = Number(auditData.passedTests    ?? 0);
-    const totalTests     = Number(auditData.totalTests     ?? 0);
+    const passedTests = Number(auditData.passedTests ?? 0);
+    const totalTests = Number(auditData.totalTests ?? 0);
     const vulnerabilities = Number(auditData.vulnerabilities ?? 1);
 
-    state.astPassed      = maintainability >= 10;
-    state.testsPassed    = passedTests === totalTests && totalTests > 0;
-    state.securityPassed = vulnerabilities === 0;
+    const signals = {
+      astPassed: maintainability >= 10,
+      testsPassed: passedTests === totalTests && totalTests > 0,
+      securityPassed: vulnerabilities === 0,
+    };
 
-    logger.info({ contractId, auditData: { maintainability, passedTests, totalTests, vulnerabilities }, state }, 'Oracle ingested AUDIT_COMPLETED signals');
-    
-    logger.info({ contractId, state }, 'Oracle ingested AUDIT_COMPLETED');
+    try {
+      await oracle.recordAudit(contractId, signals);
+      logger.info({ contractId, signals }, 'Oracle recorded AUDIT_COMPLETED signals');
+    } catch (err: any) {
+      logger.error({ contractId, err: err.message }, 'Failed to persist audit signals');
+    }
   });
 
-  // 2. Listen for Scope Checked
-  eventBus.subscribe(EVENT_TOPICS.SCOPE_CHECKED, async (event: EventEnvelope) => {
+  // ── 2. Trust score ─────────────────────────────────────────────────
+  //
+  // Without this subscription the score was computed, published, and ignored:
+  // nothing in the settlement path ever read it, so the ">= 85" gate the
+  // objective specifies did not exist anywhere in the running system.
+  eventBus.subscribe(EVENT_TOPICS.XAI_SCORED, async (event: EventEnvelope) => {
     const payload = event.payload as any;
     const contractId = payload.contractId;
     if (!contractId) return;
-    const state = getState(contractId);
-    if (payload.allowed) {
-      state.scopePassed = true;
+
+    const trustScore = Number(payload.trustScore);
+    const criticalVulns = Number(payload.criticalVulns);
+    if (!Number.isFinite(trustScore) || !Number.isFinite(criticalVulns)) {
+      logger.error({ contractId, payload }, 'XAI_SCORED missing trustScore or criticalVulns');
+      return;
     }
-    logger.info({ contractId, state }, 'Oracle ingested SCOPE_CHECKED');
+
+    try {
+      await oracle.recordScore(contractId, trustScore, criticalVulns);
+      logger.info({ contractId, trustScore, criticalVulns }, 'Oracle recorded XAI_SCORED');
+    } catch (err: any) {
+      logger.error({ contractId, err: err.message }, 'Failed to persist trust score');
+    }
   });
 
-  // 4. Listen for Settlement Requested
+  // ── 3. Scope decisions ─────────────────────────────────────────────
+  //
+  // The scope signal is derived from scope_checks at evaluation time, so this
+  // subscription exists only to log. Recomputing on read is what stops a single
+  // early in-scope message from latching the signal open.
+  eventBus.subscribe(EVENT_TOPICS.SCOPE_CHECKED, async (event: EventEnvelope) => {
+    const payload = event.payload as any;
+    if (!payload?.contractId) return;
+    logger.info(
+      { contractId: payload.contractId, allowed: payload.allowed },
+      'Scope decision observed (signal is derived from scope_checks on evaluation)',
+    );
+  });
+
+  // ── 4. Settlement ──────────────────────────────────────────────────
   eventBus.subscribe(EVENT_TOPICS.SETTLEMENT_REQUESTED, async (event: EventEnvelope) => {
     const payload = event.payload as SettlementRequested;
     const { contractId, freelancerId, amountCents } = payload;
-    
-    logger.info({ contractId }, 'Evaluating 5-Signal Oracle for settlement');
-    const state = getState(contractId);
-    
-    // Strict Boolean AND. The former fifth signal, videoPassed, is gone along
-    // with the Playwright "visual proof" that always returned verified: true —
-    // it asserted a fact it never established, and no objective required it.
-    const isApproved =
-      state.astPassed &&
-      state.testsPassed &&
-      state.securityPassed &&
-      state.scopePassed;
-
     const correlationId = randomUUID();
 
-    if (!isApproved) {
-      logger.warn({ contractId, state }, 'Settlement REJECTED by Oracle');
+    logger.info({ contractId }, 'Evaluating settlement oracle');
+
+    let verdict;
+    try {
+      verdict = await oracle.evaluate(contractId);
+    } catch (err: any) {
+      // An unreadable oracle is not an approving one.
+      logger.error({ contractId, err: err.message }, 'Oracle evaluation failed');
       await eventBus.publish(
         EVENT_TOPICS.SETTLEMENT_REJECTED,
-        { contractId, reason: 'Oracle conditions not met', state },
-        correlationId
+        { contractId, reason: `Oracle state unavailable: ${err.message}` },
+        correlationId,
       );
       return;
     }
 
-    // Single-fire settlement guard check using settlements table
+    if (!verdict.approved) {
+      logger.warn({ contractId, blockers: verdict.blockers }, 'Settlement REJECTED by oracle');
+      await eventBus.publish(
+        EVENT_TOPICS.SETTLEMENT_REJECTED,
+        {
+          contractId,
+          reason: verdict.blockers.join('; '),
+          signals: verdict.signals,
+          blockers: verdict.blockers,
+        },
+        correlationId,
+      );
+      return;
+    }
+
+    // Single-fire guard: the first INSERT wins, concurrent ones no-op.
     let guardRes;
     try {
       guardRes = await dbPool.query(
@@ -116,85 +151,103 @@ async function start() {
          VALUES ($1, 'PROCESSING')
          ON CONFLICT (contract_id) DO NOTHING
          RETURNING contract_id`,
-        [contractId]
+        [contractId],
       );
-    } catch (dbErr) {
-      logger.error({ contractId, dbErr }, 'Settlements guard table query failed');
-    }
-
-    if (!guardRes || guardRes.rowCount !== 1) {
-      logger.warn(
-        { contractId, rowCount: guardRes?.rowCount },
-        'Settlement request rejected: Failed to acquire DB lock or settlement already in progress',
-      );
+    } catch (dbErr: any) {
+      logger.error({ contractId, err: dbErr.message }, 'Settlement guard query failed');
       return;
     }
 
-    logger.info({ contractId }, 'Settlement APPROVED by Oracle & locked in DB guard. Executing transfer.');
+    if (guardRes.rowCount !== 1) {
+      logger.warn({ contractId }, 'Settlement already in progress or complete; ignoring');
+      return;
+    }
+
+    logger.info(
+      { contractId, trustScore: verdict.signals.trustScore },
+      'Settlement APPROVED. Releasing escrow.',
+    );
 
     try {
-      const transferRes = await escrowAdapter.transferToFreelancer({
-        amountCents,
-        destinationAccountId: 'acct_freelancer_123',
-        contractId,
-      });
+      const held = await oracle.findEscrowPaymentIntent(contractId);
+      if (!held) {
+        throw new Error(
+          `no PENDING escrow PaymentIntent found for ${contractId}; nothing to release`,
+        );
+      }
 
-      const invoicePayload = {
-        amountCents,
+      // Release the held funds. This is the action the whole oracle exists to
+      // authorise.
+      const captured = await escrowAdapter.capturePaymentIntent(held.paymentIntentId);
+
+      const settlementPayload = {
+        contractId,
         freelancerId,
-        transferId: transferRes.transferId,
-        oracleState: state,
+        amountCents: amountCents ?? held.amountCents,
+        paymentIntentId: held.paymentIntentId,
+        captureStatus: captured.status,
+        trustScore: verdict.signals.trustScore,
+        criticalVulns: verdict.signals.criticalVulns,
+        oracleSignals: verdict.signals,
         settledAt: new Date().toISOString(),
       };
 
-      // Atomic DB transaction for Ledger Append + Settlements status update
       const client = await dbPool.connect();
       try {
         await client.query('BEGIN');
-        await ledgerClient.append(contractId, 'INVOICE', invoicePayload, client);
+        // SETTLEMENT_COMPLETED as the ledger action type, so the chain records
+        // what happened rather than a generic INVOICE.
+        await ledgerClient.append(contractId, 'SETTLEMENT_COMPLETED', settlementPayload, client);
+        await client.query(
+          `UPDATE escrow SET status = 'RELEASED' WHERE payment_intent_id = $1`,
+          [held.paymentIntentId],
+        );
         await client.query(
           `UPDATE settlements
-           SET status = 'COMPLETED', transfer_id = $1, updated_at = NOW()
-           WHERE contract_id = $2`,
-          [transferRes.transferId, contractId]
+              SET status = 'COMPLETED', transfer_id = $1, updated_at = NOW()
+            WHERE contract_id = $2`,
+          [held.paymentIntentId, contractId],
         );
         await client.query('COMMIT');
       } catch (txErr) {
         await client.query('ROLLBACK');
         await dbPool.query(
           `UPDATE settlements SET status = 'FAILED', updated_at = NOW() WHERE contract_id = $1`,
-          [contractId]
+          [contractId],
         );
         throw txErr;
       } finally {
         client.release();
       }
 
-      await eventBus.publish(
-        EVENT_TOPICS.SETTLEMENT_COMPLETED,
-        {
-          contractId,
-          amountCents,
-          transferId: transferRes.transferId,
-          completedAt: new Date().toISOString(),
-        },
-        correlationId
+      await eventBus.publish(EVENT_TOPICS.SETTLEMENT_COMPLETED, settlementPayload, correlationId);
+      logger.info(
+        { contractId, paymentIntentId: held.paymentIntentId },
+        'Settlement complete, escrow released',
       );
-
-      logger.info({ contractId, transferId: transferRes.transferId }, 'Settlement complete');
     } catch (err: any) {
       logger.error({ contractId, err: err.message }, 'Settlement execution failed');
+      await dbPool
+        .query(`UPDATE settlements SET status = 'FAILED', updated_at = NOW() WHERE contract_id = $1`, [
+          contractId,
+        ])
+        .catch(() => undefined);
       await eventBus.publish(
         EVENT_TOPICS.SETTLEMENT_REJECTED,
-        { contractId, reason: `Transfer failed: ${err.message}` },
-        correlationId
+        { contractId, reason: `Escrow release failed: ${err.message}` },
+        correlationId,
       );
     }
   });
+
+  logger.info('Settlement oracle ready.');
 }
 
-start().catch(err => {
-  logger.error(err);
-  process.exit(1);
-});
+if (process.env.NODE_ENV !== 'test') {
+  start().catch((err) => {
+    logger.error(err);
+    process.exit(1);
+  });
+}
 
+export { start, oracle };

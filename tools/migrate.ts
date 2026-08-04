@@ -12,8 +12,12 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import pg from 'pg';
+import { buildDbConfig } from '@assurecode/config';
+import { loadDotEnv } from './test-support/env.js';
 
 const { Client } = pg;
+
+loadDotEnv();
 
 const MIGRATIONS_DIR = resolve(import.meta.dirname, '..', 'infra', 'migrations', 'postgres');
 
@@ -51,7 +55,10 @@ async function run() {
   const databaseUrl = await getDatabaseUrl();
   console.log(`[migrate] Connecting to ${databaseUrl.replace(/\/\/[^:]+:[^@]+@/, '//***:***@')}...`);
 
-  const client = new Client({ connectionString: databaseUrl });
+  // Same TLS policy as the services: verification stays on, with the pinned
+  // Supabase root where one is needed. A migration runner that disabled
+  // verification would send the password over an unauthenticated session.
+  const client = new Client(buildDbConfig(databaseUrl));
   await client.connect();
   console.log('[migrate] Connected.');
 

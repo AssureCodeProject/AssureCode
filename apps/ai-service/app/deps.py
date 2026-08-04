@@ -18,6 +18,7 @@ from app.ports.llm_client import (
     OpenAIClient,
 )
 from app.ports.rag_store import InMemoryRagStore, PostgresRagStore, RagStore
+from app.ports.scope_log import InMemoryScopeLog, PostgresScopeLog
 from app.services.matchmaker import Matchmaker
 from app.settings import Settings, get_settings
 
@@ -96,6 +97,15 @@ def get_artifact_store() -> ArtifactStore:
     )
 
 
+@lru_cache(maxsize=1)
+def get_scope_log():
+    """Scope decision log — the source of the trust score's adherence term."""
+    settings = get_settings()
+    if settings.environment == "test" or not settings.database_url:
+        return InMemoryScopeLog()
+    return PostgresScopeLog(database_url=settings.database_url)
+
+
 def reset_deps_cache() -> None:
     """Clear the lru_caches — used by tests that swap settings/adapters."""
     get_embedder.cache_clear()
@@ -104,6 +114,7 @@ def reset_deps_cache() -> None:
     get_rag_store.cache_clear()
     get_llm_client.cache_clear()
     get_artifact_store.cache_clear()
+    get_scope_log.cache_clear()
 
 
 __all__ = [
@@ -114,6 +125,7 @@ __all__ = [
     "get_llm_client",
     "get_matchmaker",
     "get_rag_store",
+    "get_scope_log",
     "get_settings",
     "reset_deps_cache",
 ]

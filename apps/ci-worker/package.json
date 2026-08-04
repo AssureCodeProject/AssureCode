@@ -17,14 +17,16 @@
     "@assurecode/shared": "*",
     "@assurecode/telemetry": "*",
     "@babel/parser": "^7.29.2",
-    "@babel/traverse": "^7.29.0"
+    "@babel/traverse": "^7.29.0",
+    "pg": "^8.13.1"
   },
   "types": "./dist/worker.d.ts",
   "devDependencies": {
+    "@babel/types": "^7.29.0",
     "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
-    "vitest": "^2.1.8",
-    "@babel/types": "^7.29.0"
+    "vitest": "^2.1.8"
   }
 }

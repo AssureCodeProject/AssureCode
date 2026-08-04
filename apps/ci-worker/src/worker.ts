@@ -2,26 +2,35 @@
  * @assurecode/ci-worker — Consumes code.push events, orchestrates zero-trust CI sandbox.
  */
 
-import { loadConfig, createLogger } from '@assurecode/config';
+import { loadConfig, createLogger, getDatabaseUrl } from '@assurecode/config';
 import { createEventBus } from '@assurecode/event-bus';
 import { EVENT_TOPICS, type EventEnvelope } from '@assurecode/shared';
 import { analyzeAST } from './ast-analyzer.js';
 import { performDualLayerScan } from './security-auditor.js';
 import { runInSandbox } from './sandbox-runner.js';
+import { PostgresAuditStore, type AuditStore } from './audit-store.js';
 
 const config = loadConfig();
 const logger = createLogger('ci-worker', config.LOG_LEVEL);
 const eventBus = createEventBus(config.REDIS_URL);
 
+let defaultAuditStore: AuditStore | undefined;
+function getAuditStore(): AuditStore {
+  if (!defaultAuditStore) {
+    defaultAuditStore = new PostgresAuditStore(getDatabaseUrl(config));
+  }
+  return defaultAuditStore;
+}
 
 /**
- * Execute real CI pipeline steps: sandbox runner, AST complexity, hidden test injection, security scan, visual proof.
+ * Execute the zero-trust CI pipeline: sandbox, AST complexity, hidden tests,
+ * dual-layer security scan, then persist and publish the audit telemetry.
  */
 export async function processCodePush(
   contractId: string,
   correlationId: string,
   sampleCode?: string,
-  options?: { workDir?: string },
+  options?: { workDir?: string; auditStore?: AuditStore },
 ): Promise<void> {
   const startTime = Date.now();
   logger.info({ contractId, correlationId }, 'Starting zero-trust CI pipeline');
@@ -82,6 +91,12 @@ export async function processCodePush(
   // Require totalTests > 0 so an indeterminate sandbox result (0/0) does not auto-pass.
   const overallPassed = securityScan.passed && passedTests === totalTests && totalTests > 0 && astResults.maintainabilityIndex > 50;
 
+  // Severity counts travel with the payload. Objective 4's settlement gate is
+  // `trustScore >= 85 && criticalVulns === 0`, and a total vulnerability count
+  // cannot answer the second half of that.
+  const criticalVulns = securityScan.vulnerabilities.filter((v) => v.severity === 'CRITICAL').length;
+  const highVulns = securityScan.vulnerabilities.filter((v) => v.severity === 'HIGH').length;
+
   const auditResults = {
     contractId,
     maintainability: astResults.maintainabilityIndex,
@@ -89,11 +104,18 @@ export async function processCodePush(
     passedTests,
     totalTests,
     vulnerabilities: securityScan.vulnerabilities.length,
+    criticalVulns,
+    highVulns,
     securityScore: securityScan.score,
     passed: overallPassed,
     scanDuration,
     timestamp: new Date().toISOString(),
   };
+
+  // Persist before publishing. If the row cannot be written, the event is not
+  // emitted either — otherwise the oracle would ingest signals for an audit the
+  // score endpoint has no record of, and the two would disagree silently.
+  await (options?.auditStore ?? getAuditStore()).save(auditResults);
 
   logger.info({ contractId, auditResults }, 'CI Pipeline complete, publishing audit.completed');
   await eventBus.publish(EVENT_TOPICS.AUDIT_COMPLETED, auditResults, correlationId);

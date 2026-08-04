@@ -10,10 +10,11 @@ How a decision is made
    answered from an unanchored comparison.
 2. Embed the incoming message with the same model used to embed the contract
    chunks at ingest time.
-3. Retrieve the top-k contract chunks by cosine similarity — HNSW under
-   Postgres, exact cosine in memory.
+3. Retrieve the top-k contract chunks by cosine similarity.
 4. Decide from the best retrieved similarity against a documented threshold.
-5. Return the decision together with H0 and the evidence it rests on.
+5. Record the decision against H0, so it can be audited and so the trust score
+   has a real adherence figure to draw on.
+6. Return the decision together with H0 and the evidence it rests on.
 
 What this replaced
 ------------------
@@ -44,9 +45,12 @@ from app.deps import (
     LedgerAnchorUnavailable,
     RagStore,
     RagStoreUnavailable,
+    ScopeDecisionRecord,
+    ScopeLogUnavailable,
     get_embedder,
     get_ledger_anchor,
     get_rag_store,
+    get_scope_log,
     get_settings,
 )
 
@@ -100,6 +104,7 @@ def check_scope(
     embedder: Embedder = Depends(get_embedder),
     store: RagStore = Depends(get_rag_store),
     anchor=Depends(get_ledger_anchor),
+    scope_log=Depends(get_scope_log),
 ) -> ScopeCheckResponse:
     if not req.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
@@ -154,6 +159,33 @@ def check_scope(
             "Scope Guard alert: this request does not resemble the requirements anchored at "
             f"contract hash {contract_anchor.genesis_hash[:16]}…. To proceed, raise a scope "
             "amendment or a milestone addendum so the change is priced and recorded."
+        )
+
+    # 5. Record it. A scope decision that leaves no trace cannot be audited
+    #    against H0 later, and the trust score's adherence term would be
+    #    computed over an incomplete history without anyone being able to tell.
+    #    The write is therefore part of the request, not a side effect of it: if
+    #    it fails the caller is told, rather than receiving a decision that the
+    #    system has already lost.
+    try:
+        scope_log.record(
+            ScopeDecisionRecord(
+                contract_id=req.contract_id,
+                sender=req.sender,
+                message=req.message,
+                allowed=allowed,
+                similarity=best,
+                threshold=settings.scope_threshold,
+                genesis_hash=contract_anchor.genesis_hash,
+            )
+        )
+    except ScopeLogUnavailable as err:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Scope decision computed (allowed={allowed}, similarity={best:.4f}) but could "
+                f"not be recorded: {err}. Refusing to return an unrecorded decision."
+            ),
         )
 
     return ScopeCheckResponse(

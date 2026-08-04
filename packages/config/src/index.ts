@@ -91,3 +91,7 @@ export function createLogger(name: string, level = process.env.LOG_LEVEL ?? 'inf
 
 export { pino };
 export * from '@assurecode/telemetry';
+
+// ── Database connection (TLS-verified) ─────────────────────────
+export { buildDbConfig } from './db.js';
+export type { DbConnectionConfig, DbSslConfig } from './db.js';

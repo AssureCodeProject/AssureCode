@@ -1,0 +1,120 @@
+"""Composition root for the scope guard.
+
+The retrieval and anchoring adapters live in apps/ai-service so there is exactly
+one implementation of the pgvector query and the H0 lookup. Two copies of that
+SQL in two services would drift, and a scope guard that ranks chunks differently
+from the service that ingested them is worse than one that shares the code.
+The path insert below is the same pattern tools/verify_owasp_2025_cloudflare.py
+uses to score the shipped scanner rather than a copy of it.
+"""
+from __future__ import annotations
+
+import os
+import sys
+from functools import lru_cache
+from pathlib import Path
+
+# apps/scope-guard/app/deps.py -> repo root is 3 levels up.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_AI_SERVICE = _REPO_ROOT / "apps" / "ai-service"
+if str(_AI_SERVICE) not in sys.path:
+    sys.path.insert(0, str(_AI_SERVICE))
+
+from app.ports.embedder import Embedder, FakeEmbedder, SentenceTransformerEmbedder  # noqa: E402
+from app.ports.ledger_anchor import (  # noqa: E402
+    InMemoryLedgerAnchor,
+    LedgerAnchorUnavailable,
+    PostgresLedgerAnchor,
+)
+from app.ports.rag_store import (  # noqa: E402
+    InMemoryRagStore,
+    PostgresRagStore,
+    RagStore,
+    RagStoreUnavailable,
+)
+
+__all__ = [
+    "Embedder",
+    "InMemoryLedgerAnchor",
+    "InMemoryRagStore",
+    "LedgerAnchorUnavailable",
+    "RagStore",
+    "RagStoreUnavailable",
+    "get_embedder",
+    "get_ledger_anchor",
+    "get_rag_store",
+    "get_settings",
+    "reset_deps_cache",
+]
+
+
+class Settings:
+    """Scope-guard configuration, read from the environment."""
+
+    def __init__(self) -> None:
+        self.environment = os.environ.get("NODE_ENV", os.environ.get("ENVIRONMENT", "development"))
+        self.embed_provider = os.environ.get("EMBED_PROVIDER", "sentence-transformers")
+        self.embed_model_name = os.environ.get("EMBED_MODEL_NAME", "all-MiniLM-L6-v2")
+        self.embed_dim = int(os.environ.get("EMBED_DIM", "384"))
+        self.database_url = os.environ.get("DATABASE_URL", "")
+        self.retrieval_k = int(os.environ.get("SCOPE_RETRIEVAL_K", "5"))
+        # Threshold on the best retrieved similarity, measured rather than
+        # chosen: tools/calibrate_scope_threshold.py sweeps it against
+        # all-MiniLM-L6-v2 on a hand-labelled contract.
+        #
+        # Measured 2026-08-04 — in-scope 0.324-0.970, out-of-scope 0.055-0.341.
+        # The classes OVERLAP in [0.324, 0.341], so no threshold separates them
+        # perfectly; 0.2731 maximises accuracy at 14/16 with 2 false positives
+        # and 0 false negatives. Erring toward false positives is deliberate:
+        # wrongly allowing an out-of-scope request costs a scope amendment,
+        # while wrongly flagging an in-scope one blocks legitimate work and
+        # holds a payment.
+        #
+        # That 0.875 is accuracy on the set the threshold was selected from, so
+        # it is a fitting figure and not a generalisation estimate.
+        self.scope_threshold = float(os.environ.get("SCOPE_SIMILARITY_THRESHOLD", "0.2731"))
+
+    @property
+    def is_test(self) -> bool:
+        return self.environment == "test"
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return Settings()
+
+
+@lru_cache(maxsize=1)
+def get_embedder() -> Embedder:
+    settings = get_settings()
+    if settings.embed_provider == "fake" or settings.is_test:
+        return FakeEmbedder(dim=settings.embed_dim)
+    # No silent fallback to FakeEmbedder: hash-bucket vectors would produce
+    # confident-looking similarities that mean nothing, and the caller could not
+    # tell. A missing model is a startup failure.
+    return SentenceTransformerEmbedder(
+        model_name=settings.embed_model_name, dim=settings.embed_dim
+    )
+
+
+@lru_cache(maxsize=1)
+def get_rag_store() -> RagStore:
+    settings = get_settings()
+    if settings.is_test or not settings.database_url:
+        return InMemoryRagStore()
+    return PostgresRagStore(database_url=settings.database_url, dim=settings.embed_dim)
+
+
+@lru_cache(maxsize=1)
+def get_ledger_anchor():
+    settings = get_settings()
+    if settings.is_test or not settings.database_url:
+        return InMemoryLedgerAnchor()
+    return PostgresLedgerAnchor(database_url=settings.database_url)
+
+
+def reset_deps_cache() -> None:
+    get_settings.cache_clear()
+    get_embedder.cache_clear()
+    get_rag_store.cache_clear()
+    get_ledger_anchor.cache_clear()

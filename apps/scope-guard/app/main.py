@@ -1,19 +1,59 @@
 """FastAPI application entrypoint for the AssureCode scope guard.
 
-Tasks 3.3 & 3.4: RAG Agentic Scope Guard & Chat Mediation.
+Objective 3: a RAG mediator that monitors client-freelancer communications and
+prevents scope creep by anchoring requests against the original hashed contract.
+
+How a decision is made
+----------------------
+1. Resolve H0, the contract's genesis ledger hash. Without it there is no
+   verifiable contract to judge against, and the request is refused rather than
+   answered from an unanchored comparison.
+2. Embed the incoming message with the same model used to embed the contract
+   chunks at ingest time.
+3. Retrieve the top-k contract chunks by cosine similarity — HNSW under
+   Postgres, exact cosine in memory.
+4. Decide from the best retrieved similarity against a documented threshold.
+5. Return the decision together with H0 and the evidence it rests on.
+
+What this replaced
+------------------
+The previous implementation matched eight hardcoded regexes ("for free",
+"add mobile app", ...) and returned the literal constant 0.32 when one hit and
+0.89 when none did. No embedding, no retrieval, and no contract: the same
+message scored identically for every contract in the system, and the
+"similarity_score" was not a similarity of anything.
+
+Scope of the check
+------------------
+This is a per-message threshold test: does *this* request resemble the contract?
+It cannot detect cumulative drift, where twenty individually-plausible requests
+add up to a different product. That limitation is inherent to per-message
+thresholding and is the subject of separate work; it is stated here so the
+endpoint is not mistaken for something stronger than it is.
 """
 from __future__ import annotations
 
-import re
 from datetime import datetime, timezone
 from typing import Optional
-from fastapi import FastAPI, HTTPException
+
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
+
+from app.deps import (
+    Embedder,
+    LedgerAnchorUnavailable,
+    RagStore,
+    RagStoreUnavailable,
+    get_embedder,
+    get_ledger_anchor,
+    get_rag_store,
+    get_settings,
+)
 
 app = FastAPI(
     title="AssureCode Scope Guard",
     version="1.0.0a0",
-    description="Chat mediator + cosine-similarity scope check against requirements.",
+    description="RAG scope mediator: retrieval-backed scope checks anchored to the contract hash.",
 )
 
 
@@ -23,24 +63,25 @@ class ScopeCheckRequest(BaseModel):
     sender: str = Field("client", description="Message sender: 'client' or 'freelancer'")
 
 
+class RetrievedEvidence(BaseModel):
+    chunk_idx: int
+    content: str
+    similarity: float
+
+
 class ScopeCheckResponse(BaseModel):
     allowed: bool
     similarity_score: float
     reason: str
     suggested_mediation: Optional[str] = None
     checked_at: str
-
-
-OFF_SCOPE_PATTERNS = [
-    r"for free",
-    r"extra feature",
-    r"without extra budget",
-    r"overhaul the whole",
-    r"add mobile app",
-    r"redesign everything",
-    r"unpaid",
-    r"no extra cost",
-]
+    # ── anchoring (Objective 3) ──────────────────────────────────
+    contract_id: str
+    genesis_hash: str
+    # ── evidence ─────────────────────────────────────────────────
+    threshold: float
+    retrieved: list[RetrievedEvidence]
+    embedding_model: str
 
 
 @app.get("/healthz")
@@ -54,32 +95,85 @@ def root() -> dict[str, str]:
 
 
 @app.post("/scope/check", response_model=ScopeCheckResponse)
-def check_scope(req: ScopeCheckRequest) -> ScopeCheckResponse:
+def check_scope(
+    req: ScopeCheckRequest,
+    embedder: Embedder = Depends(get_embedder),
+    store: RagStore = Depends(get_rag_store),
+    anchor=Depends(get_ledger_anchor),
+) -> ScopeCheckResponse:
     if not req.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
-    text_lower = req.message.lower()
+    settings = get_settings()
 
-    # Check against explicit off-scope patterns
-    is_off_scope = any(re.search(pattern, text_lower) for pattern in OFF_SCOPE_PATTERNS)
+    # 1. Anchor first. A decision that cannot name the contract version it was
+    #    made against is not auditable, which is the whole point of Objective 3.
+    try:
+        contract_anchor = anchor.genesis(req.contract_id)
+    except LedgerAnchorUnavailable as err:
+        raise HTTPException(status_code=409, detail=str(err))
 
-    if is_off_scope:
-        return ScopeCheckResponse(
-            allowed=False,
-            similarity_score=0.32,
-            reason="Out-of-scope request detected: requested changes exceed agreed contract specification without compensation.",
-            suggested_mediation=(
-                "Scope Guard Alert: The requested feature appears to be outside the original contract scope. "
-                "To proceed safely, please create a scope amendment or milestone addendum."
+    # 2. Embed the message.
+    query_vector = embedder.embed(req.message)
+
+    # 3. Retrieve.
+    try:
+        retrieved = store.search(
+            req.contract_id, query_vector.tolist(), k=settings.retrieval_k
+        )
+    except RagStoreUnavailable as err:
+        # 503, never a permissive default. An unreachable corpus is not
+        # evidence that a request is in scope.
+        raise HTTPException(status_code=503, detail=f"Scope corpus unavailable: {err}")
+
+    if not retrieved:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"No contract text indexed for {req.contract_id}. The scope guard has nothing "
+                "to compare against; ingest the contract requirements before checking scope."
             ),
-            checked_at=datetime.now(timezone.utc).isoformat(),
         )
 
-    # In-scope request
+    # 4. Decide on the best match.
+    best = max(r.similarity for r in retrieved)
+    allowed = best >= settings.scope_threshold
+
+    if allowed:
+        reason = (
+            f"Request matches indexed contract requirements "
+            f"(best similarity {best:.3f} >= threshold {settings.scope_threshold:.3f})."
+        )
+        mediation = None
+    else:
+        reason = (
+            f"Request does not match the agreed contract requirements "
+            f"(best similarity {best:.3f} < threshold {settings.scope_threshold:.3f})."
+        )
+        mediation = (
+            "Scope Guard alert: this request does not resemble the requirements anchored at "
+            f"contract hash {contract_anchor.genesis_hash[:16]}…. To proceed, raise a scope "
+            "amendment or a milestone addendum so the change is priced and recorded."
+        )
+
     return ScopeCheckResponse(
-        allowed=True,
-        similarity_score=0.89,
-        reason="Request verified within contract requirements boundary.",
-        suggested_mediation=None,
+        allowed=allowed,
+        similarity_score=round(best, 4),
+        reason=reason,
+        suggested_mediation=mediation,
         checked_at=datetime.now(timezone.utc).isoformat(),
+        contract_id=req.contract_id,
+        genesis_hash=contract_anchor.genesis_hash,
+        threshold=settings.scope_threshold,
+        retrieved=[
+            RetrievedEvidence(
+                chunk_idx=r.chunk_idx,
+                content=r.content[:400],
+                similarity=round(r.similarity, 4),
+            )
+            for r in retrieved
+        ],
+        embedding_model=settings.embed_model_name
+        if settings.embed_provider != "fake"
+        else "fake-hash-embedder",
     )

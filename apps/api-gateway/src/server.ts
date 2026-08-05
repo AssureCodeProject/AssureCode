@@ -221,9 +221,29 @@ server.post<{
   return withIdempotency(dbPool, request, reply, async () => {
     const body = InitializeContractSchema.parse(request.body);
 
-    const contractId = `AC-${Date.now().toString(36).toUpperCase()}`;
+    // `AC-${Date.now().toString(36)}` alone collides: two contracts initialized
+    // in the same millisecond get the same id, and the second one's INSERT
+    // below would fail — or worse, silently attach to the first one's ledger.
+    // The random suffix makes the identifier unique rather than merely usually
+    // unique.
+    const contractId = `AC-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 6).toUpperCase()}`;
     const clientId = randomUUID();
     const correlationId = randomUUID();
+
+    // Persist the contract.
+    //
+    // This endpoint used to mint an id, publish an event, and return — without
+    // ever writing a row. Every contract created through the public API was a
+    // phantom: `merkle_ledger.contract_id` is a foreign key into `contracts`,
+    // so the very next call, /lock, could not append and Objective 1's
+    // "lock agreed business logic into the ledger" was unreachable end to end.
+    // The integration tests missed it because they insert their fixtures
+    // directly.
+    await dbPool.query(
+      `INSERT INTO contracts (contract_id, client_id, title, requirements, budget_cents, deadline, status)
+       VALUES ($1, $2, $3, $4, $5, $6, 'DRAFT')`,
+      [contractId, clientId, body.title, body.requirements, body.budgetCents, body.deadline],
+    );
 
     logger.info(
       { contractId, clientId, title: body.title },

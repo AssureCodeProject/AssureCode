@@ -1,157 +1,218 @@
 #!/usr/bin/env python3
-"""
-AssureCode Benchmark Analyzer (`tools/analyze_benchmark.py`)
+"""Turn docs/benchmarks/benchmark_results.json into BENCHMARK_REPORT.md.
 
-Parses raw benchmark metrics from `docs/benchmarks/benchmark_results.json`,
-computes detailed statistical distributions, RAG Scope accuracy metrics,
-and generates the published benchmark report at `docs/benchmarks/BENCHMARK_REPORT.md`.
+Rewritten against the schema `tools/benchmark.js` actually emits. The previous
+version read a schema no longer produced (`totalE2eLatencyMs`, `testGenLatencyMs`,
+`settleLatencyMs`, `throughputRps`, `successfulContracts`) and would now die on a
+KeyError — which meant the committed report still carried the numbers from the
+simulated benchmark: 100% accuracy, 100% precision, 100% recall, 364 ms p50.
+Those came from a harness that assigned the prediction from the ground-truth
+label and produced every latency with setTimeout.
+
+This version reports only what the run measured, and says so where it did not
+measure something. In particular the old report asserted "Ledger Integrity:
+100% compliant" and "Deadlock / Race Condition Count: 0"; the benchmark tests
+neither, so neither appears here.
 """
 
 import json
-import math
-import os
 import sys
 from pathlib import Path
 
-
-def percentile(data: list[float], p: float) -> float:
-    if not data:
-        return 0.0
-    sorted_d = sorted(data)
-    idx = math.ceil((p / 100.0) * len(sorted_d)) - 1
-    return round(sorted_d[max(0, idx)], 2)
+REQUIRED_KEYS = ("latencyMs", "scopeAccuracy", "results", "readiness")
 
 
-def mean(data: list[float]) -> float:
-    if not data:
-        return 0.0
-    return round(sum(data) / len(data), 2)
+def pct(x: float) -> str:
+    return f"{x:.2f}%"
 
 
-def main():
-    root_dir = Path(__file__).resolve().parent.parent
-    results_file = root_dir / "docs" / "benchmarks" / "benchmark_results.json"
-    report_file = root_dir / "docs" / "benchmarks" / "BENCHMARK_REPORT.md"
+def phase_row(label: str, s: dict | None) -> str:
+    if not s or not s.get("n"):
+        return f"| **{label}** | not measured | | | | | |"
+    return (
+        f"| **{label}** | {s['mean']} | {s['p50']} | {s['p90']} | {s['p99']} | "
+        f"{s['min']} | {s['max']} |"
+    )
+
+
+def main() -> int:
+    root = Path(__file__).resolve().parent.parent
+    results_file = root / "docs" / "benchmarks" / "benchmark_results.json"
+    report_file = root / "docs" / "benchmarks" / "BENCHMARK_REPORT.md"
 
     if not results_file.exists():
-        print(f"Error: Results file not found at {results_file}")
-        sys.exit(1)
+        print(f"Error: {results_file} not found. Run `node tools/benchmark.js` first.")
+        return 1
 
-    with open(results_file, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    data = json.loads(results_file.read_text(encoding="utf-8"))
 
-    total_contracts = data.get("totalContracts", 0)
-    duration_s = data.get("durationSeconds", 0)
-    throughput = data.get("throughputRps", 0)
-    accuracy_data = data.get("scopeAccuracy", {})
-    latency_data = data.get("latencyMs", {})
-    results_list = data.get("results", [])
+    missing = [k for k in REQUIRED_KEYS if k not in data]
+    if missing:
+        print(
+            f"Error: {results_file} is missing {missing}. This analyzer expects the "
+            "schema emitted by the current tools/benchmark.js. Re-run the benchmark "
+            "rather than editing this file to match an older result set."
+        )
+        return 1
 
-    e2e_latencies = [r["totalE2eLatencyMs"] for r in results_list]
-    init_latencies = [r["initLatencyMs"] for r in results_list]
-    test_gen_latencies = [r["testGenLatencyMs"] for r in results_list]
-    lock_latencies = [r["lockLatencyMs"] for r in results_list]
-    escrow_latencies = [r["escrowLatencyMs"] for r in results_list]
-    scope_latencies = [r["scopeLatencyMs"] for r in results_list]
-    settle_latencies = [r["settleLatencyMs"] for r in results_list]
+    lat = data["latencyMs"]
+    acc = data["scopeAccuracy"]
+    ready = data["readiness"]
+    results = data["results"]
+    total = data.get("totalContracts", len(results))
 
-    tp = accuracy_data.get("truePositives", 0)
-    tn = accuracy_data.get("trueNegatives", 0)
-    fp = accuracy_data.get("falsePositives", 0)
-    fn = accuracy_data.get("falseNegatives", 0)
-    acc = accuracy_data.get("accuracy", 0.0)
-    prec = accuracy_data.get("precision", 0.0)
-    rec = accuracy_data.get("recall", 0.0)
-    f1 = accuracy_data.get("f1Score", 0.0)
+    tp = acc.get("truePositives", 0)
+    tn = acc.get("trueNegatives", 0)
+    fp = acc.get("falsePositives", 0)
+    fn = acc.get("falseNegatives", 0)
+    scored = acc.get("scoredContracts", 0)
+    excluded = acc.get("excludedNoVerdict", 0)
 
-    acc_pct = acc if acc > 1.0 else acc * 100.0
-    prec_pct = prec if prec > 1.0 else prec * 100.0
-    rec_pct = rec if rec > 1.0 else rec * 100.0
-    f1_pct = f1 if f1 > 1.0 else f1 * 100.0
+    with_errors = data.get("withErrors", 0)
+    completed = data.get("completed", 0)
+    status_counts = data.get("statusCounts", {})
+    status_lines = "\n".join(
+        f"- `{k}` — {v} ({v / total * 100:.0f}%)" for k, v in sorted(status_counts.items())
+    ) or "- none recorded"
 
-    successful_contracts = data.get("successfulContracts", 0)
-    failed_contracts = data.get("failedContracts", 0)
-    success_rate = (successful_contracts / total_contracts * 100.0) if total_contracts > 0 else 0.0
-    failed_rate = (failed_contracts / total_contracts * 100.0) if total_contracts > 0 else 0.0
+    # Per-contract wall time across the phases this benchmark actually times.
+    e2e = []
+    for r in results:
+        ph = r.get("phases", {})
+        vals = [ph.get(k) for k in ("initialize", "lock", "escrow", "scopeCheck")]
+        if all(isinstance(v, (int, float)) for v in vals):
+            e2e.append(sum(vals))
+    e2e_line = (
+        f"{sum(e2e) / len(e2e):.2f} ms mean over {len(e2e)} contracts"
+        if e2e else "not computable — some contracts did not reach every phase"
+    )
 
-    report_content = f"""# AssureCode System Benchmarking & Performance Evaluation
+    redis_note = (
+        "\n> **Redis was not configured for this run** (`readiness.redis = "
+        f"\"{ready.get('redis')}\"`), so the gateway used the in-process event bus. "
+        "Every latency below therefore excludes network hops to a broker and "
+        "understates a deployed configuration.\n"
+        if ready.get("redis") != "ok" else ""
+    )
 
-> **Publication Report** | Generated on {data.get('timestamp')} | Sample Size: **{total_contracts} Contracts**
+    ingest = data.get("ingest", {})
+    _ = ingest.get("note", "")  # already stated in section 2 prose
+    retry_count = ingest.get("contractsNeedingRetry", 0)
+
+    report = f"""# AssureCode Benchmark Report
+
+> Generated from `docs/benchmarks/benchmark_results.json` by `tools/analyze_benchmark.py`.
+> Run at **{data.get('timestamp')}** against **{data.get('gatewayUrl')}**.
+> Sample: **{total} contracts** at concurrency **{data.get('concurrency')}**.
+
+Every number here comes from a real HTTP round trip against a running gateway.
+`tools/benchmark.js` exits non-zero if the gateway is unreachable rather than
+falling back to simulation, so an absent report means the run did not happen.
+{redis_note}
+---
+
+## 1. Run summary
+
+| | |
+|---|---|
+| Contracts attempted | {total} |
+| Contracts completed | {completed} |
+| Contracts with at least one error | {with_errors} |
+| Wall-clock duration | {data.get('durationSeconds')} s |
+| Throughput | {data.get('throughputContractsPerSec')} contracts/sec |
+| Gateway readiness at start | `status={ready.get('status')}` `db={ready.get('db')}` `redis={ready.get('redis')}` |
+
+Terminal status distribution:
+
+{status_lines}
 
 ---
 
-## Executive Summary
+## 2. Latency by phase
 
-The **AssureCode System Benchmarking Suite** evaluated end-to-end contract execution performance across **100 synthetic software contracts** operating under a concurrency factor of **{data.get('concurrency', 10)} concurrent workers**.
+Four phases are timed: contract initialization, locking (which anchors the
+ledger entry), escrow funding, and the RAG scope check. Test generation and
+settlement are not driven by this harness and are reported as such rather than
+filled in.
 
-- **Total Execution Throughput**: **{throughput} contracts/sec** ({total_contracts} contracts in {duration_s}s)
-- **End-to-End Latency (p50 / p90 / p99)**: **{percentile(e2e_latencies, 50)} ms** / **{percentile(e2e_latencies, 90)} ms** / **{percentile(e2e_latencies, 99)} ms**
-- **RAG Scope Verification Accuracy**: **{acc_pct:.2f}%** (Precision: **{prec_pct:.2f}%**, Recall: **{rec_pct:.2f}%**, F1 Score: **{f1_pct:.2f}%**)
-- **Zero-Trust Settlement Invariant**: **100% Single-Fire Settlement Compliance** under concurrent load.
+| Phase | Mean (ms) | p50 | p90 | p99 | Min | Max |
+|---|---|---|---|---|---|---|
+{phase_row("1. Initialization", lat.get("initialize"))}
+{phase_row("2. Contract lock", lat.get("lock"))}
+{phase_row("3. Escrow funding", lat.get("escrow"))}
+{phase_row("4. RAG scope check", lat.get("scopeCheck"))}
+| **5. Test generation** | not driven by this benchmark | | | | | |
+| **6. Oracle settlement** | not driven by this benchmark | | | | | |
 
----
+Sum of the four measured phases per contract: **{e2e_line}**.
 
-## 1. End-to-End Latency Breakdown by Phase
-
-The multi-stage pipeline encompasses 6 lifecycle phases: **Initialization**, **Test Generation**, **Contract Locking**, **Escrow Funding**, **RAG Scope Check**, and **Oracle Settlement**.
-
-| Pipeline Phase | Mean (ms) | p50 (ms) | p90 (ms) | p99 (ms) | Min (ms) | Max (ms) |
-|----------------|-----------|----------|----------|----------|----------|----------|
-| **1. Initialization** | {mean(init_latencies)} | {percentile(init_latencies, 50)} | {percentile(init_latencies, 90)} | {percentile(init_latencies, 99)} | {min(init_latencies) if init_latencies else 0} | {max(init_latencies) if init_latencies else 0} |
-| **2. Test Generation** | {mean(test_gen_latencies)} | {percentile(test_gen_latencies, 50)} | {percentile(test_gen_latencies, 90)} | {percentile(test_gen_latencies, 99)} | {min(test_gen_latencies) if test_gen_latencies else 0} | {max(test_gen_latencies) if test_gen_latencies else 0} |
-| **3. Contract Lock** | {mean(lock_latencies)} | {percentile(lock_latencies, 50)} | {percentile(lock_latencies, 90)} | {percentile(lock_latencies, 99)} | {min(lock_latencies) if lock_latencies else 0} | {max(lock_latencies) if lock_latencies else 0} |
-| **4. Escrow Funding** | {mean(escrow_latencies)} | {percentile(escrow_latencies, 50)} | {percentile(escrow_latencies, 90)} | {percentile(escrow_latencies, 99)} | {min(escrow_latencies) if escrow_latencies else 0} | {max(escrow_latencies) if escrow_latencies else 0} |
-| **5. RAG Scope Check** | {mean(scope_latencies)} | {percentile(scope_latencies, 50)} | {percentile(scope_latencies, 90)} | {percentile(scope_latencies, 99)} | {min(scope_latencies) if scope_latencies else 0} | {max(scope_latencies) if scope_latencies else 0} |
-| **6. Oracle Settlement** | {mean(settle_latencies)} | {percentile(settle_latencies, 50)} | {percentile(settle_latencies, 90)} | {percentile(settle_latencies, 99)} | {min(settle_latencies) if settle_latencies else 0} | {max(settle_latencies) if settle_latencies else 0} |
-| **OVERALL E2E PIPELINE** | **{mean(e2e_latencies)}** | **{percentile(e2e_latencies, 50)}** | **{percentile(e2e_latencies, 90)}** | **{percentile(e2e_latencies, 99)}** | **{min(e2e_latencies) if e2e_latencies else 0}** | **{max(e2e_latencies) if e2e_latencies else 0}** |
+RAG ingest is fire-and-forget from the lock endpoint, so the benchmark waits for
+the contract's chunks to become queryable before the scope check. {retry_count}
+contract(s) needed a retry; that wait is tracked separately and excluded from the
+scope-check figure.
 
 ---
 
-## 2. RAG Scope Verification Accuracy & Confusion Matrix
+## 3. Scope-guard accuracy
 
-The RAG Scope Guard evaluates incoming communication against specified contract boundaries to prevent unauthorized scope creep.
-
-### Confusion Matrix
+The benchmark sends one in-scope or one out-of-scope prompt per contract. The
+label decides **which prompt is sent** and scores the answer — it never reaches
+the service and never determines the verdict.
 
 ```
-                      Actual In-Scope     Actual Out-of-Scope
-Allowed by Guard         TP = {tp:<3}             FP = {fp:<3}
-Blocked by Guard         FN = {fn:<3}             TN = {tn:<3}
+                       Actual in-scope      Actual out-of-scope
+Allowed by guard          TP = {tp:<4}            FP = {fp:<4}
+Blocked by guard          FN = {fn:<4}            TN = {tn:<4}
 ```
 
-### Statistical Evaluation Metrics
+| Metric | Value |
+|---|---|
+| Contracts scored | {scored} |
+| Excluded (no verdict returned) | {excluded} |
+| Accuracy | {pct(acc.get('accuracy', 0.0))} |
+| Precision | {pct(acc.get('precision', 0.0))} |
+| Recall | {pct(acc.get('recall', 0.0))} |
+| F1 | {pct(acc.get('f1', 0.0))} |
 
-- **Accuracy**: **{acc_pct:.2f}%** $\\left(\\frac{{\\text{{TP}} + \\text{{TN}}}}{{\\text{{Total}}}}\\right)$
-- **Precision**: **{prec_pct:.2f}%** $\\left(\\frac{{\\text{{TP}}}}{{\\text{{TP}} + \\text{{FP}}}}\\right)$
-- **Recall**: **{rec_pct:.2f}%** $\\left(\\frac{{\\text{{TP}}}}{{\\text{{TP}} + \\text{{FN}}}}\\right)$
-- **F1 Score**: **{f1_pct:.2f}%** $\\left(2 \\cdot \\frac{{\\text{{Precision}} \\cdot \\text{{Recall}}}}{{\\text{{Precision}} + \\text{{Recall}}}}\\right)$
+### Reading this honestly
+
+Precision of {pct(acc.get('precision', 0.0))} with recall of {pct(acc.get('recall', 0.0))}
+is not a good result. It means the guard almost never allows an out-of-scope
+request — and also blocks most in-scope ones. The similarity threshold
+(`SCOPE_SIMILARITY_THRESHOLD`, calibrated at 0.2731) was selected on a 16-message
+hand-labelled set and scored 14/16 **on that same set**, which is a fitting
+figure. These numbers are what it does on messages it was not selected against,
+and the gap between the two is the finding.
+
+The failure direction is the safer one for a payment system — a false block
+costs a scope amendment, a false allow releases work that was never contracted —
+but it is still a failure, and the threshold does not generalize as selected.
 
 ---
 
-## 3. System Resilience under Concurrent Load
+## 4. What this benchmark does not establish
 
-- **Concurrent Worker Threads**: {data.get('concurrency', 10)}
-- **Successful Execution Rate**: **{success_rate:.1f}%** ({successful_contracts} / {total_contracts})
-- **Failed Execution Rate**: **{failed_rate:.1f}%** ({failed_contracts} / {total_contracts})
-- **Deadlock / Race Condition Count**: **0**
+- **Ledger integrity.** Verified separately by `tools/verify_phase8_live.mjs`
+  and the tamper tests in `apps/api-gateway/test/ledger-tamper.test.ts`, not here.
+- **Settlement correctness.** Verified by `tools/verify_phase5_live.mjs`.
+- **Freedom from races or deadlocks.** The earlier report asserted a count of
+  zero; nothing in this harness detects either. Concurrency behaviour is covered
+  by `apps/api-gateway/test/idempotency-concurrency.test.ts`.
+- **Production latency.** Single machine, single uvicorn worker, and the event
+  bus noted above.
 
 ---
 
-## 4. Conclusion & Architectural Validation
-
-1. **Scalability**: The system effortlessly processes {throughput} contracts/sec with sub-400ms end-to-end latency at p99.
-2. **Precision Scope Protection**: 0% False Positive rate ensures off-scope requests are reliably intercepted before delivery.
-3. **Ledger Integrity**: SHA-256 Merkle chain verification remains 100% compliant across all 100 contract state transitions.
+*Regenerate with `node tools/benchmark.js && python tools/analyze_benchmark.py`.*
 """
 
     report_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(report_file, "w", encoding="utf-8") as f:
-        f.write(report_content)
-
-    print(f"✓ Analysis complete! Benchmark report generated at {report_file}")
+    report_file.write_text(report, encoding="utf-8")
+    print(f"Wrote {report_file}")
+    return 0
 
 
 if __name__ == "__main__":
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    main()
+    raise SystemExit(main())

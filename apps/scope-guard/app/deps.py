@@ -59,6 +59,37 @@ __all__ = [
 ]
 
 
+def _load_repo_dotenv() -> None:
+    """Load the repo-root .env into os.environ, without overwriting.
+
+    Nothing did this. Settings below reads os.environ directly, so starting the
+    service the documented way — `uvicorn app.main:app` from apps/scope-guard —
+    left DATABASE_URL empty. The adapters then took their in-memory branches:
+    InMemoryLedgerAnchor with no anchors registered, InMemoryRagStore with no
+    chunks, InMemoryScopeLog writing to a list that dies with the process.
+
+    The result was a service that started cleanly, answered /healthz "ok", and
+    refused every real scope check with "contract has no ledger entries" — for
+    contracts that were correctly locked and indexed. The failure pointed at the
+    caller instead of at the configuration, which is what makes this worth
+    fixing rather than documenting.
+
+    Real environment variables win, so containers and CI are unaffected.
+    """
+    env_path = _REPO_ROOT / ".env"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+_load_repo_dotenv()
+
+
 class Settings:
     """Scope-guard configuration, read from the environment."""
 

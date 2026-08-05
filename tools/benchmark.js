@@ -271,6 +271,8 @@ export async function runBenchmark(opts) {
         post(`${gatewayUrl}/api/contracts/${row.contractId}/lock`, {
           title: `Benchmark contract ${idx}`,
           requirements: REQUIREMENTS,
+          budgetCents: 250000,
+          deadline: '2026-12-31',
         }),
       );
       row.phases.lock = lock.ms;
@@ -295,10 +297,14 @@ export async function runBenchmark(opts) {
       // yet and the guard answers 409. That is retried on a bounded budget and
       // the wait is recorded separately, so ingest latency is not smuggled into
       // the scope-check figure.
+      // The budget is 30s rather than a few seconds because the first ingest of
+      // a cold process loads all-MiniLM-L6-v2, which takes tens of seconds. A
+      // short budget made every contract in a run report SCOPE_UNAVAILABLE and
+      // looked like a broken scope guard rather than a cold model.
       const scopeStart = performance.now();
       let scope = null;
       let waits = 0;
-      for (let attempt = 0; attempt < 12; attempt++) {
+      for (let attempt = 0; attempt < 30; attempt++) {
         scope = await timed(() =>
           post(`${gatewayUrl}/api/contracts/${row.contractId}/chat`, {
             message: prompt,
@@ -308,7 +314,7 @@ export async function runBenchmark(opts) {
         // 409 from the guard means "nothing indexed for this contract yet".
         if (scope.res?.status === 409) {
           waits++;
-          await new Promise((r) => setTimeout(r, 500));
+          await new Promise((r) => setTimeout(r, 1000));
           continue;
         }
         break;
@@ -450,6 +456,14 @@ export async function runBenchmark(opts) {
       '\nNOTE: a perfect F1 on this fixture is suspicious rather than good. The scope threshold\n' +
         'was calibrated at 14/16 on its own selection set with two false positives, so 100% here\n' +
         'suggests the prompts are too easy to separate, not that the classifier is flawless.',
+    );
+  } else if (a.recall !== null && a.recall < 60) {
+    console.log(
+      `\nNOTE: recall is ${a.recall}% — ${a.falseNegatives} in-scope requests were blocked. The\n` +
+        'threshold (SCOPE_SIMILARITY_THRESHOLD, default 0.2731) was selected on a different,\n' +
+        'hand-labelled contract, and this measures how far that choice generalises. It is a\n' +
+        'property of the calibration, not a transient fault: precision is ' +
+        `${a.precision}%, so the guard is not\nmisfiring at random, it is simply too strict for this contract text.`,
     );
   }
 

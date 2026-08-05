@@ -10,13 +10,25 @@ if (!PG_UP) announceSkip('Sprint 6.1 — Idempotency Concurrency & Race Conditio
 describe.skipIf(!PG_UP)('Sprint 6.1 — Idempotency Concurrency & Race Condition Challenge', () => {
   it('empirically challenges 5 concurrent requests with exact same idempotency key', async () => {
     const key = `test-concurrent-key-${Date.now()}`;
-    const contractId = `AC-CONCURRENCY-${Date.now()}`;
     const payload = {
       title: 'Concurrent Lock Test Contract',
       requirements: 'Testing 5 concurrent lock requests with same key',
       budgetCents: 100000,
       deadline: '2026-12-31',
     };
+
+    // The contract has to exist: merkle_ledger.contract_id is a foreign key
+    // into contracts, so locking an invented id can never append. This test
+    // used to do exactly that and was only ever green because the whole file
+    // was skipped for want of a DATABASE_URL.
+    const initRes = await server.inject({
+      method: 'POST',
+      url: '/api/contracts/initialize',
+      headers: { 'content-type': 'application/json' },
+      payload,
+    });
+    expect(initRes.statusCode).toBe(201);
+    const contractId = initRes.json().contractId as string;
 
     // Prepare 5 concurrent HTTP requests with exact same x-idempotency-key
     const concurrentRequests = Array.from({ length: 5 }, () =>

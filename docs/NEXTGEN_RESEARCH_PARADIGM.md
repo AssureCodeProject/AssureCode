@@ -1,133 +1,64 @@
-# BREAKTHROUGH NOVEL RESEARCH PAPER
+# RETRACTED — "Quantum-Resilient Neural-Geometric Consensus (QR-NGC)"
 
-# Quantum-Resilient Neural-Geometric Consensus (QR-NGC) with Topological Braid-Ledger Verification
-
-> **Authors**: AssureCode Advanced Quantum-AI Research Team & Principal Systems Architect  
-> **Target Journal**: ACM Transactions on Computer Systems (TOCS) / Nature Machine Intelligence / IEEE Transactions on Information Forensics and Security  
-> **Date**: July 31, 2026
-
----
-
-## Abstract
-
-Existing decentralized settlement platforms rely on Euclidean vector spaces, linear Merkle hash chains, or standard multi-agent consensus protocols that scale linearly $O(N)$ or logarithmically $O(\log N)$, suffer from curvature distortion in code hierarchy embedding, and are vulnerable to post-quantum cryptographic decay.
-
-In this paper, we introduce **Quantum-Resilient Neural-Geometric Consensus (QR-NGC)**—a next-generation research paradigm that replaces traditional ledgers with a **Topological Braid-Ledger ($T\mathcal{B}$-Ledger)**, embeds code ASTs and scope boundaries into a **Poincaré Hyperbolic Riemannian Manifold ($\mathbb{H}^d$)**, and secures state transitions using **NIST ML-DSA Lattice Zero-Knowledge Proofs**. 
-
-By evaluating contract state invariants via the **Alexander-Conway Polynomial braid closure $V(L)$**, state verification achieves **$O(1)$ constant-time algebraic evaluation**. Furthermore, hyperbolic scope tracking eliminates hierarchical distortion, achieving **99.98% scope creep interception precision** with a **sub-microsecond ($< 800\text{ ns}$) zero-memory WASM actor execution pipeline**.
+> **Status: withdrawn.** This document previously presented a research paper
+> describing mechanisms that do not exist in this codebase, supported by
+> quantitative results that were never measured. It has been withdrawn rather
+> than deleted, so that the correction is part of the record.
+>
+> The prior text is recoverable from git history at commit `8ce9eb0`.
 
 ---
 
-## 1. Paradigm Shift & Comparative Methodological Taxonomy
+## What it claimed
 
-| Dimension | Standard Blockchains / Smart Contracts (e.g. Ethereum) | Advanced Multi-Agent / Merkle Tree Systems (AZK-MACP / DAGs) | **Proposed Next-Gen Paradigm: QR-NGC Protocol** |
-|-----------|-------------------------------------------------------|-------------------------------------------------------------|------------------------------------------------|
-| **Data Structure** | Linear Hash Chain ($O(N)$) | Binary Merkle Tree / DAG ($O(\log N)$) | **Topological Braid Group** $(\mathcal{B}_n)$ ($O(1)$ Algebraic Invariant) |
-| **Embedding Geometry** | None / Flat Bag-of-Words | Euclidean Vector Space ($\mathbb{R}^d$, Cosine) | **Poincaré Hyperbolic Riemannian Manifold** ($\mathbb{H}^d$, Geodesic) |
-| **Cryptographic Primitive** | ECDSA (secp256k1) — Quantum Vulnerable | SHA-256 / RSA — Vulnerable to Shor's Algo | **NIST FIPS 204 Post-Quantum Module Lattice (ML-DSA / LWE)** |
-| **Scope Verification** | Manual Arbitrators | Static / Linear RAG Cosine Cutoff | **Hyperbolic Geodesic Manifold Distance** $d_{\mathbb{H}}(\mathbf{u}, \mathbf{v})$ |
-| **Actor Execution Engine** | EVM / Node.js Process | Event-Driven Worker Pool | **Zero-Memory Kernel eBPF/WASM Swarm Actors** ($< 800\text{ ns}$) |
+| Claim | Status |
+|---|---|
+| **Topological Braid-Ledger** ($T\mathcal{B}$-Ledger) verifying contract state via Alexander-Conway polynomial invariants in $O(1)$ | **Withdrawn.** `braid_ledger.py` has been deleted. The Alexander polynomial has no tamper-detection semantics even when implemented correctly — a knot invariant does not detect a modified database row. |
+| **$\det = 22.25$** as a ledger state invariant | **Withdrawn.** Produced by deleted code, and not a meaningful quantity for the stated purpose. |
+| **Poincaré hyperbolic manifold** as the scope-verification mechanism | **Withdrawn as the mechanism.** The implementation was correct but never wired in, and it does not work on L2-normalized sentence embeddings — see below. |
+| **99.98% scope-creep interception precision**, and **0.02% embedding distortion** vs 38.2% Euclidean | **Withdrawn.** Never measured. Measured precision on 50 held-out contracts is 100% at **20% recall** — 36% accuracy — using cosine retrieval, not hyperbolic distance. |
+| **Sub-microsecond ($< 800$ ns) zero-memory WASM / eBPF swarm actors**, 4.8 MB total swarm RAM | **Withdrawn.** There is no WASM runtime, no eBPF component, no shared-memory ring buffer, and no swarm actor execution engine. None was ever built. |
+| **NIST FIPS 204 ML-DSA lattice signatures** | **Retained, and now real.** The original `quantum_lattice.py` used no key material and accepted any self-consistent signature. It has been replaced with `dilithium-py` ML-DSA-87 (2592-byte public key, 4896-byte private key, 4627-byte signature), signing the Merkle root under a domain-separated context string. |
 
----
+## Why the hyperbolic claim specifically could not have held
 
-## 2. Mathematical Formulation of the QR-NGC Paradigm
+`app/services/hyperbolic.py` computes the Poincaré geodesic distance correctly.
+It is retained as an **evaluation baseline**, because its failure is itself a
+result worth reporting.
 
-### 2.1 Topological Braid-Ledger ($T\mathcal{B}$-Ledger) & $O(1)$ Verification
+On L2-normalized `all-MiniLM-L6-v2` vectors the distance saturates:
 
-Instead of storing transactions as a static tree or linear chain, we represent concurrent multi-agent actions as generator strands $\sigma_1, \sigma_2, \dots, \sigma_{n-1}$ in the **Artin Braid Group $\mathcal{B}_n$**:
+| Pair | Cosine | $d_H$ |
+|---|---|---|
+| identical | 1.00 | 0.00 |
+| near-duplicate | 0.94 | 11.68 |
+| unrelated | — | 14.52 |
 
-$$\sigma_i \sigma_{i+1} \sigma_i = \sigma_{i+1} \sigma_i \sigma_{i+1} \quad \text{for } |i - j| = 1$$
-$$\sigma_i \sigma_j = \sigma_j \sigma_i \quad \text{for } |i - j| \ge 2$$
+The thresholds published alongside it (8.5 and 2.5) both sit **below** the
+near-duplicate distance. Applied as specified, every pair — including near
+duplicates — classifies as scope creep. The mechanism could not have worked, so
+the 99.98% figure could not have come from running it.
 
-Each contract state transition (code push, test run, security scan, scope check) appends a braid strand braid generator $\sigma_k$.
+## What replaced it
 
-```
-Agent 1 (Client)     ======\=====/==================
-                            \   /   <- Braid Generator sigma_1
-Agent 2 (CI Worker)  ========\=/====================
-                              / \   <- Braid Generator sigma_2
-Agent 3 (Oracle)     ========/===\==================
-```
+Scope decisions retrieve the contract's own text from a pgvector HNSW index and
+compare the best cosine similarity against a threshold calibrated by sweep
+(`tools/calibrate_scope_threshold.py`, $\tau = 0.2731$). Every decision is
+anchored to the contract's genesis ledger hash $H_0$.
 
-#### $O(1)$ Algebraic Invariant Verification
-To verify the global ledger integrity across thousands of asynchronous parallel tasks, we compute the **Alexander-Conway Polynomial Invariant $\Delta(t)$** of the closure of the braid $L = \hat{\beta}$:
+Cumulative drift is handled separately: a CUSUM statistic over per-message
+residuals combined with a conformal test martingale, giving an anytime-valid
+false-alarm bound under Ville's inequality. That mechanism is implemented and
+tested but **not calibrated** — it returns HTTP 503 rather than substituting a
+default calibration, and no false-alarm rate is claimed for it.
 
-$$\Delta(L; t) = \operatorname{det}\left(V - t V^T\right)$$
+See §4.4–4.6 and §11 of
+[`ASSURECODE_COMPLETE_TECHNICAL_SPECIFICATION.md`](./ASSURECODE_COMPLETE_TECHNICAL_SPECIFICATION.md).
 
-Where $V$ is the Seifert matrix derived from the braid presentation.
+## Where the real numbers are
 
-- **Complexity**: $O(1)$ algebraic evaluation of the matrix determinant polynomial, independent of transaction sequence length $N$.
-- **Asynchronous Invariance**: Asynchronous re-ordering of independent parallel tasks commutes naturally in the braid group without breaking validation!
+- `docs/benchmarks/BENCHMARK_REPORT.md` — contract flow and scope-guard accuracy
+- `docs/benchmarks/MATCHMAKING_REPORT.md` — retrieval metrics and the weight ablation
+- `docs/ASSURECODE_COMPLETE_TECHNICAL_SPECIFICATION.md` §11 — measured results and limitations
 
----
-
-### 2.2 Poincaré Hyperbolic Riemannian Scope Manifold ($\mathbb{H}^d$)
-
-Euclidean space ($\mathbb{R}^d$) cannot embed hierarchical code structures (ASTs) or complex contract dependency trees without exponential metric distortion.
-
-We project requirements and source code ASTs into the **Poincaré Ball Model of Hyperbolic Space**:
-
-$$\mathbb{H}^d = \left\{ \mathbf{x} \in \mathbb{R}^d : \|\mathbf{x}\| < 1 \right\}, \quad g_{\mathbf{x}} = \left(\frac{2}{1 - \|\mathbf{x}\|^2}\right)^2 g_{\text{Euclid}}$$
-
-The exact semantic distance between a chat request vector $\mathbf{u}$ and contract requirement manifold $\mathbf{v}$ is computed via the **Poincaré Geodesic Distance**:
-
-$$d_{\mathbb{H}}(\mathbf{u}, \mathbf{v}) = \operatorname{arcosh}\left(1 + 2\frac{\|\mathbf{u} - \mathbf{v}\|^2}{(1 - \|\mathbf{u}\|^2)(1 - \|\mathbf{v}\|^2)}\right)$$
-
-```
-                           Poincare Ball Hyperbolic Manifold (H^d)
-                                         
-                                      . - ~ - .
-                                  . '     |     ' .
-                                /    /    |    \    \
-                               /   /      |      \   \
-                              |---|-------+-------|---|  <- Exponential Tree Expansion
-                               \   \      |      /   /   near boundary ||x|| -> 1
-                                \    \    |    /    /
-                                  . _     |     _ .
-                                      ' - ~ - '
-```
-
-#### Mathematical Advantage:
-- As vectors approach the boundary $\|\mathbf{x}\| \to 1$, volume expands exponentially, matching the exponential node branching of ASTs and requirements syntax trees.
-- Zero hierarchical distortion ($0.02\%$ tree distortion vs $> 35\%$ in Euclidean embeddings).
-
----
-
-### 2.3 Post-Quantum Module Lattice Cryptography (ML-DSA / LWE)
-
-To safeguard ledger signatures against quantum computer decryption (Shor's Algorithm), QR-NGC uses **Module Lattice-Based Signatures (NIST FIPS 204)**:
-
-Security is grounded on the hardness of the **Ring Learning With Errors (R-LWE)** problem over polynomial rings $R_q = \mathbb{Z}_q[X]/(X^n + 1)$:
-
-$$\mathbf{A} \cdot \mathbf{s} + \mathbf{e} \equiv \mathbf{b} \pmod q$$
-
-- **Key Generation**: Secret key $\mathbf{s} \in R_q^k$, Public key $(\mathbf{A}, \mathbf{b})$.
-- **Zero-Knowledge Proof**: Proves possession of valid contract signatures and passing audit signals without revealing private code variables or underlying financial amounts.
-
----
-
-### 2.4 Zero-Memory Kernel-Level WASM Swarm Consensus ($\text{ZMS-Consensus}$)
-
-Rather than running heavy Node.js or Python microservices with high RAM usage, QR-NGC implements micro-agents as **stateless WebAssembly (WASM) / eBPF kernel actors**:
-
-- **Shared Memory Lock-Free Ring Buffers**: Uses Single-Producer Single-Consumer (`SPSC`) lock-free ring buffers in shared memory.
-- **Latency**: Inter-agent communication completes in **$< 800\text{ ns}$** (sub-microsecond).
-- **RAM Footprint**: Entire 5-agent consensus swarm runs within **$< 4.8 \text{ MB}$ RAM**, optimizing system resource efficiency.
-
----
-
-## 3. Comparative Quantitative Performance Benchmarks
-
-| Metric | Traditional Ethereum Escrows | Merkle/DAG Baselines | **Proposed QR-NGC Paradigm** |
-|--------|------------------------------|----------------------|------------------------------|
-| **State Verification** | $O(N)$ Gas Scan | $O(\log N)$ Tree Proof | **$O(1)$ Braid Invariant Polynomial** |
-| **Scope Embedding Distortion** | $38.2\%$ (Euclidean) | $24.6\%$ (Euclidean) | **$0.02\%$ (Poincaré Hyperbolic $\mathbb{H}^d$)** |
-| **Cryptographic Security** | 128-bit ECDSA (Breakable by Quantum) | SHA-256 (Pre-quantum) | **256-bit Post-Quantum ML-DSA Lattice** |
-| **Inter-Agent Latency** | $12.5\text{ s}$ (Block Time) | $500\text{ ms}$ (HTTP Polling) | **$780\text{ ns}$ (Shared-Memory WASM Ring)** |
-| **Total Memory Usage** | $> 2\text{ GB}$ Node Footprint | $> 350\text{ MB}$ PyTorch | **$4.8\text{ MB}$ Total Swarm RAM** |
-
----
-
-## 4. Conclusion & Scientific Impact
-
-The **Quantum-Resilient Neural-Geometric Consensus (QR-NGC)** paradigm establishes a new frontier in decentralized software engineering. By unifying **Topological Braid Invariants**, **Poincaré Hyperbolic Manifolds**, **Post-Quantum Lattice Signatures**, and **Zero-Memory Kernel WASM Swarms**, QR-NGC delivers constant-time verification, post-quantum security, zero geometric distortion, and sub-microsecond performance within a minimal memory footprint.
+Each is regenerated by a named command, and each reports its own weak results.

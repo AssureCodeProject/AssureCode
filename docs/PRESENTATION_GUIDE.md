@@ -1,120 +1,195 @@
-# AssureCode — Project Guide Presentation & Demonstration Guide
+# AssureCode — Demonstration & Oral Defense Guide
 
-> **Project Title**: AssureCode (Trust-Code 2.0) — Zero-Trust Event-Driven Multi-Agent Freelance Ecosystem  
-> **Presenter Guide**: Step-by-Step UI Demonstration, Key Highlights & Oral Defense Strategy
+> **Project**: AssureCode — Zero-Trust, Event-Driven Multi-Agent Freelance Ecosystem
+> **Contents**: launch steps, a 4-phase demo script, and answers you can defend under
+> follow-up questioning.
+
+**Read this first.** An earlier version of this guide scripted you to claim a
+Topological Braid-Ledger with $O(1)$ Alexander-Conway invariants, Poincaré
+hyperbolic scope distance, and video proof recording. **None of those exist in
+the codebase**, and two of them never worked even when they did. Saying any of
+it in a viva puts you one "show me that file" away from a hole you cannot climb
+out of.
+
+Everything below is something you can open the terminal and demonstrate. Where a
+result is weak, the honest framing is given — a weak result you can explain is
+worth more than a strong one you cannot.
 
 ---
 
-## 🚀 1. How to Launch the Web Application
-
-To launch the web interface for your presentation, open your terminal at `C:\Users\hp\AssureCode` and run:
+## 1. Launching the application
 
 ```bash
-npm run dev:web
+npm run dev:gateway     # http://localhost:4000  — start this first
+npm run dev:web         # http://localhost:3000
 ```
 
-- **URL**: Open **`http://localhost:5173`** in Google Chrome or Edge.
-- **Tip**: Press `F11` in your browser for full-screen mode to give a clean, executive presentation.
+The web app talks to live endpoints. There are no mock data modules any more, so
+**if the gateway is down the UI will show an error state rather than a green
+dashboard.** That is deliberate — demonstrate it once if you have time, because
+"it fails visibly" is a design claim you can defend.
+
+Services the full demo wants running:
+
+```bash
+cd apps/ai-service  && .venv/Scripts/python -m uvicorn app.main:app --port 8000
+cd apps/scope-guard && python -m uvicorn app.main:app --port 8001
+```
 
 ---
 
-## 🎬 2. The 4-Phase Live Demonstration Script
-
-The application is structured into **4 sequential phase tabs** at the top navigation bar:
+## 2. The 4-phase demonstration script
 
 ```
-[ PHASE 01: INIT ] ---> [ PHASE 02: VERIFICATION ] ---> [ PHASE 03: XAI TRUST ] ---> [ PHASE 04: ESCROW ]
+[ PHASE 01: INIT ] -> [ PHASE 02: VERIFICATION ] -> [ PHASE 03: TRUST SCORE ] -> [ PHASE 04: ESCROW ]
 ```
 
+### Phase 1 — Contract Initialization
+
+**What to say:**
+> "Phase 1 is contract creation and cryptographic anchoring. The client's
+> requirements are embedded and matched against freelancer profiles, an LLM
+> generates a hidden test bundle, and the agreement is canonicalized under
+> RFC 8785 and written into a tamper-evident hash chain. The canonical bytes
+> that get hashed are stored next to the payload, with a database constraint
+> forcing them to agree — so the thing we hashed cannot drift from the thing
+> you can query."
+
+**What to click:**
+1. Enter: title `Fintech Dashboard Rebuild`, requirements
+   `Build a React TypeScript dashboard with Node.js Fastify backend and PostgreSQL database.`,
+   budget `$2,500.00`, deadline `2026-12-31`.
+2. Click **Lock Contract**.
+3. Point out the ledger hash banner. Say: *"That is SHA-256 over the RFC 8785
+   canonical JSON concatenated with the previous hash. It's a hash chain with a
+   Merkle tree built over the leaves — RFC 6962, the Certificate Transparency
+   construction."*
+
+**If asked "why RFC 8785?"** — because two serializations of the same object
+hash differently. Key order, unicode escaping, and number formatting all have to
+be pinned or verification fails on data nobody tampered with.
+
+### Phase 2 — Verification Dashboard
+
+**What to say:**
+> "Phase 2 is the zero-trust CI pipeline. A GitHub push is intercepted by HMAC
+> signature check, the repository is cloned at that commit into an ephemeral
+> Docker container with no network interface at all, and the hidden tests are
+> bind-mounted read-only so the developer never sees them. We measure three
+> things: test outcome, AST complexity, and OWASP findings."
+
+**What to click:** Simulate the push and watch the pipeline steppers.
+
+**Three details worth pointing at:**
+- **AST**: real `@babel/parser` traversal — cyclomatic complexity, Halstead
+  volume, and the SEI maintainability index. Not regex.
+- **`0/0` is indeterminate, not a pass.** If the hidden tests don't run, the
+  contract does not proceed. This is a deliberate design decision.
+- **Sandbox honesty**: if Docker isn't running, a Node-permission adapter is
+  selected instead and `describeThreatModel()` reports the *reduced* guarantees.
+  The system never claims isolation it isn't providing.
+
+### Phase 3 — Trust Score
+
+**What to say:**
+> "The trust score is a deterministic weighted sum on 0–100, computed from
+> telemetry the pipeline actually measured — 40% test outcome, 25%
+> maintainability, 20% security, 15% scope compliance. Every term reports its
+> input, its weight, and its contribution, so the number is reproducible by
+> hand."
+
+**What to click:** point to the gauge and the term breakdown.
+
+**The strongest thing you can say here:**
+> "If a term has no measured input, we don't default it. The term is *excluded*
+> and the remaining weights are renormalised over their own sum, and the
+> response tells you which terms were dropped. An earlier version returned a
+> hardcoded 0.92 for every contract — that's the defect this design exists to
+> prevent."
+
+**Call it what it is.** If asked whether this is XAI: *"It's an
+interpretable-by-design linear model. It's decomposable and reproducible, but
+it's a weighted sum, not a post-hoc attribution method like SHAP. Calling it XAI
+would be overstating it."* Examiners reward this.
+
+### Phase 4 — Escrow Settlement
+
+**What to say:**
+> "Funds release requires two conditions: trust score at least 85, and zero
+> critical vulnerabilities. That gate is defined once, in `packages/oracle`, and
+> imported by both the settlement worker and the gateway — because a second copy
+> in the gateway would be a second definition of the rule that releases money,
+> free to drift from the one that actually releases it."
+
+**What to click:** show the vault, the oracle signals, then release.
+
+**On double payment:** `pg_advisory_xact_lock` inside the settlement
+transaction, plus idempotency keys at the gateway. Stripe uses
+`capture_method: 'manual'`, so the capture *is* the release — there is no
+separate transfer to double-fire.
+
+**The dispute drawer is labelled `[NOT IMPLEMENTED]`.** Leave it that way. If
+asked, say it's future work — do not demo it as though it arbitrates.
+
 ---
 
-### 📍 Phase 1: Contract Initialization (`ContractInitialization.jsx`)
+## 3. Oral defense — questions and defensible answers
 
-#### 🗣️ What to Say to Your Guide:
-> *"Sir/Ma'am, Phase 1 represents the contract creation and cryptographic initialization stage. When a client and freelancer agree on a contract, our platform parses the requirement specification, synthesizes automated hidden unit tests using LLMs, and locks the contract into our **Topological Braid-Ledger ($T\mathcal{B}$-Ledger)**—which upgrades standard linear Merkle chains to $O(1)$ constant-time algebraic invariant verification."*
+| Question | Answer |
+|---|---|
+| **How do you prove the ledger hasn't been tampered with?** | "Each row's hash is SHA-256 over the RFC 8785 canonical payload concatenated with the previous hash, computed in PostgreSQL. `verifyChainDetailed()` recomputes the chain in JavaScript and reports verified, failed, or *unverifiable* separately. On top of the chain there's an RFC 6962 Merkle tree with inclusion proofs, and the root is signed with ML-DSA-87. It is **tamper-evident**, not tamper-proof — against an adversary who can write to the table but doesn't hold the signing key. Someone with the key is outside our threat model." |
+| **Why "unverifiable" as a third state?** | "17 rows predate the canonicalization migration and have no canonical payload stored, so we cannot recompute their hash. Reporting them as verified would be a lie; reporting them as tampered would be a false alarm. They get their own category." |
+| **How does the scope guard work?** | "We resolve the contract's genesis ledger hash first — no anchor, no decision. Then we embed the message, retrieve the top-5 contract chunks from a pgvector HNSW index by cosine similarity, and compare the best match against a calibrated threshold of 0.2731. The decision is recorded against that genesis hash so it's auditable." |
+| **Where did 0.2731 come from?** | "A sweep over a hand-labelled set — `tools/calibrate_scope_threshold.py`. It scores 14/16 there. But **that's accuracy on the set it was selected from**, so it's a fitting figure. On 50 held-out contracts it gets 36% accuracy: 100% precision, 20% recall. It blocks nearly every out-of-scope request and also blocks most in-scope ones. The threshold doesn't generalize, and the two classes actually overlap in [0.324, 0.341], so no single threshold separates them." |
+| **Isn't that a bad result?** | "Yes. It's the honest one. The failure direction is the safer one for a payment system — a false block costs a scope amendment, a false allow releases uncontracted work — but it's still a failure. Fixing it needs a larger labelled set, not a tuned constant." |
+| **How do you prevent double payouts?** | "Idempotency keys at the gateway with an LRU plus a Postgres table, and `pg_advisory_xact_lock` inside the settlement transaction. There's a concurrency test that fires five simultaneous requests with the same key and asserts exactly one ledger entry." |
+| **Why is matchmaking not sub-millisecond?** | "It embeds text with a real transformer. 84.7 ms warm mean over 1000 candidates, 108 ms p95. An earlier benchmark reported under 3 ms because it used a hash-bucket embedder with no semantics — that number measured nothing." |
+| **How good is the matchmaking?** | "P@5 of 0.837 when the client names the technologies; 0.325 when they describe the outcome in plain language. That gap is the real finding: the system is closer to a robust keyword matcher than a semantic one." |
+| **Why 0.50 / 0.35 / 0.15 for the ranking weights?** | "They were chosen, not derived — and I ablated all 231 settings on the simplex to find out what they cost. They rank 66th of 231 on retrieval; the optimum is near 0.95 on the skill term. But that measures *retrieval*, and trust is in the score on purpose, because we rank who should be hired rather than who's most textually similar. The honest statement is that the split has never been measured against either goal." |
+| **What's the drift detector?** | "Per-message thresholding can't catch incremental scope creep by construction — each request is a 2% stretch. So we accumulate: a CUSUM statistic over per-message residuals, plus a conformal test martingale that gives an anytime-valid false-alarm bound by Ville's inequality." |
+| **Does it work?** | "The mechanism is implemented and has 19 passing tests including a 1000-sequence false-alarm check. But it is **not calibrated** — the conformal guarantee needs a labelled in-scope residual set that this repository doesn't have. So the endpoint returns 503 rather than substituting a default, and any test calibration is flagged synthetic all the way into the ledger record. I'm not claiming a false-alarm rate." |
 
-#### 👆 What to Click & Show:
-1. Show the pre-filled or enter sample inputs:
-   - **Title**: `Fintech Dashboard Rebuild`
-   - **Requirements**: `Build a React TypeScript dashboard with Node.js Fastify backend and PostgreSQL database.`
-   - **Budget**: `$2,500.00`
-   - **Deadline**: `2026-12-31`
-2. Click the **"Lock Contract to Merkle Hash Chain"** button.
-3. **Highlight to Guide**:
-   - Point out the **real-time step progress animation** (NLP extraction -> Unit test generation -> Ledger hashing).
-   - Point out the **Cryptographic Ledger Hash Banner** (e.g. `0x8f2a...c41e`), explaining: *"This hash anchors the contract on the ledger. In our research paper, we upgraded standard linear Merkle chains to a Topological Braid-Ledger ($T\mathcal{B}$-Ledger) to achieve $O(1)$ constant-time verification."*
-4. Click **"Proceed to Verification Dashboard"**.
+**If asked about the braid ledger, hyperbolic distance, or the video proof** —
+they were in earlier documentation and have been removed. The honest answer:
 
----
+> "Those were in an earlier design and I removed them. The Alexander polynomial
+> has no tamper-detection semantics even when implemented correctly. The
+> hyperbolic distance is still in the repo as `hyperbolic.py`, but as a
+> *baseline* — on L2-normalized sentence embeddings it saturates, so a
+> near-duplicate pair at cosine 0.94 sits at distance 11.68 while an unrelated
+> pair is at 14.52, and both published thresholds fall below the near-duplicate.
+> Every pair would classify as scope creep. That measured failure is why the
+> system uses cosine retrieval instead."
 
-### 📍 Phase 2: Verification Dashboard (`VerificationDashboard.jsx`)
-
-#### 🗣️ What to Say to Your Guide:
-> *"Phase 2 is our Zero-Trust CI/CD Verification Engine. When a developer submits code via GitHub, our system intercepts the push event, provisions an isolated Docker sandbox, and evaluates 4 quality vectors: test execution, AST cyclomatic complexity, OWASP security vulnerabilities, and visual proof recording."*
-
-#### 👆 What to Click & Show:
-1. Click **"Simulate GitHub Push"** button.
-2. Watch the live WebSocket pipeline steppers light up:
-   - **Step 1**: GitHub Webhook Intercepted
-   - **Step 2**: Ephemeral Docker Sandbox Provisioned
-   - **Step 3**: AST Cyclomatic Complexity Parsing
-   - **Step 4**: AI Security Auditor (OWASP Scan)
-3. **Highlight to Guide**:
-   - **AST Maintainability Score**: Point to the maintainability gauge (>50 threshold).
-   - **OWASP Security Auditor**: Point out `0 Vulnerabilities Found / 100% Security Score`.
-   - **Unit Test Results**: Point out `5/5 Unit Tests Passed`.
+That answer is stronger than the claim it replaces. It shows you measured
+something, found it didn't work, and said so.
 
 ---
 
-### 📍 Phase 3: XAI Trust Score Evaluation (`XaiTrustScoreView.jsx`)
+## 4. Deliverables to mention
 
-#### 🗣️ What to Say to Your Guide:
-> *"Phase 3 demonstrates Explainable AI (XAI). Unlike traditional black-box AI systems, our platform evaluates developer performance using an auditable, multi-vector trust score model where every point is broken down into verifiable factors."*
+| Command | What it demonstrates |
+|---|---|
+| `npm test --workspaces` | 120 passing, 2 skipped, 0 failing |
+| `python tools/eval/matchmaking_eval.py` | Matchmaking at N=100/1000 + the weight ablation |
+| `node tools/benchmark.js` | Live contract flow. **Exits non-zero if the gateway is down** — never simulates |
+| `python tools/verify_phase4_live.py` | Drift detector, 18/18 |
+| `node tools/verify_phase5_live.mjs` | Trust score + settlement oracle, 33/33 |
+| `node tools/verify_phase8_live.mjs` | Merkle tree + ML-DSA-87 signing, 29/29 |
+| `python tools/verify_owasp_2025_cloudflare.py` | OWASP detection against planted flaws *and clean negatives* |
 
-#### 👆 What to Click & Show:
-1. Point to the central **Radial Trust Gauge** (e.g. `92/100 - TRUSTED FREELANCER`).
-2. Show the **Category Weight Breakdown**:
-   - **Unit Test Success Rate**: 40% Weight
-   - **AST Maintainability**: 25% Weight
-   - **OWASP Security Audit**: 20% Weight
-   - **Chat Sentiment & Scope Compliance**: 15% Weight
-3. Show the **RAG Scope Guard Status**: Point to `Zero-Drift Scope Boundary Verified` (explain Poincaré Hyperbolic Geodesic distance $d_{\mathbb{H}}$).
-4. Point to the **Explainability Audit Trail Table** at the bottom, showing step-by-step mathematical score deltas.
-5. Click **"Proceed to Escrow Settlement"**.
-
----
-
-### 📍 Phase 4: Escrow & Settlement Status (`EscrowSettlementView.jsx`)
-
-#### 🗣️ What to Say to Your Guide:
-> *"Phase 4 is our Algorithmic Secure Settlement Vault. Payouts are governed by a 5-Signal Oracle Matrix requiring all 5 independent verification signals—AST, Tests, Security, Scope, and Video Proof—before smart contract funds can be released."*
-
-#### 👆 What to Click & Show:
-1. Point to the **Smart Escrow Vault Banner** showing `$2,500.00 Locked in Vault`.
-2. Point to the **5-Oracle Verification Signals Matrix** cards (all showing green `PASS` badges).
-3. Click **"RELEASE FINAL FUNDS ($2,500.00)"**.
-4. **Highlight to Guide**:
-   - Show the button state changing to `FUNDS RELEASED & SETTLED`.
-   - Show the success toast notification.
-   - Click **"Dispute Drawer"** button in top right to show the multi-agent arbitration interface if asked about disputes.
+**Reports**: `docs/ASSURECODE_COMPLETE_TECHNICAL_SPECIFICATION.md`,
+`docs/benchmarks/BENCHMARK_REPORT.md`, `docs/benchmarks/MATCHMAKING_REPORT.md`.
 
 ---
 
-## 🎯 3. Guide Q&A Quick Reference (Oral Defense Answers)
+## 5. The one thing to lead with
 
-| Potential Question by Guide | Your Winning Answer |
-|-----------------------------|---------------------|
-| **Q1: How does your new Topological Braid-Ledger improve over standard Merkle Hash Chains?** | *"Standard Merkle Hash Chains require $O(N)$ linear traversal or $O(\log N)$ tree parsing to re-verify transactions. Our **Topological Braid-Ledger ($T\mathcal{B}$-Ledger)** models concurrent agent actions as generator strands ($\sigma_i$) in the Artin Braid Group ($\mathcal{B}_n$). We verify state integrity via the **Alexander-Conway Polynomial Invariants** in **$O(1)$ constant time** regardless of history length!"* |
-| **Q2: How do you prevent double payouts?** | *"We implement an idempotent single-fire settlement guard table in PostgreSQL alongside a 10,000-entry TTL LRU cache at the gateway level. Even if a user double-clicks or replays an API request, the gateway returns HTTP 409 and executes exactly one Stripe transfer."* |
-| **Q3: How do you prove the ledger hasn't been tampered with?** | *"Every state transition is signed with **NIST FIPS 204 Post-Quantum Module Lattice Signatures (ML-DSA)** and stored in `merkle_ledger` as $\text{SHA256}(\text{payload} \parallel \text{previous\_hash})$ under PostgreSQL advisory locks. `verifyChain` re-hashes history on demand and detects any modified database row."* |
-| **Q4: How does Scope Guard prevent scope creep?** | *"Instead of Euclidean RAG cosine similarity (which causes 38% tree distortion on code ASTs), we project embeddings onto a **Poincaré Hyperbolic Manifold ($\mathbb{H}^d$)** and measure exact geodesic distance ($d_{\mathbb{H}}$). Off-scope requests are blocked with HTTP 403 Forbidden."* |
+If you get a single sentence to frame the project, use this one:
 
----
+> "Every number in this repository is produced by a command you can run, and
+> where the result is bad I've left it in the report and explained why."
 
-## 📁 Summary of Technical Deliverables to Mention
-
-1. **E2E Web Verification Runner**: `node scripts/verify-web.js` (100% Pass across all 4 Tiers).
-2. **System Benchmark**: `npx tsx tools/benchmark.ts` (100 Contracts at 27.1 contracts/sec, sub-400ms latency).
-3. **NLP Matchmaker**: `python tools/test-matchmaking.py` (Tested across 5 technical domains).
-4. **QR-NGC Protocol Engine**: `python tools/test-qr-ngc-protocol.py` (Poincaré Hyperbolic $d_{\mathbb{H}}$, $O(1)$ Braid-Ledger, NIST ML-DSA Post-Quantum Signatures).
-5. **Research Paper**: `docs/NEXTGEN_RESEARCH_PARADIGM.md`.
+Then show them the 36% scope accuracy yourself, before they find it. A project
+that reports its own weak results reads as engineering. One that hides them
+reads as a demo — and examiners have seen a lot of demos.

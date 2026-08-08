@@ -12,7 +12,6 @@
     "./owasp-2025-rules.json": "./src/owasp-2025-rules.json"
   },
   "scripts": {
-    "test": "vitest run --passWithNoTests",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

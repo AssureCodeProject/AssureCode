@@ -401,6 +401,8 @@ server.post<{
 
 
 
+
+
 server.post<{
   Params: { contractId: string };
   Body: { title: string; requirements: string; framework?: string };
@@ -1276,5 +1278,6 @@ if (process.env.NODE_ENV !== 'test') {
   start();
 }
 
-export default server;
+export { server };
+
 

@@ -61,6 +61,32 @@ export interface EscrowPort {
     destinationAccountId: string;
     contractId: string;
   }): Promise<{ transferId: string; amountCents: number }>;
+
+  /** Create a Stripe Identity Verification session for user KYC. */
+  createVerificationSession(params: {
+    userId: string;
+    returnUrl: string;
+  }): Promise<{ sessionId: string; url: string; status: string }>;
+
+  /** Check status of a Stripe Identity Verification session. */
+  getVerificationStatus(sessionId: string): Promise<{
+    sessionId: string;
+    status: 'requires_input' | 'processing' | 'verified' | 'canceled';
+    userId?: string;
+  }>;
+
+  /** Create a Stripe Connect Express Account for freelancer payouts. */
+  createConnectAccount(params: {
+    userId: string;
+    email: string;
+  }): Promise<{ accountId: string }>;
+
+  /** Generate onboarding account link for Stripe Connect Express. */
+  createAccountLink(params: {
+    accountId: string;
+    refreshUrl: string;
+    returnUrl: string;
+  }): Promise<{ url: string }>;
 }
 
 // ── Configuration ─────────────────────────────────────────────────────
@@ -158,6 +184,47 @@ export class FakeEscrowAdapter implements EscrowPort {
       amountCents: params.amountCents,
     };
   }
+
+  async createVerificationSession(params: {
+    userId: string;
+    returnUrl: string;
+  }): Promise<{ sessionId: string; url: string; status: string }> {
+    return {
+      sessionId: `vs_fake_${params.userId}_${Date.now()}`,
+      url: `${params.returnUrl}?session_id=vs_fake_${params.userId}`,
+      status: 'requires_input',
+    };
+  }
+
+  async getVerificationStatus(sessionId: string): Promise<{
+    sessionId: string;
+    status: 'requires_input' | 'processing' | 'verified' | 'canceled';
+    userId?: string;
+  }> {
+    return {
+      sessionId,
+      status: 'verified',
+    };
+  }
+
+  async createConnectAccount(params: {
+    userId: string;
+    email: string;
+  }): Promise<{ accountId: string }> {
+    return {
+      accountId: `acct_fake_${params.userId}`,
+    };
+  }
+
+  async createAccountLink(params: {
+    accountId: string;
+    refreshUrl: string;
+    returnUrl: string;
+  }): Promise<{ url: string }> {
+    return {
+      url: `${params.returnUrl}?account_id=${params.accountId}&status=completed`,
+    };
+  }
 }
 
 // ── Real Stripe Adapter ────────────────────────────────────────────────
@@ -169,7 +236,7 @@ export class StripeEscrowAdapter implements EscrowPort {
   constructor(config: EscrowConfig) {
     this.webhookSecret = config.webhookSecret;
     this.stripe = new Stripe(config.secretKey, {
-      apiVersion: '2025-02-24.acacia' as any,
+      apiVersion: '2024-12-18.acacia' as any,
     });
   }
 
@@ -258,5 +325,60 @@ export class StripeEscrowAdapter implements EscrowPort {
       transferId: transfer.id,
       amountCents: transfer.amount,
     };
+  }
+
+  async createVerificationSession(params: {
+    userId: string;
+    returnUrl: string;
+  }): Promise<{ sessionId: string; url: string; status: string }> {
+    const session = await (this.stripe as any).identity.verificationSessions.create({
+      type: 'document',
+      metadata: { userId: params.userId },
+      options: { document: { require_matching_selfie: true } },
+    });
+    return {
+      sessionId: session.id,
+      url: session.url,
+      status: session.status,
+    };
+  }
+
+  async getVerificationStatus(sessionId: string): Promise<{
+    sessionId: string;
+    status: 'requires_input' | 'processing' | 'verified' | 'canceled';
+    userId?: string;
+  }> {
+    const session = await (this.stripe as any).identity.verificationSessions.retrieve(sessionId);
+    return {
+      sessionId: session.id,
+      status: session.status === 'verified' ? 'verified' : (session.status as any),
+      userId: session.metadata?.userId,
+    };
+  }
+
+  async createConnectAccount(params: {
+    userId: string;
+    email: string;
+  }): Promise<{ accountId: string }> {
+    const account = await this.stripe.accounts.create({
+      type: 'express',
+      email: params.email,
+      metadata: { userId: params.userId },
+    });
+    return { accountId: account.id };
+  }
+
+  async createAccountLink(params: {
+    accountId: string;
+    refreshUrl: string;
+    returnUrl: string;
+  }): Promise<{ url: string }> {
+    const accountLink = await this.stripe.accountLinks.create({
+      account: params.accountId,
+      refresh_url: params.refreshUrl,
+      return_url: params.returnUrl,
+      type: 'account_onboarding',
+    });
+    return { url: accountLink.url };
   }
 }

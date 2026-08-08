@@ -1,0 +1,38 @@
+# =============================================================================
+# Production Dockerfile — API Gateway (Node.js / Fastify)
+# =============================================================================
+
+FROM node:20-alpine AS builder
+WORKDIR /app
+
+# Copy root & workspace package configs
+COPY package*.json ./
+COPY packages/shared/package*.json ./packages/shared/
+COPY packages/config/package*.json ./packages/config/
+COPY packages/telemetry/package*.json ./packages/telemetry/
+COPY packages/stripe-adapter/package*.json ./packages/stripe-adapter/
+COPY packages/event-bus/package*.json ./packages/event-bus/
+COPY packages/ledger-client/package*.json ./packages/ledger-client/
+COPY apps/api-gateway/package*.json ./apps/api-gateway/
+
+RUN npm ci
+
+# Copy source files
+COPY packages/ ./packages/
+COPY apps/api-gateway/ ./apps/api-gateway/
+COPY tsconfig.base.json ./
+
+# Build packages and API gateway
+RUN npm run build
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/packages ./packages
+COPY --from=builder /app/apps/api-gateway ./apps/api-gateway
+
+EXPOSE 4000
+CMD ["node", "apps/api-gateway/dist/server.js"]

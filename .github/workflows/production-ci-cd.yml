@@ -1,0 +1,82 @@
+name: AssureCode Production CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, release/* ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  lint-and-test:
+    name: Lint, Test & Verification Suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Node Dependencies
+        run: npm ci
+
+      - name: Build Monorepo Workspaces
+        run: npm run build
+
+      - name: Run Unit & Integration Tests
+        run: npm run test
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e apps/ai-service
+
+      - name: Run Matchmaking Benchmark Test
+        run: python tools/test_100_freelancers_matchmaking.py
+
+  container-build:
+    name: Build Production Container Images
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build API Gateway Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: infra/docker/Dockerfile.gateway
+          push: false
+          tags: assurecode/api-gateway:latest
+
+      - name: Build Frontend Web Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: infra/docker/Dockerfile.web
+          push: false
+          tags: assurecode/frontend-web:latest
+
+  k8s-validate:
+    name: Validate Kubernetes Manifests
+    needs: container-build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Validate K8s Manifest Syntax
+        run: |
+          kubectl apply --dry-run=client -f infra/k8s/

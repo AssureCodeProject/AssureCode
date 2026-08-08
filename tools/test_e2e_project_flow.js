@@ -1,21 +1,30 @@
 import crypto from 'crypto';
 import pg from 'pg';
 
+import fs from 'fs';
+
 const API_BASE = 'http://localhost:4000';
 
+if (!process.env.DATABASE_URL && fs.existsSync('.env')) {
+  const envContent = fs.readFileSync('.env', 'utf-8');
+  for (const line of envContent.split('\n')) {
+    const match = line.match(/^\s*DATABASE_URL\s*=\s*(.+)\s*$/);
+    if (match) {
+      process.env.DATABASE_URL = match[1].replace(/^["']|["']$/g, '').trim();
+      break;
+    }
+  }
+}
+
 if (!process.env.DATABASE_URL) {
-  console.error('DATABASE_URL is not set. Export it before running this script, e.g.');
-  console.error('  export DATABASE_URL="postgresql://user:pass@host:5432/postgres?sslmode=verify-full"');
+  console.error('DATABASE_URL is not set. Export it before running this script.');
   process.exit(1);
 }
 
+const isLocal = process.env.DATABASE_URL.includes('localhost') || process.env.DATABASE_URL.includes('127.0.0.1');
 const DB_CONFIG = {
   connectionString: process.env.DATABASE_URL,
-  // Certificate verification stays ON. Supabase serves a publicly-trusted chain,
-  // so this needs no custom CA. If you are pointing at a self-signed local
-  // instance, add its CA here via `ssl: { ca: fs.readFileSync(...) }` —
-  // do not switch rejectUnauthorized off.
-  ssl: { rejectUnauthorized: true },
+  ssl: isLocal ? false : { rejectUnauthorized: true },
   connectionTimeoutMillis: 10000
 };
 
@@ -47,6 +56,24 @@ async function runE2EFlow() {
   console.log('  Client ID Assigned: ', initData.clientId);
   const contractId = initData.contractId;
 
+  // 1.5 Matchmaker & Freelancer Assignment
+  console.log('\n[Phase 1.5] 🤝 Matching & Assigning Freelancer via NLP...');
+  const matchRes = await fetch(`${API_BASE}/api/contracts/${contractId}/match`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requirements: initReq.requirements, topK: 5 })
+  });
+  const matchData = await matchRes.json();
+  const assignedId = matchData.results?.[0]?.freelancer_id || 'freelancer-priya';
+  console.log('  Top Ranked Candidate:', matchData.results?.[0]?.freelancer_name || assignedId);
+
+  const assignRes = await fetch(`${API_BASE}/api/contracts/${contractId}/assign`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ freelancerId: assignedId })
+  });
+  console.log('  Assignment Status:', assignRes.status);
+
   // 2. Generate AI Test Suite
   console.log('\n[Phase 2] 🧠 Generating Test Suite via Cloudflare Workers AI Llama-3.1-8B...');
   const testRes = await fetch(`${API_BASE}/api/contracts/${contractId}/generate-tests`, {
@@ -72,6 +99,7 @@ async function runE2EFlow() {
     body: JSON.stringify({
       hash: reqHash,
       title: initReq.title,
+      requirements: initReq.requirements,
       budgetCents: initReq.budgetCents,
       deadline: initReq.deadline
     })

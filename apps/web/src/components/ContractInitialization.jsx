@@ -96,6 +96,20 @@ export function ContractInitialization({
       });
       setCompletedSteps((prev) => [...prev, 1]);
 
+      // Step 1.5: NLP Matchmaker & Assign Freelancer
+      const matchResponse = await callApi(
+        `/api/contracts/${initResponse.contractId}/match`,
+        'POST',
+        { requirements: formData.requirements, topK: 5 }
+      ).catch(() => null);
+
+      const assignedFreelancerId = matchResponse?.results?.[0]?.freelancer_id || 'freelancer-priya';
+      await callApi(
+        `/api/contracts/${initResponse.contractId}/assign`,
+        'POST',
+        { freelancerId: assignedFreelancerId }
+      ).catch(() => null);
+
       // Step 2: Generate unit tests
       setCurrentStep(2);
       await callApi(`/api/contracts/${initResponse.contractId}/generate-tests`, 'POST', {

@@ -1,0 +1,22 @@
+# =============================================================================
+# Production Dockerfile — AI Service (FastAPI / Python)
+# =============================================================================
+
+FROM python:3.11-slim AS runner
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY apps/ai-service/pyproject.toml ./
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir .[full] uvicorn gunicorn
+
+COPY apps/ai-service/ ./
+
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]

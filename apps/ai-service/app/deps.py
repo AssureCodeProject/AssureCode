@@ -9,7 +9,7 @@ from functools import lru_cache
 
 from app.ports.artifact_store import ArtifactStore, InMemoryArtifactStore, S3ArtifactStore
 from app.ports.embedder import Embedder, FakeEmbedder, SentenceTransformerEmbedder
-from app.ports.graph_repo import GraphRepo, InMemoryGraphRepo, Neo4jGraphRepo
+from app.ports.graph_repo import GraphRepo, InMemoryGraphRepo, Neo4jGraphRepo, PostgresGraphRepo
 from app.ports.llm_client import (
     CloudflareWorkersAiClient,
     FakeLlmClient,
@@ -28,22 +28,17 @@ def get_embedder() -> Embedder:
     settings = get_settings()
     if settings.embed_provider == "fake":
         return FakeEmbedder(dim=settings.embed_dim)
-    try:
-        return SentenceTransformerEmbedder(
-            model_name=settings.embed_model_name, dim=settings.embed_dim
-        )
-    except Exception:
-        return FakeEmbedder(dim=settings.embed_dim)
+    return SentenceTransformerEmbedder(
+        model_name=settings.embed_model_name, dim=settings.embed_dim
+    )
 
 
 @lru_cache(maxsize=1)
 def get_graph_repo() -> GraphRepo:
     settings = get_settings()
     if settings.environment == "test" or settings.embed_provider == "fake":
-        return InMemoryGraphRepo()
-    return Neo4jGraphRepo(
-        uri=settings.neo4j_uri, user=settings.neo4j_user, password=settings.neo4j_password
-    )
+        return PostgresGraphRepo(database_url=settings.database_url)
+    return PostgresGraphRepo(database_url=settings.database_url)
 
 
 @lru_cache(maxsize=1)

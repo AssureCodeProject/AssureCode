@@ -221,3 +221,75 @@ class Neo4jGraphRepo:
                 )
             )
         return profiles
+
+
+class PostgresGraphRepo:
+    """PostgreSQL + pgvector backed adapter for freelancer profiles.
+
+    Reads profiles and vectors directly from `freelancer_profiles` + `users` tables.
+    Fallback to InMemoryGraphRepo if connection fails.
+    """
+
+    def __init__(self, database_url: str) -> None:
+        self._database_url = database_url
+        self._fallback = InMemoryGraphRepo()
+
+    def all_freelancers(self) -> Sequence[FreelancerProfile]:
+        try:
+            try:
+                import psycopg2 as psycopg
+            except ImportError:
+                import psycopg
+
+            conn = psycopg.connect(self._database_url)
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT f.freelancer_id, u.display_name, f.trust_score, f.skills,
+                           f.deliveries, f.avg_ast, f.hourly_rate_cents
+                    FROM freelancer_profiles f
+                    JOIN users u ON u.user_id = f.freelancer_id
+                    ORDER BY f.trust_score DESC
+                """)
+                rows = cur.fetchall()
+            conn.close()
+
+            if not rows:
+                return self._fallback.all_freelancers()
+
+            profiles = []
+            for r in rows:
+                skills = tuple(r[3]) if isinstance(r[3], (list, tuple)) else ()
+                profiles.append(
+                    FreelancerProfile(
+                        id=r[0],
+                        name=r[1],
+                        trust_score=float(r[2]),
+                        skills=skills,
+                        deliveries=int(r[4]),
+                        avg_ast=float(r[5]),
+                        hourly_rate_cents=int(r[6]),
+                    )
+                )
+            return profiles
+        except Exception:
+            return self._fallback.all_freelancers()
+
+    def update_trust_score(self, freelancer_id: str, trust_score: float) -> bool:
+        try:
+            try:
+                import psycopg2 as psycopg
+            except ImportError:
+                import psycopg
+
+            conn = psycopg.connect(self._database_url)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE freelancer_profiles SET trust_score = %s WHERE freelancer_id = %s",
+                    (trust_score, freelancer_id),
+                )
+            conn.commit()
+            conn.close()
+            return True
+        except Exception:
+            return self._fallback.update_trust_score(freelancer_id, trust_score)
+

@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { ShieldCheck, UserCheck, CreditCard, Lock, CheckCircle2, AlertCircle, RefreshCw } from 'lucide-react';
+import { ShieldCheck, Lock, CheckCircle2, RefreshCw } from 'lucide-react';
 import MobileDrawer from './MobileDrawer';
 import ToastNotification from './ToastNotification';
+import { apiRequest } from '../../utils/api';
 
 export function KycVerificationModal({ isOpen, onClose, currentUser, onKycComplete }) {
   const [idType, setIdType] = useState('PASSPORT');
@@ -14,22 +15,19 @@ export function KycVerificationModal({ isOpen, onClose, currentUser, onKycComple
     setIsSubmitting(true);
 
     try {
-      const res = await fetch('/api/kyc/verify', {
+      const { ok, status, payload } = await apiRequest('/api/kyc/verify', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        body: {
           userId: currentUser?.id || 'client-acme',
           idType,
-        }),
+        },
       });
 
-      if (!res.ok) {
-        throw new Error(`KYC Verification request failed: ${res.status}`);
+      if (!ok) {
+        throw new Error(`KYC Verification request failed: ${status}`);
       }
 
-      const data = await res.json();
-      setIsSubmitting(false);
-      setKycResult(data);
+      setKycResult(payload);
       setToast({
         type: 'success',
         title: 'KYC Identity Verified',
@@ -37,15 +35,16 @@ export function KycVerificationModal({ isOpen, onClose, currentUser, onKycComple
       });
 
       if (onKycComplete) {
-        onKycComplete(data);
+        onKycComplete(payload);
       }
     } catch (err) {
-      setIsSubmitting(false);
       setToast({
         type: 'error',
         title: 'KYC Error',
         description: err instanceof Error ? err.message : String(err),
       });
+    } finally {
+      setIsSubmitting(false);
     }
   };
 

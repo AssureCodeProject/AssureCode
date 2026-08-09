@@ -14,6 +14,7 @@
  */
 import net from 'node:net';
 import { spawnSync } from 'node:child_process';
+import { loadConfig } from '@assurecode/config';
 
 /** Resolve host/port from a connection URL, falling back to localhost defaults. */
 function endpointFrom(url: string | undefined, defaultPort: number): { host: string; port: number } {
@@ -63,6 +64,16 @@ export function dockerAvailable(): boolean {
     shell: process.platform === 'win32',
   });
   return probe.status === 0;
+}
+
+/**
+ * Header these integration suites present instead of a user login — they
+ * exercise gateway business logic, not the auth guard itself, so they
+ * authenticate as a machine caller the same way tools/benchmark.js and the
+ * verify_phase*.mjs harnesses do.
+ */
+export function serviceAuthHeaders(): Record<string, string> {
+  return { 'x-service-token': loadConfig().SERVICE_TOKEN };
 }
 
 /** Emit the reason once per suite so a skip is never silent. */

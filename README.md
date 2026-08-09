@@ -13,8 +13,8 @@ AssureCode/
 │   ├── web/                            # React 18 / Vite 4-Phase Frontend (Pure JS/JSX)
 │   ├── api-gateway/                    # Fastify REST + WebSocket Gateway & BFF
 │   ├── ci-worker/                      # Zero-Trust Ephemeral Docker Sandbox Audit Engine
-│   ├── ai-service/                     # Python FastAPI NLP Matchmaker, RAG & Poincaré H^d
-│   └── settlement-worker/              # 5-Signal Oracle Single-Fire Settlement Daemon
+│   ├── ai-service/                     # Python FastAPI NLP Matchmaker & pgvector RAG
+│   └── settlement-worker/              # Four-Signal Oracle Single-Fire Settlement Daemon
 │
 ├── packages/                           # Shared Monorepo Packages
 │   ├── ledger-client/                  # RFC 8785 canonicalization, RFC 6962 Merkle tree, FIPS 204 ML-DSA-87

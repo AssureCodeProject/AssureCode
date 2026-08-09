@@ -1,10 +1,11 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import server from '../src/server.js';
 import pg from 'pg';
 import { loadConfig, getDatabaseUrl } from '@assurecode/config';
-import { postgresAvailable, announceSkip } from '../../../tools/test-support/infra.js';
+import { postgresAvailable, announceSkip, serviceAuthHeaders } from '../../../tools/test-support/infra.js';
 
 const PG_UP = await postgresAvailable();
+const AUTH = serviceAuthHeaders();
 if (!PG_UP) announceSkip('Sprint 6.1 — Idempotency Concurrency & Race Condition Challenge', 'a running PostgreSQL on DATABASE_URL');
 
 describe.skipIf(!PG_UP)('Sprint 6.1 — Idempotency Concurrency & Race Condition Challenge', () => {
@@ -24,7 +25,7 @@ describe.skipIf(!PG_UP)('Sprint 6.1 — Idempotency Concurrency & Race Condition
     const initRes = await server.inject({
       method: 'POST',
       url: '/api/contracts/initialize',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...AUTH },
       payload,
     });
     expect(initRes.statusCode).toBe(201);
@@ -38,6 +39,7 @@ describe.skipIf(!PG_UP)('Sprint 6.1 — Idempotency Concurrency & Race Condition
         headers: {
           'content-type': 'application/json',
           'x-idempotency-key': key,
+          ...AUTH,
         },
         payload,
       })

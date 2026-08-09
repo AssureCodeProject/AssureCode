@@ -47,13 +47,17 @@ cd apps/scope-guard && python -m uvicorn app.main:app --port 8001
 ### Phase 1 — Contract Initialization
 
 **What to say:**
-> "Phase 1 is contract creation and cryptographic anchoring. The client's
-> requirements are embedded and matched against freelancer profiles, an LLM
-> generates a hidden test bundle, and the agreement is canonicalized under
-> RFC 8785 and written into a tamper-evident hash chain. The canonical bytes
-> that get hashed are stored next to the payload, with a database constraint
-> forcing them to agree — so the thing we hashed cannot drift from the thing
-> you can query."
+> "Phase 1 is contract creation and cryptographic anchoring. After you submit
+> requirements, the matchmaker ranks real freelancer profiles in Postgres — a
+> composite of skill-embedding cosine similarity, trust score, and delivery
+> history, 0.50/0.35/0.15 weighted — and you pick who gets the contract from
+> the ranked cards, each showing its own score breakdown and matched skills.
+> That's the screen that shows the NLP doing something, not just a claim about
+> it. An LLM generates a hidden test bundle, and the agreement is canonicalized
+> under RFC 8785 and written into a tamper-evident hash chain. The canonical
+> bytes that get hashed are stored next to the payload, with a database
+> constraint forcing them to agree — so
+> the thing we hashed cannot drift from the thing you can query."
 
 **What to click:**
 1. Enter: title `Fintech Dashboard Rebuild`, requirements

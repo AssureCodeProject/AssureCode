@@ -26,9 +26,11 @@
 This document analyses the **AssureCode** monorepo architecture for performance
 and efficiency opportunities. AssureCode combines AI/ML (NLP matchmaking,
 Sentence-BERT RAG, trust scoring), a PostgreSQL SHA-256 hash chain with an
-RFC 6962 Merkle tree over it, and event-driven services (Fastify, FastAPI,
-Redis Streams). There is no Kafka in this system; an earlier version of this
-paragraph listed it in error.
+RFC 6962 Merkle tree over it, and event-driven services (Fastify, FastAPI).
+The event bus is pluggable (`EVENT_BUS_TYPE` env var — Redis Streams, Kafka,
+or in-process) via `packages/event-bus`'s `createEventBus()`; an earlier
+version of this paragraph claimed Kafka in error at a time when no caller
+actually selected it — `EVENT_BUS_TYPE=kafka` now reaches `KafkaBus` for real.
 
 The analysis identifies opportunities for algorithmic efficiency, latency
 reduction, and memory footprint reduction, aligned with the **8 GB RAM

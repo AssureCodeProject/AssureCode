@@ -1,12 +1,19 @@
 """NLP matchmaker: rank freelancers against a contract's requirements.
 
-Pipeline:
+Pipeline (retrieve-then-rerank):
   1. Embed the requirements text (port: Embedder).
-  2. For each freelancer, embed their skill "profile string" the same way.
-  3. Score = w_skill * cosine(req, profile)        # semantic skill match
-           + w_trust * trust_score                  # explainable trust
-           + w_history * normalized_history         # delivery track record
+  2. Retrieve: top ~50 candidates by pgvector cosine distance, index-accelerated
+     (GraphRepo.retrieve_by_embedding). Profile vectors are computed once at
+     seed/write time, not per request — see tools/seed-users.py.
+  3. Rerank: composite score over just those candidates —
+       Score = w_skill * cosine(req, profile)        # semantic skill match
+              + w_trust * trust_score                  # explainable trust
+              + w_history * normalized_history          # delivery track record
   4. Sort desc, return top-k with a per-freelancer explanation.
+
+Two stages, not one: HNSW only accelerates ordering by the distance operator
+itself. Ordering directly by the composite would force a sequential scan and
+discard the index, so retrieval and reranking stay separate steps.
 
 The semantic term lets "React frontend" match a freelancer whose profile says
 "TypeScript React Node" even without exact keyword overlap. The trust and
@@ -15,12 +22,26 @@ named, auditable components.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 import numpy as np
 
 from app.ports.embedder import Embedder
-from app.ports.graph_repo import FreelancerProfile, GraphRepo
+from app.ports.graph_repo import GraphRepo
+
+RETRIEVAL_POOL_SIZE = 50
+
+
+def _requirement_tokens(requirements: str) -> set[str]:
+    """Lowercased requirement words, stripped of leading/trailing punctuation.
+
+    Used only to report *which* skills overlapped, for the explanation — the
+    skill score itself is the embedding cosine, not this token set.
+    """
+    tokens = {re.sub(r"^\W+|\W+$", "", t.lower()) for t in requirements.split()}
+    tokens.discard("")
+    return tokens
 
 
 @dataclass(frozen=True)
@@ -51,30 +72,38 @@ class Matchmaker:
         w_skill: float = 0.5,
         w_trust: float = 0.35,
         w_history: float = 0.15,
+        retrieval_pool_size: int = RETRIEVAL_POOL_SIZE,
     ) -> None:
         self._embedder = embedder
         self._graph = graph
         self._w_skill = w_skill
         self._w_trust = w_trust
         self._w_history = w_history
-        # Cache of profile vectors, keyed by freelancer id.
-        self._profile_vecs: dict[str, np.ndarray] = {}
+        # Configurable mainly so evaluation/consistency-check tooling can ask
+        # for a pool covering an entire synthetic population — production
+        # deployments should leave this at the default; a larger pool trades
+        # the HNSW index's speed advantage for exhaustiveness.
+        self._retrieval_pool_size = retrieval_pool_size
 
     def match(self, requirements: str, top_k: int = 5) -> list[MatchResult]:
-        freelancers = self._graph.all_freelancers()
-        if not freelancers:
+        req_vec = self._embedder.embed(requirements)
+
+        candidates = self._graph.retrieve_by_embedding(
+            req_vec.tolist(), limit=self._retrieval_pool_size
+        )
+        if not candidates:
             return []
 
-        req_vec = self._embedder.embed(requirements)
-        # Normalize max deliveries for the history term so it lands in [0, 1].
-        max_deliveries = max((f.deliveries for f in freelancers), default=1) or 1
+        # Normalize the history term over this candidate batch, not a global
+        # table scan — consistent with "only touch what retrieval returned"
+        # and, at any realistic pool size, indistinguishable from a global max.
+        max_deliveries = max((f.deliveries for f, _ in candidates), default=1) or 1
+
+        req_tokens = _requirement_tokens(requirements)
 
         results: list[MatchResult] = []
-        for f in freelancers:
-            prof_vec = self._profile_vector(f)
-            skill_score = float(np.dot(req_vec, prof_vec))  # both L2-normalized → cosine
-            skill_score = max(0.0, skill_score)              # clamp negatives to 0
-
+        for f, similarity in candidates:
+            skill_score = max(0.0, float(similarity))  # clamp negative cosine to 0
             trust_score = float(np.clip(f.trust_score, 0.0, 1.0))
             history_score = float(f.deliveries) / float(max_deliveries)
 
@@ -85,7 +114,6 @@ class Matchmaker:
             )
 
             # Surface the requirement tokens that overlap the freelancer's skills.
-            req_tokens = {t.lower() for t in requirements.split()}
             matched = tuple(sorted(req_tokens & set(f.skills)))
 
             results.append(
@@ -106,14 +134,3 @@ class Matchmaker:
 
         results.sort(key=lambda r: r.score, reverse=True)
         return results[:top_k]
-
-    def _profile_vector(self, f: FreelancerProfile) -> np.ndarray:
-        cached = self._profile_vecs.get(f.id)
-        if cached is not None:
-            return cached
-        # Profile string: name + skills. Name helps semantic disambiguation;
-        # skills carry the matching signal.
-        profile_text = f"{f.name} {' '.join(f.skills)}"
-        vec = self._embedder.embed(profile_text)
-        self._profile_vecs[f.id] = vec
-        return vec

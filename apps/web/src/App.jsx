@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Menu,
@@ -9,6 +9,7 @@ import {
   ChevronRight,
   RotateCcw,
   CheckCircle2,
+  LogOut,
 } from 'lucide-react';
 
 import ContractInitialization from './components/ContractInitialization';
@@ -16,6 +17,38 @@ import VerificationDashboard from './components/VerificationDashboard';
 import XaiTrustScoreView from './components/XaiTrustScoreView';
 import EscrowSettlementView from './components/EscrowSettlementView';
 import MobileDrawer from './components/ui/MobileDrawer';
+import LoginScreen from './components/LoginScreen';
+import { useAuth } from './context/AuthContext';
+
+/** Shared fade used by every phase panel, so they stay in step with each other. */
+const PHASE_TRANSITION = {
+  initial: { opacity: 0 },
+  animate: { opacity: 1 },
+  exit: { opacity: 0 },
+  transition: { duration: 0.15 },
+};
+
+function formatClockTime() {
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mm = String(now.getMinutes()).padStart(2, '0');
+  const ss = String(now.getSeconds()).padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
+}
+
+function desktopTabClasses(isActive, isDisabled) {
+  const base = 'h-14 px-4 font-mono text-xs font-medium flex items-center gap-2 border-b-2 transition-colors';
+  if (isActive) return `${base} border-signal text-prose bg-ink-3/40`;
+  if (isDisabled) return `${base} border-transparent text-prose-dim cursor-not-allowed opacity-40`;
+  return `${base} border-transparent text-prose-muted hover:text-prose hover:border-rule-hi`;
+}
+
+function drawerTabClasses(isActive, isDisabled) {
+  const base = 'w-full p-3 text-left font-medium flex items-center justify-between border';
+  if (isActive) return `${base} border-signal text-signal bg-ink-3`;
+  if (isDisabled) return `${base} border-rule text-prose-dim opacity-40 cursor-not-allowed`;
+  return `${base} border-rule text-prose-muted hover:text-prose hover:border-rule-hi`;
+}
 
 /**
  * App — Root component for the AssureCode audit ledger dashboard.
@@ -27,6 +60,8 @@ import MobileDrawer from './components/ui/MobileDrawer';
  *   Phase 4: Escrow Settlement ('escrow')
  */
 export function App() {
+  const { user, isAuthenticated, isLoading, logout } = useAuth();
+
   // Navigation active tab state: 'contract' | 'verification' | 'xai' | 'escrow'
   const [activeTab, setActiveTab] = useState(() => {
     return localStorage.getItem('assurecode_active_tab') || 'contract';
@@ -39,18 +74,10 @@ export function App() {
   });
 
   // Live session timer state
-  const [sessionTime, setSessionTime] = useState('14:02:11');
+  const [sessionTime, setSessionTime] = useState(formatClockTime);
 
   useEffect(() => {
-    const updateTimer = () => {
-      const now = new Date();
-      const hh = String(now.getHours()).padStart(2, '0');
-      const mm = String(now.getMinutes()).padStart(2, '0');
-      const ss = String(now.getSeconds()).padStart(2, '0');
-      setSessionTime(`${hh}:${mm}:${ss}`);
-    };
-    updateTimer();
-    const interval = setInterval(updateTimer, 1000);
+    const interval = setInterval(() => setSessionTime(formatClockTime()), 1000);
     return () => clearInterval(interval);
   }, []);
 
@@ -58,13 +85,8 @@ export function App() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // Synchronize state persistence to localStorage
-  const isMountedRef = useRef(false);
   useEffect(() => {
-    if (isMountedRef.current) {
-      localStorage.setItem('assurecode_active_tab', activeTab);
-    } else {
-      isMountedRef.current = true;
-    }
+    localStorage.setItem('assurecode_active_tab', activeTab);
   }, [activeTab]);
 
   useEffect(() => {
@@ -96,12 +118,29 @@ export function App() {
     setIsMobileMenuOpen(false);
   };
 
+  // Only clients post contracts; freelancers are assigned to them. A
+  // freelancer landing on Phase 1 would just hit a 403 from the gateway, so
+  // the tab is disabled here instead of failing after a full form fill-out.
+  const isClient = user?.role === 'client';
+
   const navItems = [
-    { id: 'contract', label: '01. Contract Initialization', shortLabel: '01. Contract', icon: FileText, disabled: false },
+    { id: 'contract', label: '01. Contract Initialization', shortLabel: '01. Contract', icon: FileText, disabled: !isClient },
     { id: 'verification', label: '02. CI/CD Verification', shortLabel: '02. Verification', icon: Activity, disabled: !contractData },
     { id: 'xai', label: '03. XAI Trust Score', shortLabel: '03. Trust Score', icon: BrainCircuit, disabled: !contractData },
     { id: 'escrow', label: '04. Escrow Settlement', shortLabel: '04. Escrow', icon: Lock, disabled: !contractData },
   ];
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-ink text-prose-muted flex items-center justify-center font-mono text-xs">
+        Loading session...
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <LoginScreen />;
+  }
 
   return (
     <div className="min-h-screen bg-ink text-prose flex flex-col font-sans max-w-full overflow-x-hidden selection:bg-signal/20 selection:text-prose">
@@ -140,27 +179,17 @@ export function App() {
 
           {/* Desktop Phase Tabs */}
           <div className="hidden md:flex items-center h-full">
-            {navItems.map((item) => {
-              const isActive = activeTab === item.id;
-
-              return (
-                <button
-                  key={item.id}
-                  id={`nav-phase-${item.id}`}
-                  onClick={() => !item.disabled && navigateTo(item.id)}
-                  disabled={item.disabled}
-                  className={`h-14 px-4 font-mono text-xs font-medium flex items-center gap-2 border-b-2 transition-colors ${
-                    isActive
-                      ? 'border-signal text-prose bg-ink-3/40'
-                      : item.disabled
-                      ? 'border-transparent text-prose-dim cursor-not-allowed opacity-40'
-                      : 'border-transparent text-prose-muted hover:text-prose hover:border-rule-hi'
-                  }`}
-                >
-                  <span>{item.label}</span>
-                </button>
-              );
-            })}
+            {navItems.map((item) => (
+              <button
+                key={item.id}
+                id={`nav-phase-${item.id}`}
+                onClick={() => !item.disabled && navigateTo(item.id)}
+                disabled={item.disabled}
+                className={desktopTabClasses(activeTab === item.id, item.disabled)}
+              >
+                <span>{item.label}</span>
+              </button>
+            ))}
           </div>
 
           {/* Actions: Reset & Status */}
@@ -180,6 +209,22 @@ export function App() {
               <span className="w-1.5 h-1.5 rounded-full bg-signal animate-data-tick" />
               <span className="text-signal tracking-wider font-semibold">LOCKED</span>
             </div>
+
+            <div className="hidden sm:flex items-center gap-2 px-2.5 py-1 font-mono text-xs border border-rule bg-ink text-prose-muted">
+              <span className="text-prose">{user?.displayName || user?.email}</span>
+              <span className="text-prose-dim">·</span>
+              <span className="uppercase text-prose-dim">{user?.role}</span>
+            </div>
+
+            <button
+              id="btn-logout"
+              onClick={logout}
+              className="flex items-center gap-1.5 px-2.5 py-1 font-mono text-xs text-prose-muted hover:text-fail border border-rule hover:border-fail/50 transition-colors"
+              title="Sign out"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">[sign out]</span>
+            </button>
 
             {/* Mobile Drawer Toggle */}
             <button
@@ -203,27 +248,17 @@ export function App() {
         position="right"
       >
         <div className="space-y-1 py-2 font-mono text-xs">
-          {navItems.map((item) => {
-            const isActive = activeTab === item.id;
-
-            return (
-              <button
-                key={item.id}
-                onClick={() => !item.disabled && navigateTo(item.id)}
-                disabled={item.disabled}
-                className={`w-full p-3 text-left font-medium flex items-center justify-between border ${
-                  isActive
-                    ? 'border-signal text-signal bg-ink-3'
-                    : item.disabled
-                    ? 'border-rule text-prose-dim opacity-40 cursor-not-allowed'
-                    : 'border-rule text-prose-muted hover:text-prose hover:border-rule-hi'
-                }`}
-              >
-                <span>{item.label}</span>
-                <ChevronRight className="w-4 h-4 text-prose-muted" />
-              </button>
-            );
-          })}
+          {navItems.map((item) => (
+            <button
+              key={item.id}
+              onClick={() => !item.disabled && navigateTo(item.id)}
+              disabled={item.disabled}
+              className={drawerTabClasses(activeTab === item.id, item.disabled)}
+            >
+              <span>{item.label}</span>
+              <ChevronRight className="w-4 h-4 text-prose-muted" />
+            </button>
+          ))}
         </div>
       </MobileDrawer>
 
@@ -258,14 +293,8 @@ export function App() {
 
         {/* Tab View Routing Container */}
         <AnimatePresence mode="wait">
-          {activeTab === 'contract' && (
-            <motion.div
-              key="contract"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.15 }}
-            >
+          {activeTab === 'contract' && isClient && (
+            <motion.div key="contract" {...PHASE_TRANSITION}>
               <ContractInitialization
                 onContractLocked={handleContractLocked}
                 contractData={contractData}
@@ -274,14 +303,23 @@ export function App() {
             </motion.div>
           )}
 
-          {activeTab === 'verification' && (
+          {activeTab === 'contract' && !isClient && (
             <motion.div
-              key="verification"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.15 }}
+              key="freelancer-landing"
+              {...PHASE_TRANSITION}
+              className="max-w-2xl mx-auto bg-ink-2 border border-rule p-8 text-center font-mono text-sm text-prose-muted"
             >
+              <p className="text-prose font-semibold mb-2">Signed in as {user?.displayName || user?.email}</p>
+              <p>
+                Freelancer accounts don't post contracts. There is no assignments list in
+                this build yet — if you have a contract ID from a client, its Phase 2–4
+                screens will work once you have contract data loaded.
+              </p>
+            </motion.div>
+          )}
+
+          {activeTab === 'verification' && (
+            <motion.div key="verification" {...PHASE_TRANSITION}>
               <VerificationDashboard
                 contractData={contractData}
                 onBack={() => navigateTo('contract')}
@@ -291,13 +329,7 @@ export function App() {
           )}
 
           {activeTab === 'xai' && (
-            <motion.div
-              key="xai"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.15 }}
-            >
+            <motion.div key="xai" {...PHASE_TRANSITION}>
               <XaiTrustScoreView
                 contractData={contractData}
                 onProceedToEscrow={() => navigateTo('escrow')}
@@ -306,13 +338,7 @@ export function App() {
           )}
 
           {activeTab === 'escrow' && (
-            <motion.div
-              key="escrow"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.15 }}
-            >
+            <motion.div key="escrow" {...PHASE_TRANSITION}>
               <EscrowSettlementView
                 contractData={contractData}
                 onResetWorkflow={handleResetContract}

@@ -42,9 +42,11 @@ describe.skipIf(!available)('settlement oracle gate', () => {
   beforeAll(async () => {
     pool = new pg.Pool(buildDbConfig(process.env.DATABASE_URL!));
     store = new OracleStore(pool);
+    // client_id must reference a real users row since V012 added the FK —
+    // 'legacy-client' is the fallback account seeded by tools/seed-users.py.
     await pool.query(
       `INSERT INTO contracts (contract_id, client_id, title, requirements, budget_cents, deadline, status)
-       VALUES ($1, 'client-test', 'Oracle gate test', 'requirements', 100000, '2026-12-31', 'LOCKED')
+       VALUES ($1, 'legacy-client', 'Oracle gate test', 'requirements', 100000, '2026-12-31', 'LOCKED')
        ON CONFLICT (contract_id) DO NOTHING`,
       [contractId],
     );

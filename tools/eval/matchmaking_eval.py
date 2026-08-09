@@ -54,7 +54,7 @@ import json
 import random
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -215,6 +215,33 @@ QUERIES: list[Query] = [
 ]
 
 
+def profile_text(f: FreelancerProfile) -> str:
+    """The text whose embedding represents a freelancer.
+
+    Must stay identical to the profile_text tools/seed-users.py writes, since
+    that is what production actually stores in profile_embedding — embedding a
+    differently-shaped string here would benchmark a pipeline nothing runs.
+    """
+    return f"{f.name} {' '.join(f.skills)}"
+
+
+def graph_with_embeddings(
+    embedder: SentenceTransformerEmbedder, profiles: list[FreelancerProfile]
+) -> InMemoryGraphRepo:
+    """An InMemoryGraphRepo whose profiles carry real vectors.
+
+    retrieve_by_embedding degrades to similarity 0.0 for profiles without an
+    embedding (see its Protocol docstring), so attaching them is what makes the
+    in-memory repo exercise the real retrieve-then-rerank path rather than a stub.
+    """
+    prof_vecs = embedder.embed_batch([profile_text(f) for f in profiles])
+    graph = InMemoryGraphRepo()
+    graph._freelancers = {
+        f.id: replace(f, embedding=tuple(v.tolist())) for f, v in zip(profiles, prof_vecs)
+    }
+    return graph
+
+
 def generate_pool(n: int, seed: int = SEED) -> tuple[list[FreelancerProfile], list[str]]:
     """Deterministic synthetic pool. Returns profiles and their primary domains.
 
@@ -259,7 +286,9 @@ def _dcg(rels: list[int]) -> float:
     return sum(r / np.log2(i + 2) for i, r in enumerate(rels))
 
 
-def rank_metrics(ranked_rel: list[int], total_relevant: int, ks=(1, 5, 10)) -> dict:
+def rank_metrics(
+    ranked_rel: list[int], total_relevant: int, ks: tuple[int, ...] = (1, 5, 10)
+) -> dict:
     """Binary-relevance retrieval metrics over one query's full ranking.
 
     ranked_rel is 1/0 per position, best first, over the whole pool.
@@ -310,8 +339,7 @@ def compute_components(
     profiles: list[FreelancerProfile],
     queries: list[Query],
 ) -> Components:
-    profile_texts = [f"{f.name} {' '.join(f.skills)}" for f in profiles]
-    prof_vecs = embedder.embed_batch(profile_texts)
+    prof_vecs = embedder.embed_batch([profile_text(f) for f in profiles])
     req_vecs = embedder.embed_batch([q.text for q in queries])
 
     skill = np.clip(req_vecs @ prof_vecs.T, 0.0, None).astype(np.float64)
@@ -378,14 +406,17 @@ def verify_against_shipped_code(
     Matchmaker returns at the published weights — otherwise the ablation would
     be a study of a formula this service does not use.
     """
-    graph = InMemoryGraphRepo()
-    graph._freelancers = {f.id: f for f in profiles}
     mm = Matchmaker(
         embedder=embedder,
-        graph=graph,
+        graph=graph_with_embeddings(embedder, profiles),
         w_skill=PUBLISHED_WEIGHTS[0],
         w_trust=PUBLISHED_WEIGHTS[1],
         w_history=PUBLISHED_WEIGHTS[2],
+        # Full-pool retrieval here, not the production default of 50: this
+        # check verifies the composite-scoring arithmetic agrees with the
+        # ablation matrix, which ranks over the whole pool. A capped pool
+        # would make retrieval recall loss look like an arithmetic bug.
+        retrieval_pool_size=len(profiles),
     )
 
     for qi in range(min(n_check, len(queries))):
@@ -411,10 +442,19 @@ def measure_latency(
 ) -> dict:
     """Cold and warm query latency through Matchmaker as it is deployed.
 
-    Matchmaker embeds profile vectors lazily, one at a time, and caches them, so
-    the first query of a process pays N sequential model calls. Reporting only
-    the warm number would hide that; reporting only the cold number would
-    misrepresent steady state. Both are here.
+    Retrieve-then-rerank replaced the previous design, where Matchmaker
+    embedded every profile lazily, one at a time, on the first query — N
+    sequential model calls before that query could even score anything.
+    Profile vectors are now precomputed once (see tools/seed-users.py) and
+    read back by GraphRepo.retrieve_by_embedding; the query pays one model
+    call, not N+1. `cold_includes_profile_embeds` is kept in the output for
+    comparability against pre-retrieve-then-rerank numbers, even though it no
+    longer describes what the cold call actually does.
+
+    InMemoryGraphRepo has no real vector index, so its retrieve_by_embedding
+    is a brute-force scan — still N cheap dot products rather than N model
+    calls, which is the change this measures, but not a stand-in for
+    PostgresGraphRepo's HNSW-accelerated query in production.
     """
     embedder = SentenceTransformerEmbedder(model_name=model_name)
 
@@ -422,9 +462,7 @@ def measure_latency(
     embedder.embed("warm up the model load path")
     model_load_ms = (time.perf_counter() - t0) * 1000.0
 
-    graph = InMemoryGraphRepo()
-    graph._freelancers = {f.id: f for f in profiles}
-    mm = Matchmaker(embedder=embedder, graph=graph)
+    mm = Matchmaker(embedder=embedder, graph=graph_with_embeddings(embedder, profiles))
 
     t0 = time.perf_counter()
     mm.match(queries[0].text, top_k=5)
@@ -486,139 +524,148 @@ def run_ablation(
 
 # --------------------------------------------------------------------------
 
+def _metrics_table(lines: list[str], per_kind: dict) -> None:
+    """Append the overall/explicit/paraphrase metric table for one weight setting."""
+    lines.append("| Query kind | P@1 | P@5 | P@10 | R@10 | MRR | nDCG@10 |")
+    lines.append("|---|---|---|---|---|---|---|")
+    for kind in ("overall", "explicit", "paraphrase"):
+        m = per_kind[kind]
+        lines.append(f"| {kind} | {m['p_at_1']:.3f} | {m['p_at_5']:.3f} | "
+                     f"{m['p_at_10']:.3f} | {m['recall_at_10']:.3f} | "
+                     f"{m['rr']:.3f} | {m['ndcg_at_10']:.3f} |")
+
+
+def _write_ablation_section(lines: list[str], ab: dict, published_weights: dict) -> None:
+    best = ab["best"]
+    pub_row = next(
+        r for r in ab["grid"]
+        if (r["w_skill"], r["w_trust"], r["w_history"])
+        == (published_weights["w_skill"], published_weights["w_trust"],
+            published_weights["w_history"])
+    )
+    lines.append("### Weight ablation")
+    lines.append("")
+    lines.append(f"All {ab['settings_evaluated']} settings of "
+                 f"(w_skill, w_trust, w_history) on the simplex at step "
+                 f"{ab['step']}, scored on the same queries. The full grid is in "
+                 "`matchmaking_results.json`.")
+    lines.append("")
+    lines.append("| Setting | w_skill | w_trust | w_history | nDCG@10 | P@5 | MRR |")
+    lines.append("|---|---|---|---|---|---|---|")
+    lines.append(f"| best | {best['w_skill']} | {best['w_trust']} | "
+                 f"{best['w_history']} | **{best['ndcg_at_10']}** | "
+                 f"{best['p_at_5']} | {best['mrr']} |")
+    lines.append(f"| shipped | {pub_row['w_skill']} | {pub_row['w_trust']} | "
+                 f"{pub_row['w_history']} | {pub_row['ndcg_at_10']} | "
+                 f"{pub_row['p_at_5']} | {pub_row['mrr']} |")
+    lines.append("")
+    lines.append(f"The shipped weights rank **{ab['published_rank']} of "
+                 f"{ab['settings_evaluated']}**.")
+    lines.append("")
+
+
+def _write_latency_section(lines: list[str], lat: dict) -> None:
+    lines.append("### Latency")
+    lines.append("")
+    lines.append("| | ms |")
+    lines.append("|---|---|")
+    lines.append(f"| Model load (first embed in the process) | {lat['model_load_ms']:.0f} |")
+    lines.append(f"| Cold first query (pool of {lat['cold_includes_profile_embeds']} "
+                 f"profiles) | {lat['cold_first_query_ms']:.0f} |")
+    lines.append(f"| Warm query, mean over {lat['warm_query_count']} | "
+                 f"{lat['warm_query_ms_mean']:.1f} |")
+    lines.append(f"| Warm query, p50 | {lat['warm_query_ms_p50']:.1f} |")
+    lines.append(f"| Warm query, p95 | {lat['warm_query_ms_p95']:.1f} |")
+    lines.append("")
+    lines.append("Profile vectors are precomputed at seed time and read back by "
+                 "`GraphRepo.retrieve_by_embedding`, so a query pays one model call "
+                 "rather than N+1. The cold figure still carries the process's "
+                 "first-query overhead, which reporting only the warm number would hide.")
+    lines.append("")
+
+
+def _write_size_section(lines: list[str], n: str, s: dict, report: dict) -> None:
+    pub = report["published_weights"]
+    lines.append("---")
+    lines.append("")
+    lines.append(f"## N = {n} freelancers")
+    lines.append("")
+    lines.append(f"{min(s['relevant_per_domain'].values())}–"
+                 f"{max(s['relevant_per_domain'].values())} relevant freelancers per "
+                 f"query, so R@10 cannot exceed **{s['recall_at_10_ceiling']:.3f}**.")
+    lines.append("")
+    lines.append("### Published weights "
+                 f"(w_skill={pub['w_skill']}, w_trust={pub['w_trust']}, "
+                 f"w_history={pub['w_history']})")
+    lines.append("")
+    _metrics_table(lines, s["published"])
+    lines.append("")
+    lines.append("### Skill term alone (w_skill=1.0)")
+    lines.append("")
+    _metrics_table(lines, s["skill_only"])
+    lines.append("")
+
+    if s.get("ablation"):
+        _write_ablation_section(lines, s["ablation"], pub)
+
+    _write_latency_section(lines, s["latency"])
+
+
 def write_markdown(report: dict, path: Path) -> None:
     """Emit the report the evaluator reads, from the same dict that goes to JSON."""
-    L: list[str] = []
-    L.append("# AssureCode Matchmaking Evaluation")
-    L.append("")
-    L.append(f"> Generated by `tools/eval/matchmaking_eval.py` on {report['generated_at']}.")
-    L.append(f"> Embedder: **{report['model']}** (real sentence-transformers, "
-             f"not the hash-bucket `FakeEmbedder`). Seed {report['seed']}.")
-    L.append("")
-    L.append("## What is measured")
-    L.append("")
-    L.append(f"{report['query_count']} client queries across {len(DOMAINS)} engineering "
-             "domains are ranked against a synthetic freelancer pool. A freelancer is "
-             "relevant iff their primary domain is the query's domain.")
-    L.append("")
-    L.append("Queries come in two kinds and are reported separately:")
-    L.append("")
-    L.append("- **explicit** — the client names the technologies (\"Solidity, Ethers.js\")")
-    L.append("- **paraphrase** — the client describes the outcome and names none of them")
-    L.append("")
-    L.append("A keyword matcher can serve the first. Only an embedding can serve the "
-             "second, so the gap between the two rows is the measurement that "
-             "distinguishes semantic matching from string overlap.")
-    L.append("")
-    L.append(f"**Relevance rule.** {report['relevance_rule']}")
-    L.append("")
-    L.append(f"**Scope.** {report['scope_caveat']}")
-    L.append("")
+    lines: list[str] = []
+    lines.append("# AssureCode Matchmaking Evaluation")
+    lines.append("")
+    lines.append(f"> Generated by `tools/eval/matchmaking_eval.py` on {report['generated_at']}.")
+    lines.append(f"> Embedder: **{report['model']}** (real sentence-transformers, "
+                 f"not the hash-bucket `FakeEmbedder`). Seed {report['seed']}.")
+    lines.append("")
+    lines.append("## What is measured")
+    lines.append("")
+    lines.append(f"{report['query_count']} client queries across {len(DOMAINS)} engineering "
+                 "domains are ranked against a synthetic freelancer pool. A freelancer is "
+                 "relevant iff their primary domain is the query's domain.")
+    lines.append("")
+    lines.append("Queries come in two kinds and are reported separately:")
+    lines.append("")
+    lines.append("- **explicit** — the client names the technologies (\"Solidity, Ethers.js\")")
+    lines.append("- **paraphrase** — the client describes the outcome and names none of them")
+    lines.append("")
+    lines.append("A keyword matcher can serve the first. Only an embedding can serve the "
+                 "second, so the gap between the two rows is the measurement that "
+                 "distinguishes semantic matching from string overlap.")
+    lines.append("")
+    lines.append(f"**Relevance rule.** {report['relevance_rule']}")
+    lines.append("")
+    lines.append(f"**Scope.** {report['scope_caveat']}")
+    lines.append("")
 
     for n, s in report["sizes"].items():
-        L.append("---")
-        L.append("")
-        L.append(f"## N = {n} freelancers")
-        L.append("")
-        ceiling = s["recall_at_10_ceiling"]
-        L.append(f"{min(s['relevant_per_domain'].values())}–"
-                 f"{max(s['relevant_per_domain'].values())} relevant freelancers per "
-                 f"query, so R@10 cannot exceed **{ceiling:.3f}**.")
-        L.append("")
-        L.append("### Published weights "
-                 f"(w_skill={report['published_weights']['w_skill']}, "
-                 f"w_trust={report['published_weights']['w_trust']}, "
-                 f"w_history={report['published_weights']['w_history']})")
-        L.append("")
-        L.append("| Query kind | P@1 | P@5 | P@10 | R@10 | MRR | nDCG@10 |")
-        L.append("|---|---|---|---|---|---|---|")
-        for kind in ("overall", "explicit", "paraphrase"):
-            m = s["published"][kind]
-            L.append(f"| {kind} | {m['p_at_1']:.3f} | {m['p_at_5']:.3f} | "
-                     f"{m['p_at_10']:.3f} | {m['recall_at_10']:.3f} | "
-                     f"{m['rr']:.3f} | {m['ndcg_at_10']:.3f} |")
-        L.append("")
-        L.append("### Skill term alone (w_skill=1.0)")
-        L.append("")
-        L.append("| Query kind | P@1 | P@5 | P@10 | R@10 | MRR | nDCG@10 |")
-        L.append("|---|---|---|---|---|---|---|")
-        for kind in ("overall", "explicit", "paraphrase"):
-            m = s["skill_only"][kind]
-            L.append(f"| {kind} | {m['p_at_1']:.3f} | {m['p_at_5']:.3f} | "
-                     f"{m['p_at_10']:.3f} | {m['recall_at_10']:.3f} | "
-                     f"{m['rr']:.3f} | {m['ndcg_at_10']:.3f} |")
-        L.append("")
+        _write_size_section(lines, n, s, report)
 
-        ab = s.get("ablation")
-        if ab:
-            best = ab["best"]
-            L.append("### Weight ablation")
-            L.append("")
-            L.append(f"All {ab['settings_evaluated']} settings of "
-                     f"(w_skill, w_trust, w_history) on the simplex at step "
-                     f"{ab['step']}, scored on the same queries. The full grid is in "
-                     "`matchmaking_results.json`.")
-            L.append("")
-            L.append("| Setting | w_skill | w_trust | w_history | nDCG@10 | P@5 | MRR |")
-            L.append("|---|---|---|---|---|---|---|")
-            pub = report["published_weights"]
-            pub_row = next(
-                r for r in ab["grid"]
-                if (r["w_skill"], r["w_trust"], r["w_history"])
-                == (pub["w_skill"], pub["w_trust"], pub["w_history"])
-            )
-            L.append(f"| best | {best['w_skill']} | {best['w_trust']} | "
-                     f"{best['w_history']} | **{best['ndcg_at_10']}** | "
-                     f"{best['p_at_5']} | {best['mrr']} |")
-            L.append(f"| shipped | {pub_row['w_skill']} | {pub_row['w_trust']} | "
-                     f"{pub_row['w_history']} | {pub_row['ndcg_at_10']} | "
-                     f"{pub_row['p_at_5']} | {pub_row['mrr']} |")
-            L.append("")
-            L.append(f"The shipped weights rank **{ab['published_rank']} of "
-                     f"{ab['settings_evaluated']}**.")
-            L.append("")
+    lines.append("---")
+    lines.append("")
+    lines.append("## Findings")
+    lines.append("")
+    lines.append("1. **The explicit/paraphrase gap is large and holds at both pool sizes.** "
+                 "When the client names the technology the ranking is strong; when they "
+                 "describe the outcome in plain language it degrades sharply. The system "
+                 "is closer to a robust keyword matcher than to a semantic one.")
+    lines.append("2. **The trust and history terms cost retrieval accuracy.** Weighting "
+                 "the semantic term alone beats the shipped weights on every headline "
+                 "metric, and the ablation optimum sits near w_skill = 0.95. Trust and "
+                 "delivery count are properties of the freelancer, not of the query, so "
+                 "they can only reorder — never sharpen — a domain match.")
+    lines.append("3. That is an argument about *this* objective, not about the weights "
+                 "being wrong. Trust is in the score on purpose: the product ranks by "
+                 "who should be hired, not by who is most textually similar. What the "
+                 "ablation establishes is that the current split has never been "
+                 "measured against either goal, and that no logged hiring outcome "
+                 "exists in this repo to measure the first one against.")
+    lines.append("")
+    lines.append("*Regenerate with `python tools/eval/matchmaking_eval.py`.*")
 
-        lat = s["latency"]
-        L.append("### Latency")
-        L.append("")
-        L.append("| | ms |")
-        L.append("|---|---|")
-        L.append(f"| Model load (first embed in the process) | {lat['model_load_ms']:.0f} |")
-        L.append(f"| Cold first query (embeds {lat['cold_includes_profile_embeds']} "
-                 f"profiles one at a time) | {lat['cold_first_query_ms']:.0f} |")
-        L.append(f"| Warm query, mean over {lat['warm_query_count']} | "
-                 f"{lat['warm_query_ms_mean']:.1f} |")
-        L.append(f"| Warm query, p50 | {lat['warm_query_ms_p50']:.1f} |")
-        L.append(f"| Warm query, p95 | {lat['warm_query_ms_p95']:.1f} |")
-        L.append("")
-        L.append("`Matchmaker` embeds profile vectors lazily and caches them, so the "
-                 "first query of a process pays N sequential model calls. Reporting "
-                 "only the warm figure would hide that.")
-        L.append("")
-
-    L.append("---")
-    L.append("")
-    L.append("## Findings")
-    L.append("")
-    L.append("1. **The explicit/paraphrase gap is large and holds at both pool sizes.** "
-             "When the client names the technology the ranking is strong; when they "
-             "describe the outcome in plain language it degrades sharply. The system "
-             "is closer to a robust keyword matcher than to a semantic one.")
-    L.append("2. **The trust and history terms cost retrieval accuracy.** Weighting "
-             "the semantic term alone beats the shipped weights on every headline "
-             "metric, and the ablation optimum sits near w_skill = 0.95. Trust and "
-             "delivery count are properties of the freelancer, not of the query, so "
-             "they can only reorder — never sharpen — a domain match.")
-    L.append("3. That is an argument about *this* objective, not about the weights "
-             "being wrong. Trust is in the score on purpose: the product ranks by "
-             "who should be hired, not by who is most textually similar. What the "
-             "ablation establishes is that the current split has never been "
-             "measured against either goal, and that no logged hiring outcome "
-             "exists in this repo to measure the first one against.")
-    L.append("")
-    L.append("*Regenerate with `python tools/eval/matchmaking_eval.py`.*")
-
-    path.write_text("\n".join(L) + "\n", encoding="utf-8")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def fmt_block(title: str, res: dict) -> str:
@@ -631,6 +678,101 @@ def fmt_block(title: str, res: dict) -> str:
             f"MRR {m['rr']:.3f}  nDCG@10 {m['ndcg_at_10']:.3f}"
         )
     return "\n".join(lines)
+
+
+def _run_ablation_section(
+    comp: Components,
+    primary_domains: list[str],
+    args: argparse.Namespace,
+) -> dict:
+    """Score the whole weight simplex and report where the shipped weights land."""
+    print()
+    t0 = time.perf_counter()
+    rows = run_ablation(comp, primary_domains, QUERIES, args.ablation_step)
+    print(f"  ablation: {len(rows)} weight settings in "
+          f"{time.perf_counter() - t0:.1f}s")
+
+    best = max(rows, key=lambda r: (r["ndcg_at_10"], r["p_at_5"]))
+    pub_row = next(
+        r for r in rows
+        if (r["w_skill"], r["w_trust"], r["w_history"]) == PUBLISHED_WEIGHTS
+    )
+    ranked = sorted(rows, key=lambda r: (-r["ndcg_at_10"], -r["p_at_5"]))
+    pub_rank = ranked.index(pub_row) + 1
+
+    print(f"    best      w=({best['w_skill']}, {best['w_trust']}, "
+          f"{best['w_history']})  nDCG@10 {best['ndcg_at_10']:.4f}  "
+          f"P@5 {best['p_at_5']:.4f}")
+    print(f"    published w=({pub_row['w_skill']}, {pub_row['w_trust']}, "
+          f"{pub_row['w_history']})  nDCG@10 {pub_row['ndcg_at_10']:.4f}  "
+          f"P@5 {pub_row['p_at_5']:.4f}   "
+          f"rank {pub_rank} of {len(rows)}")
+    print("    top 5 settings by nDCG@10:")
+    for r in ranked[:5]:
+        print(f"      w_skill {r['w_skill']:.2f}  w_trust {r['w_trust']:.2f}  "
+              f"w_history {r['w_history']:.2f}  ->  nDCG@10 {r['ndcg_at_10']:.4f}  "
+              f"P@5 {r['p_at_5']:.4f}  MRR {r['mrr']:.4f}")
+
+    return {
+        "step": args.ablation_step,
+        "settings_evaluated": len(rows),
+        "best": best,
+        "published_rank": pub_rank,
+        "grid": rows,
+    }
+
+
+def evaluate_pool_size(
+    embedder: SentenceTransformerEmbedder, n: int, args: argparse.Namespace
+) -> dict:
+    """Run the full evaluation at one pool size, printing progress as it goes."""
+    print("-" * 74)
+    print(f" N = {n} freelancers")
+    print("-" * 74)
+
+    profiles, primary_domains = generate_pool(n)
+    rel_per_domain = {d: sum(1 for p in primary_domains if p == d) for d in DOMAINS}
+    min_rel = min(rel_per_domain.values())
+    print(f"  relevant per query: {min_rel}-{max(rel_per_domain.values())} of {n}  "
+          f"(so R@10 cannot exceed {min(10, min_rel) / min_rel:.3f})")
+
+    t0 = time.perf_counter()
+    comp = compute_components(embedder, profiles, QUERIES)
+    print(f"  embedded {n} profiles + {len(QUERIES)} queries in "
+          f"{time.perf_counter() - t0:.1f}s")
+
+    verify_against_shipped_code(embedder, profiles, comp, QUERIES)
+    print("  ✓ ranking reproduces Matchmaker.match() at the published weights")
+
+    published = evaluate(comp, primary_domains, QUERIES, PUBLISHED_WEIGHTS)
+    print()
+    print(fmt_block(f"published weights {PUBLISHED_WEIGHTS}", published))
+
+    skill_only = evaluate(comp, primary_domains, QUERIES, (1.0, 0.0, 0.0))
+    print()
+    print(fmt_block("skill term alone (1.0, 0.0, 0.0)", skill_only))
+
+    size_report: dict = {
+        "n_freelancers": n,
+        "relevant_per_domain": rel_per_domain,
+        "recall_at_10_ceiling": round(min(10, min_rel) / min_rel, 4),
+        "published": published,
+        "skill_only": skill_only,
+    }
+
+    if not args.no_ablation:
+        size_report["ablation"] = _run_ablation_section(comp, primary_domains, args)
+
+    print()
+    lat = measure_latency(profiles, QUERIES, args.model)
+    print(f"  latency: model load {lat['model_load_ms']:.0f} ms | "
+          f"cold first query {lat['cold_first_query_ms']:.0f} ms "
+          f"(pool of {lat['cold_includes_profile_embeds']} profiles) | "
+          f"warm mean {lat['warm_query_ms_mean']:.1f} ms  "
+          f"p95 {lat['warm_query_ms_p95']:.1f} ms")
+    size_report["latency"] = lat
+
+    return size_report
 
 
 def main() -> int:
@@ -665,7 +807,7 @@ def main() -> int:
     print(f" domains          : {len(DOMAINS)}")
     print(f" published weights: w_skill={PUBLISHED_WEIGHTS[0]} "
           f"w_trust={PUBLISHED_WEIGHTS[1]} w_history={PUBLISHED_WEIGHTS[2]}")
-    print(f" relevance        : freelancer primary domain == query domain (strict)")
+    print(" relevance        : freelancer primary domain == query domain (strict)")
     print()
 
     embedder = SentenceTransformerEmbedder(model_name=args.model)
@@ -692,86 +834,7 @@ def main() -> int:
     }
 
     for n in args.sizes:
-        print("-" * 74)
-        print(f" N = {n} freelancers")
-        print("-" * 74)
-
-        profiles, primary_domains = generate_pool(n)
-        rel_per_domain = {d: sum(1 for p in primary_domains if p == d) for d in DOMAINS}
-        min_rel = min(rel_per_domain.values())
-        print(f"  relevant per query: {min_rel}-{max(rel_per_domain.values())} of {n}  "
-              f"(so R@10 cannot exceed {min(10, min_rel) / min_rel:.3f})")
-
-        t0 = time.perf_counter()
-        comp = compute_components(embedder, profiles, QUERIES)
-        embed_s = time.perf_counter() - t0
-        print(f"  embedded {n} profiles + {len(QUERIES)} queries in {embed_s:.1f}s")
-
-        verify_against_shipped_code(embedder, profiles, comp, QUERIES)
-        print("  ✓ ranking reproduces Matchmaker.match() at the published weights")
-
-        published = evaluate(comp, primary_domains, QUERIES, PUBLISHED_WEIGHTS)
-        print()
-        print(fmt_block(f"published weights {PUBLISHED_WEIGHTS}", published))
-
-        skill_only = evaluate(comp, primary_domains, QUERIES, (1.0, 0.0, 0.0))
-        print()
-        print(fmt_block("skill term alone (1.0, 0.0, 0.0)", skill_only))
-
-        size_report: dict = {
-            "n_freelancers": n,
-            "relevant_per_domain": rel_per_domain,
-            "recall_at_10_ceiling": round(min(10, min_rel) / min_rel, 4),
-            "published": published,
-            "skill_only": skill_only,
-        }
-
-        if not args.no_ablation:
-            print()
-            t0 = time.perf_counter()
-            rows = run_ablation(comp, primary_domains, QUERIES, args.ablation_step)
-            print(f"  ablation: {len(rows)} weight settings in "
-                  f"{time.perf_counter() - t0:.1f}s")
-
-            best = max(rows, key=lambda r: (r["ndcg_at_10"], r["p_at_5"]))
-            pub_row = next(
-                r for r in rows
-                if (r["w_skill"], r["w_trust"], r["w_history"]) == PUBLISHED_WEIGHTS
-            )
-            ranked = sorted(rows, key=lambda r: (-r["ndcg_at_10"], -r["p_at_5"]))
-            pub_rank = ranked.index(pub_row) + 1
-
-            print(f"    best      w=({best['w_skill']}, {best['w_trust']}, "
-                  f"{best['w_history']})  nDCG@10 {best['ndcg_at_10']:.4f}  "
-                  f"P@5 {best['p_at_5']:.4f}")
-            print(f"    published w=({pub_row['w_skill']}, {pub_row['w_trust']}, "
-                  f"{pub_row['w_history']})  nDCG@10 {pub_row['ndcg_at_10']:.4f}  "
-                  f"P@5 {pub_row['p_at_5']:.4f}   "
-                  f"rank {pub_rank} of {len(rows)}")
-            print("    top 5 settings by nDCG@10:")
-            for r in ranked[:5]:
-                print(f"      w_skill {r['w_skill']:.2f}  w_trust {r['w_trust']:.2f}  "
-                      f"w_history {r['w_history']:.2f}  ->  nDCG@10 {r['ndcg_at_10']:.4f}  "
-                      f"P@5 {r['p_at_5']:.4f}  MRR {r['mrr']:.4f}")
-
-            size_report["ablation"] = {
-                "step": args.ablation_step,
-                "settings_evaluated": len(rows),
-                "best": best,
-                "published_rank": pub_rank,
-                "grid": rows,
-            }
-
-        print()
-        lat = measure_latency(profiles, QUERIES, args.model)
-        print(f"  latency: model load {lat['model_load_ms']:.0f} ms | "
-              f"cold first query {lat['cold_first_query_ms']:.0f} ms "
-              f"(embeds {lat['cold_includes_profile_embeds']} profiles) | "
-              f"warm mean {lat['warm_query_ms_mean']:.1f} ms  "
-              f"p95 {lat['warm_query_ms_p95']:.1f} ms")
-        size_report["latency"] = lat
-
-        report["sizes"][str(n)] = size_report
+        report["sizes"][str(n)] = evaluate_pool_size(embedder, n, args)
         print()
 
     if args.no_report:

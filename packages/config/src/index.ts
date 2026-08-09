@@ -6,6 +6,7 @@ import pino from 'pino';
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getCorrelationId } from '@assurecode/telemetry';
 
 // ── .env ───────────────────────────────────────────────────────
 //
@@ -63,6 +64,13 @@ export const AppConfigSchema = z.object({
   // Redis
   REDIS_URL: z.string().default('redis://localhost:6379'),
 
+  // Event bus backend. createEventBus() only selects KafkaBus when passed an
+  // options object with type:'kafka' — every caller used to pass REDIS_URL as
+  // a bare string, so this env var was dead and the bus was always Redis (or
+  // in-memory). Unset defaults to 'redis', preserving prior behavior.
+  EVENT_BUS_TYPE: z.enum(['memory', 'redis', 'kafka']).optional(),
+  KAFKA_BROKERS: z.string().default('localhost:9092'),
+
   // ai-service base URL — Layer 2 of the OWASP scan is delegated to it.
   AI_SERVICE_URL: z.string().default('http://localhost:8000'),
 
@@ -87,6 +95,13 @@ export const AppConfigSchema = z.object({
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
 
+  // Auth — JWT signing secret and the shared token machine callers (CI
+  // harnesses, benchmark/verify scripts) present instead of a user login.
+  // Defaults are placeholders only; the gateway fails fast on these in
+  // production (see server.ts) rather than accept an unauthenticated deploy.
+  JWT_SECRET: z.string().default('dev_insecure_jwt_secret_change_me'),
+  SERVICE_TOKEN: z.string().default('dev_insecure_service_token_change_me'),
+
   // S3 / LocalStack
   S3_ENDPOINT: z.string().default('http://localhost:4566'),
   S3_BUCKET_NAME: z.string().default('assurecode-artifacts'),
@@ -106,9 +121,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     if (env.NODE_ENV === 'production') {
       throw new Error(`Invalid config: ${parsed.error.message}`);
     }
-    // In dev/test, fall back to defaults + warn.
-    const merged = AppConfigSchema.parse(env);
-    return merged;
+    // Outside production, surface the raw ZodError rather than the wrapped
+    // message above — it names the offending keys.
+    return AppConfigSchema.parse(env);
   }
   return parsed.data;
 }
@@ -122,7 +137,6 @@ export function getDatabaseUrl(config: AppConfig): string {
 }
 
 // ── Logging ────────────────────────────────────────────────────
-import { getCorrelationId } from '@assurecode/telemetry';
 
 export function createLogger(name: string, level = process.env.LOG_LEVEL ?? 'info') {
   return pino({

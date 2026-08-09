@@ -3,7 +3,7 @@
  */
 
 import { loadConfig, createLogger, getDatabaseUrl } from '@assurecode/config';
-import { createEventBus } from '@assurecode/event-bus';
+import { createEventBus, eventBusOptionsFromConfig } from '@assurecode/event-bus';
 import { EVENT_TOPICS, type EventEnvelope } from '@assurecode/shared';
 import { analyzeAST } from './ast-analyzer.js';
 import { performDualLayerScan } from './security-auditor.js';
@@ -12,7 +12,7 @@ import { PostgresAuditStore, type AuditStore } from './audit-store.js';
 
 const config = loadConfig();
 const logger = createLogger('ci-worker', config.LOG_LEVEL);
-const eventBus = createEventBus(config.REDIS_URL);
+const eventBus = createEventBus(eventBusOptionsFromConfig(config));
 
 let defaultAuditStore: AuditStore | undefined;
 function getAuditStore(): AuditStore {
@@ -45,7 +45,6 @@ export async function processCodePush(
         'for code that was never submitted.',
     );
   }
-  const codeToAnalyze = sampleCode;
 
   // Step 1: Provision the sandbox (Docker where available, Node permission model otherwise)
   const sandboxResult = await runInSandbox(contractId, { workDir: options?.workDir });
@@ -54,24 +53,24 @@ export async function processCodePush(
     'Sandbox provisioned',
   );
   await eventBus.publish(
-    'ci.sandbox.ready',
+    EVENT_TOPICS.CI_SANDBOX_READY,
     { contractId, sandboxId: sandboxResult.sandboxId, runner: sandboxResult.runner, provisioned: sandboxResult.provisioned },
     correlationId,
   );
 
   // Step 2: AST Complexity Analysis
-  const astResults = analyzeAST(codeToAnalyze);
+  const astResults = analyzeAST(sampleCode);
   logger.info({ contractId, astResults }, 'AST complexity calculated');
-  await eventBus.publish('ci.ast.completed', { contractId, ...astResults }, correlationId);
+  await eventBus.publish(EVENT_TOPICS.CI_AST_COMPLETED, { contractId, ...astResults }, correlationId);
 
   // Step 3: Hidden Test Injection & Verification
   const passedTests = sandboxResult.passedTests;
   const totalTests = sandboxResult.totalTests;
   logger.info({ contractId, passedTests, totalTests }, 'Hidden test suite executed');
-  await eventBus.publish('ci.tests.completed', { contractId, passedTests, totalTests }, correlationId);
+  await eventBus.publish(EVENT_TOPICS.CI_TESTS_COMPLETED, { contractId, passedTests, totalTests }, correlationId);
 
   // Step 4: OWASP Top 10:2025 scan — Layer 1 static, Layer 2 LLM via ai-service.
-  const securityScan = await performDualLayerScan(codeToAnalyze, {
+  const securityScan = await performDualLayerScan(sampleCode, {
     aiServiceUrl: config.AI_SERVICE_URL,
   });
   logger.info(
@@ -84,7 +83,7 @@ export async function processCodePush(
     },
     'Security scan completed',
   );
-  await eventBus.publish('security.scan.completed', { contractId, ...securityScan }, correlationId);
+  await eventBus.publish(EVENT_TOPICS.SECURITY_SCAN_COMPLETED, { contractId, ...securityScan }, correlationId);
 
   // Step 5: Aggregate & Publish Final audit.completed Telemetry
   const scanDuration = Number(((Date.now() - startTime) / 1000).toFixed(2));
@@ -141,15 +140,13 @@ async function main(): Promise<void> {
   logger.info('CI Worker ready and subscribed to events.');
 }
 
-process.on('SIGTERM', async () => {
+async function shutdown(): Promise<void> {
   if (typeof eventBus.close === 'function') await eventBus.close();
   process.exit(0);
-});
+}
 
-process.on('SIGINT', async () => {
-  if (typeof eventBus.close === 'function') await eventBus.close();
-  process.exit(0);
-});
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
 
 if (process.env.NODE_ENV !== 'test') {
   main().catch((err) => {

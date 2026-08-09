@@ -1,10 +1,11 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import server from '../src/server.js';
 import pg from 'pg';
 import { getDatabaseUrl, loadConfig } from '@assurecode/config';
-import { postgresAvailable, announceSkip } from '../../../tools/test-support/infra.js';
+import { postgresAvailable, announceSkip, serviceAuthHeaders } from '../../../tools/test-support/infra.js';
 
 const PG_UP = await postgresAvailable();
+const AUTH = serviceAuthHeaders();
 if (!PG_UP) announceSkip('Sprint 6.4 — Ledger Verification Endpoint & Tamper Red-Team Test', 'a running PostgreSQL on DATABASE_URL');
 
 /**
@@ -22,7 +23,7 @@ async function createContract(title: string, requirements: string, budgetCents: 
   const res = await server.inject({
     method: 'POST',
     url: '/api/contracts/initialize',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...AUTH },
     payload: { title, requirements, budgetCents, deadline: '2026-12-31' },
   });
   expect(res.statusCode).toBe(201);
@@ -40,7 +41,7 @@ describe.skipIf(!PG_UP)('Sprint 6.4 — Ledger Verification Endpoint & Tamper Re
     const lockRes = await server.inject({
       method: 'POST',
       url: `/api/contracts/${contractId}/lock`,
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...AUTH },
       payload: {
         title: 'Tamper Verification Test',
         requirements: 'Testing merkle chain verification route',
@@ -54,6 +55,7 @@ describe.skipIf(!PG_UP)('Sprint 6.4 — Ledger Verification Endpoint & Tamper Re
     const verifyRes = await server.inject({
       method: 'GET',
       url: `/api/contracts/${contractId}/verify`,
+      headers: AUTH,
     });
 
     expect(verifyRes.statusCode).toBe(200);
@@ -73,7 +75,7 @@ describe.skipIf(!PG_UP)('Sprint 6.4 — Ledger Verification Endpoint & Tamper Re
     const lockRes = await server.inject({
       method: 'POST',
       url: `/api/contracts/${contractId}/lock`,
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...AUTH },
       payload: {
         title: 'Red Team Tamper Target',
         requirements: 'This contract will be tampered in database',
@@ -109,6 +111,7 @@ describe.skipIf(!PG_UP)('Sprint 6.4 — Ledger Verification Endpoint & Tamper Re
     const verifyRes = await server.inject({
       method: 'GET',
       url: `/api/contracts/${contractId}/verify`,
+      headers: AUTH,
     });
 
     if (dbTampered) {
@@ -135,7 +138,7 @@ describe.skipIf(!PG_UP)('Sprint 6.4 — Ledger Verification Endpoint & Tamper Re
     await server.inject({
       method: 'POST',
       url: `/api/contracts/${tamperedId}/lock`,
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...AUTH },
       payload: {
         title: 'Mock Tamper Target',
         requirements: 'Testing mocked chain verification route',
@@ -153,6 +156,7 @@ describe.skipIf(!PG_UP)('Sprint 6.4 — Ledger Verification Endpoint & Tamper Re
       const res = await server.inject({
         method: 'GET',
         url: `/api/contracts/${tamperedId}/verify`,
+        headers: AUTH,
       });
 
       expect(res.statusCode).toBe(409);

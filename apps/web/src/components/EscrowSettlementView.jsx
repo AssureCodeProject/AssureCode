@@ -36,6 +36,7 @@ import {
 } from 'lucide-react';
 import MobileDrawer from './ui/MobileDrawer';
 import ToastNotification from './ui/ToastNotification';
+import { apiRequest } from '../utils/api';
 
 /** The four CI signals, in the order the oracle evaluates them. */
 const SIGNAL_ROWS = [
@@ -64,6 +65,38 @@ const SIGNAL_ROWS = [
 const formatCents = (cents) =>
   `$${(cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+/** Toast styling is derived from the message text, so the three outcomes of a
+ *  settlement request stay in one place instead of two parallel ternaries. */
+function describeToast(message) {
+  if (message.startsWith('Failed')) return { type: 'error', title: 'Settlement Error' };
+  if (message.startsWith('Escrow released')) return { type: 'success', title: 'Funds Released' };
+  return { type: 'info', title: 'Escrow Notice' };
+}
+
+function vaultStatusLabel(status, released) {
+  if (status !== 'ready') return '… READING ORACLE';
+  return released ? '✓ SETTLED' : '● VAULT LOCKED';
+}
+
+function trustGateLabel(trustScore, threshold) {
+  if (trustScore === null) return 'NOT SCORED';
+  return trustScore >= threshold ? 'PASS' : 'FAIL';
+}
+
+function vulnGateLabel(criticalVulns) {
+  if (criticalVulns === null) return 'UNKNOWN';
+  return criticalVulns === 0 ? 'PASS' : 'FAIL';
+}
+
+function releaseButtonClasses({ released, isReleasing, canRelease }) {
+  const base =
+    'w-full sm:w-auto px-8 py-4 font-mono font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2';
+  if (released) return `${base} bg-ink border border-signal text-signal cursor-default`;
+  if (isReleasing) return `${base} bg-ink-3 text-prose-muted border border-rule cursor-wait`;
+  if (canRelease) return `${base} bg-signal text-ink hover:opacity-90 active:scale-[0.99]`;
+  return `${base} bg-ink-3 text-prose-muted border border-rule cursor-not-allowed`;
+}
+
 export function EscrowSettlementView({ contractData, onResetWorkflow }) {
   const [state, setState] = useState({ status: 'idle' });
   const [isDisputeOpen, setIsDisputeOpen] = useState(false);
@@ -80,12 +113,15 @@ export function EscrowSettlementView({ contractData, onResetWorkflow }) {
         status: 'error',
         message: 'No contract selected. Initialize a contract before viewing escrow state.',
       });
-      return;
+      return null;
     }
 
+    // apiRequest rather than callApi: an unreadable oracle and a gateway that
+    // rejected the read are reported differently, and the poll loop below
+    // needs a resolved value rather than a throw on every failed attempt.
     let res;
     try {
-      res = await fetch(`/api/contracts/${encodeURIComponent(contractId)}/oracle`);
+      res = await apiRequest(`/api/contracts/${encodeURIComponent(contractId)}/oracle`);
     } catch (err) {
       setState({
         status: 'error',
@@ -95,14 +131,12 @@ export function EscrowSettlementView({ contractData, onResetWorkflow }) {
     }
 
     if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      setState({ status: 'error', message: body.error || `Gateway returned HTTP ${res.status}.` });
+      setState({ status: 'error', message: res.payload.error || `Gateway returned HTTP ${res.status}.` });
       return null;
     }
 
-    const data = await res.json();
-    setState({ status: 'ready', data });
-    return data;
+    setState({ status: 'ready', data: res.payload });
+    return res.payload;
   }, [contractId]);
 
   useEffect(() => {
@@ -128,21 +162,19 @@ export function EscrowSettlementView({ contractData, onResetWorkflow }) {
     setIsReleasing(true);
 
     try {
-      const res = await fetch(`/api/contracts/${encodeURIComponent(contractId)}/settle`, {
+      const res = await apiRequest(`/api/contracts/${encodeURIComponent(contractId)}/settle`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         // Both values come from the contract and escrow rows the gateway read,
         // not from the client. The old version posted the literal 'f_alex' and
         // a default of 250000 cents, so the UI decided who got paid how much.
-        body: JSON.stringify({
+        body: {
           freelancerId: data?.freelancerId ?? null,
           amountCents: data?.escrow?.amountCents ?? null,
-        }),
+        },
       });
 
       if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || `Settlement request rejected: HTTP ${res.status}`);
+        throw new Error(res.payload.error || `Settlement request rejected: HTTP ${res.status}`);
       }
 
       setToastMessage(
@@ -186,6 +218,34 @@ export function EscrowSettlementView({ contractData, onResetWorkflow }) {
     }
   };
 
+  /** Only ever rendered inside the `data &&` block below, so `data` is set. */
+  function renderReleaseButtonLabel() {
+    if (released) {
+      return (
+        <>
+          <CheckCircle2 className="w-4 h-4 text-signal" />
+          <span>FUNDS RELEASED & SETTLED</span>
+        </>
+      );
+    }
+    if (isReleasing) {
+      return (
+        <>
+          <Zap className="w-4 h-4 animate-spin text-prose-muted" />
+          <span>AWAITING ORACLE VERDICT…</span>
+        </>
+      );
+    }
+    if (!data.approved) {
+      return <span>BLOCKED BY ORACLE</span>;
+    }
+    return (
+      <span>
+        RELEASE FUNDS{data.escrow ? ` (${formatCents(data.escrow.amountCents)})` : ''} →
+      </span>
+    );
+  }
+
   const handleRaiseDispute = (e) => {
     e.preventDefault();
     if (!disputeReason.trim()) return;
@@ -203,19 +263,7 @@ export function EscrowSettlementView({ contractData, onResetWorkflow }) {
     <div className="max-w-5xl mx-auto space-y-8 font-sans">
       {toastMessage && (
         <ToastNotification
-          toast={{
-            type: toastMessage.startsWith('Failed')
-              ? 'error'
-              : toastMessage.startsWith('Escrow released')
-              ? 'success'
-              : 'info',
-            title: toastMessage.startsWith('Failed')
-              ? 'Settlement Error'
-              : toastMessage.startsWith('Escrow released')
-              ? 'Funds Released'
-              : 'Escrow Notice',
-            description: toastMessage,
-          }}
+          toast={{ ...describeToast(toastMessage), description: toastMessage }}
           onDismiss={() => setToastMessage(null)}
         />
       )}
@@ -225,11 +273,7 @@ export function EscrowSettlementView({ contractData, onResetWorkflow }) {
         <div className="flex items-center justify-between font-mono text-xs text-prose-muted uppercase tracking-widest mb-3">
           <span>PHASE 04 of 04 ───────────────────────────────────────────</span>
           <span className={released ? 'text-signal font-semibold' : 'text-warn'}>
-            {state.status !== 'ready'
-              ? '… READING ORACLE'
-              : released
-              ? '✓ SETTLED'
-              : '● VAULT LOCKED'}
+            {vaultStatusLabel(state.status, released)}
           </span>
         </div>
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -348,33 +392,13 @@ export function EscrowSettlementView({ contractData, onResetWorkflow }) {
                     ? undefined
                     : `Blocked by the oracle: ${data.blockers.join('; ')}`
                 }
-                className={`w-full sm:w-auto px-8 py-4 font-mono font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 ${
-                  released
-                    ? 'bg-ink border border-signal text-signal cursor-default'
-                    : isReleasing
-                    ? 'bg-ink-3 text-prose-muted border border-rule cursor-wait'
-                    : data.approved && data.escrow
-                    ? 'bg-signal text-ink hover:opacity-90 active:scale-[0.99]'
-                    : 'bg-ink-3 text-prose-muted border border-rule cursor-not-allowed'
-                }`}
+                className={releaseButtonClasses({
+                  released,
+                  isReleasing,
+                  canRelease: Boolean(data.approved && data.escrow),
+                })}
               >
-                {released ? (
-                  <>
-                    <CheckCircle2 className="w-4 h-4 text-signal" />
-                    <span>FUNDS RELEASED & SETTLED</span>
-                  </>
-                ) : isReleasing ? (
-                  <>
-                    <Zap className="w-4 h-4 animate-spin text-prose-muted" />
-                    <span>AWAITING ORACLE VERDICT…</span>
-                  </>
-                ) : !data.approved ? (
-                  <span>BLOCKED BY ORACLE</span>
-                ) : (
-                  <span>
-                    RELEASE FUNDS{data.escrow ? ` (${formatCents(data.escrow.amountCents)})` : ''} →
-                  </span>
-                )}
+                {renderReleaseButtonLabel()}
               </button>
 
               <span className="text-[11px] font-mono text-prose-muted">
@@ -450,11 +474,7 @@ export function EscrowSettlementView({ contractData, onResetWorkflow }) {
                       : 'text-warn'
                   }`}
                 >
-                  {data.signals.trustScore === null
-                    ? 'NOT SCORED'
-                    : data.signals.trustScore >= data.threshold
-                    ? 'PASS'
-                    : 'FAIL'}
+                  {trustGateLabel(data.signals.trustScore, data.threshold)}
                 </span>
               </div>
               <p className="text-sm font-bold text-prose">
@@ -473,11 +493,7 @@ export function EscrowSettlementView({ contractData, onResetWorkflow }) {
                     data.signals.criticalVulns === 0 ? 'text-signal' : 'text-warn'
                   }`}
                 >
-                  {data.signals.criticalVulns === null
-                    ? 'UNKNOWN'
-                    : data.signals.criticalVulns === 0
-                    ? 'PASS'
-                    : 'FAIL'}
+                  {vulnGateLabel(data.signals.criticalVulns)}
                 </span>
               </div>
               <p className="text-sm font-bold text-prose">{data.signals.criticalVulns ?? '—'}</p>

@@ -48,6 +48,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
+import { loadConfig } from '@assurecode/config';
+
+// This is a machine caller, not a logged-in user — it authenticates with the
+// shared SERVICE_TOKEN the gateway's auth guard accepts in place of a JWT.
+const SERVICE_TOKEN = loadConfig().SERVICE_TOKEN;
 
 // ── Fixtures ────────────────────────────────────────────────────────────
 //
@@ -154,7 +159,7 @@ async function timed(fn) {
 async function post(url, body, timeoutMs = 20_000) {
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'x-service-token': SERVICE_TOKEN },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
   });

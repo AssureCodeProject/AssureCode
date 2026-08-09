@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import type { EventEnvelope } from '@assurecode/shared';
 import { Redis } from 'ioredis';
 import { getCorrelationId, runWithCorrelationId } from '@assurecode/config';
-import { trace, context, propagation } from '@opentelemetry/api';
+import { trace, context, propagation, type Context } from '@opentelemetry/api';
 import { metrics } from '@assurecode/telemetry';
 
 const tracer = trace.getTracer('assurecode-event-bus');
@@ -24,7 +24,21 @@ export interface EventBus {
   close?(): Promise<void>;
 }
 
-// ── Helper: build the envelope ─────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────
+
+/**
+ * Seconds between when the envelope was published and now, floored at zero —
+ * clocks can disagree across producer and consumer, and a negative lag reading
+ * is noise rather than information.
+ */
+function consumerLagSeconds(envelope: EventEnvelope): number {
+  return Math.max(0, (Date.now() - new Date(envelope.timestamp).getTime()) / 1000);
+}
+
+/** The producer's trace context, so consume spans hang off the publish span. */
+function parentContextOf(envelope: EventEnvelope): Context {
+  return propagation.extract(context.active(), envelope.traceContext ?? {});
+}
 
 export function buildEnvelope(
   topic: string,
@@ -65,15 +79,11 @@ export class InMemoryBus implements EventBus {
     if (handlers) {
       await Promise.all(
         [...handlers].map(async (h) => {
-          const publishedAt = new Date(envelope.timestamp).getTime();
-          const lagSeconds = Math.max(0, (Date.now() - publishedAt) / 1000);
+          const lagSeconds = consumerLagSeconds(envelope);
           metrics.eventBusLagSeconds.observe({ topic }, lagSeconds);
           metrics.eventLagGauge.set({ topic }, lagSeconds);
 
-          const traceContext = envelope.traceContext ?? {};
-          const parentContext = propagation.extract(context.active(), traceContext);
-
-          await context.with(parentContext, async () => {
+          await context.with(parentContextOf(envelope), async () => {
             const consumeSpan = tracer.startSpan(`event_bus.consume ${topic}`, {
               attributes: {
                 'messaging.system': 'inmemory',
@@ -117,8 +127,8 @@ export class InMemoryBus implements EventBus {
 export class RedisStreamsBus implements EventBus {
   private client: InstanceType<typeof Redis>;
   private subscribers: Array<{ topic: string; consumer: string; stop: boolean }> = [];
-  private groupName = 'assurecode';
-  private groupNameEnsured = new Set<string>();
+  private readonly groupName = 'assurecode';
+  private readonly groupNameEnsured = new Set<string>();
   private readonly maxRetries = 3;
   private readonly initialBackoffMs = 100;
 
@@ -196,19 +206,15 @@ export class RedisStreamsBus implements EventBus {
             if (idx === -1) continue;
             const envelope = JSON.parse(fields[idx + 1]) as EventEnvelope;
 
-            const publishedAt = new Date(envelope.timestamp).getTime();
-            const lagSeconds = Math.max(0, (Date.now() - publishedAt) / 1000);
+            const lagSeconds = consumerLagSeconds(envelope);
             metrics.eventBusLagSeconds.observe({ topic }, lagSeconds);
-          metrics.eventLagGauge.set({ topic }, lagSeconds);
+            metrics.eventLagGauge.set({ topic }, lagSeconds);
 
             let attempt = 0;
             let success = false;
             let lastError: unknown = null;
 
-            const traceContext = envelope.traceContext ?? {};
-            const parentContext = propagation.extract(context.active(), traceContext);
-
-            await context.with(parentContext, async () => {
+            await context.with(parentContextOf(envelope), async () => {
               const consumeSpan = tracer.startSpan(`event_bus.consume ${topic}`, {
                 attributes: {
                   'messaging.system': 'redis_streams',
@@ -255,7 +261,7 @@ export class RedisStreamsBus implements EventBus {
               const errorMessage =
                 lastError instanceof Error ? lastError.message : String(lastError);
               const errorStack =
-                lastError instanceof Error ? lastError.stack : '';
+                lastError instanceof Error ? lastError.stack ?? '' : '';
 
               metrics.dlqDepth.inc({ stream: dlqTopic });
 
@@ -271,7 +277,7 @@ export class RedisStreamsBus implements EventBus {
                 'error',
                 errorMessage,
                 'errorStack',
-                errorStack || '',
+                errorStack,
                 'failedAt',
                 new Date().toISOString(),
                 'attempts',
@@ -304,7 +310,7 @@ export class RedisStreamsBus implements EventBus {
 export class KafkaBus implements EventBus {
   private kafka: any;
   private producer: any;
-  private consumers: Map<string, any> = new Map();
+  private readonly consumers = new Map<string, any>();
   private isConnected = false;
 
   constructor(brokers: string[], clientId = 'assurecode-bus') {
@@ -367,14 +373,9 @@ export class KafkaBus implements EventBus {
         if (!message.value) return;
         try {
           const envelope = JSON.parse(message.value.toString()) as EventEnvelope;
-          const publishedAt = new Date(envelope.timestamp).getTime();
-          const lagSeconds = Math.max(0, (Date.now() - publishedAt) / 1000);
-          metrics.eventBusLagSeconds.observe({ topic }, lagSeconds);
+          metrics.eventBusLagSeconds.observe({ topic }, consumerLagSeconds(envelope));
 
-          const traceContext = envelope.traceContext ?? {};
-          const parentContext = propagation.extract(context.active(), traceContext);
-
-          await context.with(parentContext, async () => {
+          await context.with(parentContextOf(envelope), async () => {
             const consumeSpan = tracer.startSpan(`event_bus.consume ${topic}`, {
               attributes: {
                 'messaging.system': 'kafka',
@@ -428,6 +429,37 @@ export interface EventBusOptions {
   type?: 'memory' | 'redis' | 'kafka';
   redisUrl?: string;
   kafkaBrokers?: string[];
+}
+
+/**
+ * Build createEventBus()'s options object from AppConfig, so EVENT_BUS_TYPE
+ * actually reaches the factory's `type` branch. Every service used to call
+ * `createEventBus(config.REDIS_URL)` — a bare string always resolves to
+ * RedisStreamsBus (or InMemoryBus if empty), so KafkaBus's branch below was
+ * unreachable from any real caller regardless of what EVENT_BUS_TYPE said.
+ */
+export function eventBusOptionsFromConfig(config: {
+  EVENT_BUS_TYPE?: 'memory' | 'redis' | 'kafka';
+  REDIS_URL: string;
+  KAFKA_BROKERS: string;
+}): EventBusOptions {
+  const type = config.EVENT_BUS_TYPE ?? 'redis';
+  // Only the field for the chosen type is populated. createEventBus() below
+  // picks Kafka whenever `kafkaBrokers` is present at all, before it even
+  // looks at `type` — so an options object that always carried a default
+  // kafkaBrokers array would silently force Kafka regardless of what
+  // EVENT_BUS_TYPE actually said. Building three disjoint shapes here avoids
+  // that trap instead of relying on the factory's field-precedence order.
+  if (type === 'kafka') {
+    return {
+      type: 'kafka',
+      kafkaBrokers: config.KAFKA_BROKERS.split(',').map((b) => b.trim()).filter(Boolean),
+    };
+  }
+  if (type === 'memory') {
+    return { type: 'memory' };
+  }
+  return { type: 'redis', redisUrl: config.REDIS_URL };
 }
 
 export function createEventBus(redisUrlOrOptions?: string | EventBusOptions): EventBus {

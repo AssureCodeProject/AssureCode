@@ -8,8 +8,33 @@ abstracts where that data comes from:
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
-from typing import Protocol, Sequence, runtime_checkable
+from contextlib import closing
+from dataclasses import dataclass
+from typing import Any, Protocol, Sequence, runtime_checkable
+
+import numpy as np
+
+
+def to_pgvector_literal(values: Sequence[float]) -> str:
+    """Format a vector as the text literal pgvector's `::vector` cast accepts.
+
+    Shared with tools/seed-users.py on purpose: the query vector formatted here
+    is compared against profile vectors the seed script formatted, so the two
+    must round to the same precision or the comparison drifts.
+    """
+    return "[" + ",".join(f"{float(x):.7f}" for x in values) + "]"
+
+
+def _psycopg():
+    """Return whichever psycopg driver is installed (psycopg2 or psycopg 3)."""
+    try:
+        import psycopg2
+
+        return psycopg2
+    except ImportError:
+        import psycopg
+
+        return psycopg
 
 
 @dataclass(frozen=True)
@@ -23,6 +48,12 @@ class FreelancerProfile:
     deliveries: int = 0
     avg_ast: float = 0.0          # maintainability score [0, 100]
     hourly_rate_cents: int = 0
+    # Precomputed profile embedding, L2-normalized. Only set by callers that
+    # have one available outside a real vector index — e.g. tools/eval's
+    # synthetic pools. Empty for the hardcoded fixture profiles below, which
+    # is the honest "no index, no vector" case retrieve_by_embedding degrades
+    # for (see its Protocol docstring).
+    embedding: tuple[float, ...] = ()
 
 
 @runtime_checkable
@@ -30,6 +61,21 @@ class GraphRepo(Protocol):
     """Read-only access to the matchmaking graph."""
 
     def all_freelancers(self) -> Sequence[FreelancerProfile]:
+        ...
+
+    def retrieve_by_embedding(
+        self, query_vector: Sequence[float], limit: int = 50
+    ) -> Sequence[tuple[FreelancerProfile, float]]:
+        """Top-`limit` freelancers by profile-embedding similarity to `query_vector`.
+
+        Returns (profile, cosine_similarity) pairs, pre-sorted by similarity
+        descending. Backends with a real vector index (PostgresGraphRepo) do
+        this as a single indexed query; backends without one degrade to
+        `all_freelancers()` with similarity 0.0 — an explicit "unmeasured",
+        not a fabricated score, so the caller's composite ranking falls back
+        to trust + history only rather than silently pretending to know
+        semantic relevance it has no way to compute.
+        """
         ...
 
 
@@ -134,6 +180,27 @@ class InMemoryGraphRepo:
     def all_freelancers(self) -> Sequence[FreelancerProfile]:
         return tuple(self._freelancers.values())
 
+    def retrieve_by_embedding(
+        self, query_vector: Sequence[float], limit: int = 50
+    ) -> Sequence[tuple[FreelancerProfile, float]]:
+        """Real cosine ranking when profiles carry an embedding (e.g. tools/eval's
+        synthetic pools, which attach one precisely to exercise this path), else
+        the honest "unmeasured" 0.0 fallback for the hardcoded fixture profiles.
+
+        This is an in-process brute-force scan, not an indexed lookup — fine for
+        eval-scale synthetic pools and tests, wrong for a real deployment, which
+        is exactly why PostgresGraphRepo exists as the production adapter.
+        """
+        profiles = self.all_freelancers()
+        with_embedding = [p for p in profiles if p.embedding]
+        if not with_embedding:
+            return [(p, 0.0) for p in profiles[:limit]]
+
+        q = np.asarray(query_vector, dtype=np.float64)
+        scored = [(p, float(np.dot(q, np.asarray(p.embedding, dtype=np.float64)))) for p in with_embedding]
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        return scored[:limit]
+
 
 class Neo4jGraphRepo:
     """Live Neo4j adapter. Connects lazily; degrades to InMemory on failure.
@@ -196,6 +263,15 @@ class Neo4jGraphRepo:
         except Exception:  # pragma: no cover — live DB only
             return self._fallback.all_freelancers()
 
+    def retrieve_by_embedding(
+        self, query_vector: Sequence[float], limit: int = 50
+    ) -> Sequence[tuple[FreelancerProfile, float]]:
+        # The Neo4j seed never stored profile vectors — see the Protocol
+        # docstring. This adapter is dead code in the current deps.py wiring
+        # (PostgresGraphRepo is always selected) but still implements the
+        # full Protocol.
+        return [(p, 0.0) for p in self.all_freelancers()[:limit]]
+
     def _query_freelancers(self) -> Sequence[FreelancerProfile]:  # pragma: no cover — live DB only
         cypher = """
         MATCH (f:Freelancer)
@@ -230,66 +306,96 @@ class PostgresGraphRepo:
     Fallback to InMemoryGraphRepo if connection fails.
     """
 
+    # Columns 0-6 of every profile query, in the order _profile_from_row reads
+    # them. Queries may append further columns (see retrieve_by_embedding).
+    _PROFILE_COLUMNS = """
+        f.freelancer_id, u.display_name, f.trust_score, f.skills,
+        f.deliveries, f.avg_ast, f.hourly_rate_cents
+    """
+
     def __init__(self, database_url: str) -> None:
         self._database_url = database_url
         self._fallback = InMemoryGraphRepo()
 
+    @staticmethod
+    def _profile_from_row(row: Sequence[Any]) -> FreelancerProfile:
+        """Build a profile from the leading _PROFILE_COLUMNS of a result row."""
+        skills = tuple(row[3]) if isinstance(row[3], (list, tuple)) else ()
+        return FreelancerProfile(
+            id=row[0],
+            name=row[1],
+            trust_score=float(row[2]),
+            skills=skills,
+            deliveries=int(row[4]),
+            avg_ast=float(row[5]),
+            hourly_rate_cents=int(row[6]),
+        )
+
+    def _fetch_all(self, sql: str, params: tuple = ()) -> list[tuple]:
+        with closing(_psycopg().connect(self._database_url)) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                return cur.fetchall()
+
     def all_freelancers(self) -> Sequence[FreelancerProfile]:
         try:
-            try:
-                import psycopg2 as psycopg
-            except ImportError:
-                import psycopg
-
-            conn = psycopg.connect(self._database_url)
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT f.freelancer_id, u.display_name, f.trust_score, f.skills,
-                           f.deliveries, f.avg_ast, f.hourly_rate_cents
-                    FROM freelancer_profiles f
-                    JOIN users u ON u.user_id = f.freelancer_id
-                    ORDER BY f.trust_score DESC
-                """)
-                rows = cur.fetchall()
-            conn.close()
-
+            rows = self._fetch_all(f"""
+                SELECT {self._PROFILE_COLUMNS}
+                FROM freelancer_profiles f
+                JOIN users u ON u.user_id = f.freelancer_id
+                ORDER BY f.trust_score DESC
+            """)
             if not rows:
                 return self._fallback.all_freelancers()
-
-            profiles = []
-            for r in rows:
-                skills = tuple(r[3]) if isinstance(r[3], (list, tuple)) else ()
-                profiles.append(
-                    FreelancerProfile(
-                        id=r[0],
-                        name=r[1],
-                        trust_score=float(r[2]),
-                        skills=skills,
-                        deliveries=int(r[4]),
-                        avg_ast=float(r[5]),
-                        hourly_rate_cents=int(r[6]),
-                    )
-                )
-            return profiles
+            return [self._profile_from_row(r) for r in rows]
         except Exception:
             return self._fallback.all_freelancers()
 
     def update_trust_score(self, freelancer_id: str, trust_score: float) -> bool:
         try:
-            try:
-                import psycopg2 as psycopg
-            except ImportError:
-                import psycopg
-
-            conn = psycopg.connect(self._database_url)
-            with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE freelancer_profiles SET trust_score = %s WHERE freelancer_id = %s",
-                    (trust_score, freelancer_id),
-                )
-            conn.commit()
-            conn.close()
+            with closing(_psycopg().connect(self._database_url)) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE freelancer_profiles SET trust_score = %s WHERE freelancer_id = %s",
+                        (trust_score, freelancer_id),
+                    )
+                conn.commit()
             return True
         except Exception:
             return self._fallback.update_trust_score(freelancer_id, trust_score)
+
+    def retrieve_by_embedding(
+        self, query_vector: Sequence[float], limit: int = 50
+    ) -> Sequence[tuple[FreelancerProfile, float]]:
+        """Top-`limit` freelancers by pgvector cosine distance, index-accelerated.
+
+        `profile_embedding <=> $1` is the operator `idx_freelancer_profiles_hnsw`
+        (V010) is built on — ordering by it directly is what lets Postgres use
+        the HNSW index instead of a sequential scan. Ordering by the full
+        composite score instead (skill/trust/history combined) would force a
+        seq scan and discard the index entirely, which is why reranking happens
+        as a second, separate step in Python over just this batch.
+
+        Vectors are L2-normalized at embed time (both query and stored
+        profiles use the same SentenceTransformerEmbedder), so
+        `cosine_similarity = 1 - cosine_distance`.
+        """
+        try:
+            vec_literal = to_pgvector_literal(query_vector)
+            rows = self._fetch_all(
+                f"""
+                SELECT {self._PROFILE_COLUMNS},
+                       1 - (f.profile_embedding <=> %s::vector) AS similarity
+                FROM freelancer_profiles f
+                JOIN users u ON u.user_id = f.freelancer_id
+                ORDER BY f.profile_embedding <=> %s::vector
+                LIMIT %s
+                """,
+                (vec_literal, vec_literal, limit),
+            )
+            if not rows:
+                return self._fallback.retrieve_by_embedding(query_vector, limit)
+            return [(self._profile_from_row(r), float(r[7])) for r in rows]
+        except Exception:
+            return self._fallback.retrieve_by_embedding(query_vector, limit)
 

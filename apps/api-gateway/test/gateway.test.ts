@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import server from '../src/server.js';
-import { postgresAvailable, announceSkip } from '../../../tools/test-support/infra.js';
+import { postgresAvailable, announceSkip, serviceAuthHeaders } from '../../../tools/test-support/infra.js';
 
 const PG_UP = await postgresAvailable();
+const AUTH = serviceAuthHeaders();
 if (!PG_UP) announceSkip('API Gateway — DB-backed lookups', 'a running PostgreSQL on DATABASE_URL');
 
 describe('API Gateway New Endpoints', () => {
@@ -20,6 +21,7 @@ describe('API Gateway New Endpoints', () => {
       const res = await server.inject({
         method: 'GET',
         url: '/api/jobs/00000000-0000-0000-0000-000000000000',
+        headers: AUTH,
       });
       expect(res.statusCode).toBe(404);
       expect(res.json()).toEqual({ error: 'Job not found' });
@@ -29,6 +31,7 @@ describe('API Gateway New Endpoints', () => {
       const res = await server.inject({
         method: 'GET',
         url: '/api/contracts/AC-NONEXISTENT/verify',
+        headers: AUTH,
       });
       expect(res.statusCode).toBe(404);
       expect(res.json()).toEqual({ error: 'Contract not found' });
@@ -44,6 +47,7 @@ describe('API Gateway New Endpoints', () => {
       const res = await server.inject({
         method: 'GET',
         url: '/api/jobs/00000000-0000-0000-0000-000000000000',
+        headers: AUTH,
       });
       expect(res.statusCode).toBe(503);
       expect(res.json()).toEqual({ error: 'Job lookup unavailable' });

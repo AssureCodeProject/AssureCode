@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef } from 'react';
-import { callApi } from '../utils/api';
+import { callApi, getAuthToken } from '../utils/api';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ArrowLeft,
@@ -8,6 +8,7 @@ import {
   Loader2,
   XCircle,
 } from 'lucide-react';
+import ScopeGuardPanel from './ScopeGuardPanel';
 
 const PIPELINE_STEPS = [
   {
@@ -36,6 +37,39 @@ const PIPELINE_STEPS = [
   },
 ];
 
+/**
+ * The browser WebSocket API has no way to set an Authorization header, so the
+ * gateway's auth guard accepts this stream's token as a query param instead
+ * (see apps/api-gateway/src/middleware/auth.ts isStreamPath()).
+ */
+function buildStreamUrl(contractId) {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const path = `/api/audits/${contractId}/stream`;
+  const token = getAuthToken();
+  const query = token ? `?token=${encodeURIComponent(token)}` : '';
+  return `${protocol}//${window.location.host}${path}${query}`;
+}
+
+function stepLabelClasses(isComplete, isActive) {
+  if (isComplete) return 'font-semibold text-signal';
+  if (isActive) return 'font-semibold text-prose font-bold';
+  return 'font-semibold text-prose-muted';
+}
+
+function auditStatusClasses({ error, pipelineComplete, isRunning }) {
+  if (error) return 'text-fail';
+  if (pipelineComplete) return 'text-signal';
+  if (isRunning) return 'text-prose animate-pulse';
+  return 'text-prose-dim';
+}
+
+function auditStatusLabel({ error, pipelineComplete, isRunning }) {
+  if (error) return '✕ VERIFICATION FAILED';
+  if (pipelineComplete) return '✓ VERIFICATION COMPLETE';
+  if (isRunning) return '● RUNNING AUDIT';
+  return '○ READY';
+}
+
 // There is deliberately no local result generator here. An earlier version of
 // this component fell back to Math.random() telemetry whenever the audit stream
 // failed — maintainability 72–96, a 70% chance of full test pass, a 70% chance
@@ -55,12 +89,6 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
   // Refs for socket state
   const isRunningRef = useRef(false);
   const pipelineCompleteRef = useRef(false);
-
-  // Fetch audit results for contract
-  const fetchResults = useCallback(async () => {
-    if (!contractData?.contractId) return null;
-    return callApi(`/api/audits/${contractData.contractId}/results`);
-  }, [contractData?.contractId]);
 
   const runPipeline = useCallback(async () => {
     if (!contractData?.contractId) return;
@@ -85,13 +113,6 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
     };
 
     const contractId = contractData.contractId;
-    const wsUrl = `/api/audits/${contractId}/stream`;
-
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host;
-    const fullWsUrl = `${protocol}//${host}${wsUrl}`;
-
-    let socket = null;
     let isClosed = false;
 
     try {
@@ -104,16 +125,11 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
     }
 
     try {
-      socket = new WebSocket(fullWsUrl);
-
-      socket.onopen = () => {
-        console.log('WebSocket connected');
-      };
+      const socket = new WebSocket(buildStreamUrl(contractId));
 
       socket.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          console.log('WebSocket message:', data);
 
           if (data.type === 'step-complete' && 'stepId' in data && typeof data.stepId === 'number') {
             const stepId = data.stepId;
@@ -127,7 +143,7 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
             // Not gated on isClosed: the server closes the socket right after
             // audit-complete, so this fetch normally resolves after onclose.
             // Dropping it there would leave the view blank on a successful run.
-            fetchResults()
+            callApi(`/api/audits/${contractId}/results`)
               .then((res) => {
                 if (res) {
                   setResults(res);
@@ -167,7 +183,7 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
         `Could not open the audit stream: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-  }, [contractData?.contractId, fetchResults]);
+  }, [contractData?.contractId]);
 
   return (
     <div className="max-w-4xl mx-auto space-y-8 font-sans">
@@ -184,24 +200,8 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
 
         <div className="flex items-center justify-between font-mono text-xs text-prose-muted uppercase tracking-widest mb-3">
           <span>PHASE 02 of 04 ───────────────────────────────────────────</span>
-          <span
-            className={
-              error
-                ? 'text-fail'
-                : pipelineComplete
-                  ? 'text-signal'
-                  : isRunning
-                    ? 'text-prose animate-pulse'
-                    : 'text-prose-dim'
-            }
-          >
-            {error
-              ? '✕ VERIFICATION FAILED'
-              : pipelineComplete
-                ? '✓ VERIFICATION COMPLETE'
-                : isRunning
-                  ? '● RUNNING AUDIT'
-                  : '○ READY'}
+          <span className={auditStatusClasses({ error, pipelineComplete, isRunning })}>
+            {auditStatusLabel({ error, pipelineComplete, isRunning })}
           </span>
         </div>
 
@@ -257,7 +257,7 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
         </div>
 
         <div className="space-y-4">
-          {PIPELINE_STEPS.map((step, idx) => {
+          {PIPELINE_STEPS.map((step) => {
             const isActive = activeStep === step.id;
             const isComplete = completedSteps.includes(step.id);
 
@@ -266,7 +266,7 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
                 <div className="flex items-center justify-between text-xs sm:text-sm">
                   <div className="flex items-center gap-3">
                     <span className="text-prose-dim">STEP 0{step.id}</span>
-                    <span className={`font-semibold ${isComplete ? 'text-signal' : isActive ? 'text-prose font-bold' : 'text-prose-muted'}`}>
+                    <span className={stepLabelClasses(isComplete, isActive)}>
                       {step.label}
                     </span>
                   </div>
@@ -288,7 +288,7 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
                       <motion.div
                         initial={{ width: '0%' }}
                         animate={{ width: '100%' }}
-                        transition={{ duration: (step.duration || 2000) / 1000, ease: 'linear' }}
+                        transition={{ duration: step.duration / 1000, ease: 'linear' }}
                         className="h-full bg-signal"
                       />
                     </div>
@@ -299,6 +299,11 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
           })}
         </div>
       </div>
+
+      {/* Scope Guard: real chat through the scope-check pipeline, plus the C1
+          cumulative drift assessment over the same message sequence. Independent
+          of the CI audit pipeline above — usable as soon as a contract exists. */}
+      <ScopeGuardPanel contractId={contractData?.contractId} />
 
       {/* Failure state — shown instead of results, never alongside them */}
       {error && (

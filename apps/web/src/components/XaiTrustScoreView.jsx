@@ -22,6 +22,7 @@
  */
 import React, { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
+import { apiRequest } from '../utils/api';
 import {
   ShieldCheck,
   Target,
@@ -34,6 +35,7 @@ import {
   Clock,
   AlertTriangle,
   RefreshCw,
+  Sparkles,
 } from 'lucide-react';
 import RadialGauge from './ui/RadialGauge';
 import StatusBadge from './ui/StatusBadge';
@@ -53,6 +55,27 @@ const TERM_LABELS = {
   scope_adherence: 'RAG Scope Adherence',
 };
 
+function gateStatusClasses(status, meetsGate) {
+  if (status !== 'ready') return 'text-prose-muted';
+  return meetsGate ? 'text-signal font-semibold' : 'text-warn font-semibold';
+}
+
+function gateStatusLabel(status, meetsGate) {
+  switch (status) {
+    case 'ready':
+      return meetsGate ? '✓ SCORED — GATE PASSED' : '✗ SCORED — GATE NOT MET';
+    case 'error':
+      return '⚠ NOT SCORED';
+    default:
+      return '… MEASURING';
+  }
+}
+
+function settlementLabel(status, meetsGate) {
+  if (status !== 'ready') return 'MEASURING';
+  return meetsGate ? 'SETTLEMENT ELIGIBLE' : 'SETTLEMENT BLOCKED';
+}
+
 export function XaiTrustScoreView({ contractData, onProceedToEscrow }) {
   const [showAuditTrail, setShowAuditTrail] = useState(true);
   const [state, setState] = useState({ status: 'idle' });
@@ -71,9 +94,11 @@ export function XaiTrustScoreView({ contractData, onProceedToEscrow }) {
 
     setState({ status: 'loading' });
 
+    // apiRequest rather than callApi: each HTTP status gets its own visible
+    // explanation below, which a thrown Error would flatten into one string.
     let res;
     try {
-      res = await fetch(`/api/contracts/${encodeURIComponent(contractId)}/score`);
+      res = await apiRequest(`/api/contracts/${encodeURIComponent(contractId)}/score`);
     } catch (err) {
       setState({
         status: 'error',
@@ -84,27 +109,19 @@ export function XaiTrustScoreView({ contractData, onProceedToEscrow }) {
     }
 
     if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
       setState({
         status: 'error',
         kind: `http-${res.status}`,
-        message: body.error || `Gateway returned HTTP ${res.status}.`,
+        message: res.payload.error || `Gateway returned HTTP ${res.status}.`,
       });
       return;
     }
 
-    setState({ status: 'ready', data: await res.json() });
+    setState({ status: 'ready', data: res.payload });
   }, [contractId]);
 
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      await load();
-      if (cancelled) return;
-    })();
-    return () => {
-      cancelled = true;
-    };
+    void load();
   }, [load]);
 
   const data = state.status === 'ready' ? state.data : null;
@@ -118,22 +135,8 @@ export function XaiTrustScoreView({ contractData, onProceedToEscrow }) {
       <div className="border-b border-rule pb-6">
         <div className="flex items-center justify-between font-mono text-xs text-prose-muted uppercase tracking-widest mb-3">
           <span>PHASE 03 of 04 ───────────────────────────────────────────</span>
-          <span
-            className={
-              state.status === 'ready'
-                ? meetsGate
-                  ? 'text-signal font-semibold'
-                  : 'text-warn font-semibold'
-                : 'text-prose-muted'
-            }
-          >
-            {state.status === 'ready'
-              ? meetsGate
-                ? '✓ SCORED — GATE PASSED'
-                : '✗ SCORED — GATE NOT MET'
-              : state.status === 'error'
-              ? '⚠ NOT SCORED'
-              : '… MEASURING'}
+          <span className={gateStatusClasses(state.status, meetsGate)}>
+            {gateStatusLabel(state.status, meetsGate)}
           </span>
         </div>
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -249,11 +252,7 @@ export function XaiTrustScoreView({ contractData, onProceedToEscrow }) {
                     meetsGate ? 'text-signal' : 'text-warn'
                   }`}
                 >
-                  {state.status !== 'ready'
-                    ? 'MEASURING'
-                    : meetsGate
-                    ? 'SETTLEMENT ELIGIBLE'
-                    : 'SETTLEMENT BLOCKED'}
+                  {settlementLabel(state.status, meetsGate)}
                 </span>
                 {data && !data.scopeMeasured && (
                   <StatusBadge variant="warning" size="sm">
@@ -364,6 +363,26 @@ export function XaiTrustScoreView({ contractData, onProceedToEscrow }) {
               );
             })}
           </div>
+        </div>
+      )}
+
+      {/* ── Advisory LLM Narrative ───────────────────────────
+          Explanation of the score above, never a second opinion — the terms
+          table is the primary display and this is prose about the same
+          arithmetic. Rendered only when the LLM produced one; a missing
+          narrative (LLM unavailable) does not block or alter the score. */}
+      {state.status === 'ready' && data.narrative && (
+        <div className="bg-ink-2 border border-rule p-6 font-mono text-xs">
+          <div className="flex items-center gap-2 mb-3 text-prose-muted uppercase tracking-wider">
+            <Sparkles className="w-4 h-4 text-signal" />
+            <span className="font-bold">AI Explanation (Advisory — Not a Judgment)</span>
+          </div>
+          <p className="text-sm text-prose font-sans leading-relaxed">{data.narrative}</p>
+          <p className="text-[11px] text-prose-muted border-t border-rule pt-3 mt-4 font-sans">
+            Generated after the score above was final, from the same terms shown in this screen.
+            It explains the number; it cannot change it. The deterministic weighted sum is what
+            releases funds, and it is unaffected by this text or by whether it exists at all.
+          </p>
         </div>
       )}
 

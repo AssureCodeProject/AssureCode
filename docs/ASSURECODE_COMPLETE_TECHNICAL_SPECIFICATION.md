@@ -595,11 +595,19 @@ npm run dev:web         # http://localhost:3000
 
 ### Test suites
 ```bash
-npm test --workspaces
+npm test
 cd apps/ai-service   && .venv/Scripts/python -m pytest -q
-cd apps/scope-guard  && python -m pytest -q
+cd apps/scope-guard  && ../ai-service/.venv/Scripts/python -m pytest -q
 python -m pytest packages/ledger-client/test/test_ml_dsa.py -q
 ```
+
+The scope guard has no virtualenv of its own and is run under ai-service's. It
+imports the retrieval and anchoring adapters from `apps/ai-service/app/ports`
+so that one implementation of the pgvector query and the genesis-hash lookup
+serves both services, and ai-service's venv is where those dependencies are
+installed. Note that `npm test` is the entry point for the JS suites, not
+`npm test --workspaces`: the latter drops the root script's `--if-present` and
+fails on `apps/web`, which has no test script.
 
 ### Verification harnesses
 
@@ -631,7 +639,7 @@ estimate.
 
 | Harness | Result |
 |---|---|
-| `npm test --workspaces` | 120 passing, 2 skipped, 0 failing |
+| `npm test` | 120 passing, 2 skipped, 0 failing |
 | `apps/ai-service` pytest | 63 passing |
 | `apps/scope-guard` pytest | 29 passing |
 | `test_ml_dsa.py` | 18 passing |

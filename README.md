@@ -39,6 +39,8 @@ AssureCode/
 │   ├── PRESENTATION_GUIDE.md           # Demo script & oral defense answers
 │   ├── ZERO_TRUST_LOOPHOLE_AUDIT.md    # Zero-trust security & loophole audit
 │   ├── NEXTGEN_RESEARCH_PARADIGM.md    # RETRACTED — QR-NGC withdrawal notice
+│   ├── NOVEL_RESEARCH_METHODOLOGY.md   # RETRACTED — AZK-MACP withdrawal notice
+│   ├── RESEARCH_PERFORMANCE_ANALYSIS.md # Optimization proposals (projections, not measurements)
 │   ├── architecture_overview.md        # Historical snapshot, superseded by the spec
 │   └── benchmarks/                     # BENCHMARK_REPORT.md, MATCHMAKING_REPORT.md + raw JSON
 │
@@ -78,5 +80,7 @@ node tools/benchmark.js
 - **Benchmark Report** (contract flow, scope accuracy): [docs/benchmarks/BENCHMARK_REPORT.md](docs/benchmarks/BENCHMARK_REPORT.md)
 - **Matchmaking Report** (retrieval metrics, weight ablation): [docs/benchmarks/MATCHMAKING_REPORT.md](docs/benchmarks/MATCHMAKING_REPORT.md)
 - **Zero-Trust Security Audit**: [docs/ZERO_TRUST_LOOPHOLE_AUDIT.md](docs/ZERO_TRUST_LOOPHOLE_AUDIT.md)
+- **Optimization proposals** (projections, *not* measurements): [docs/RESEARCH_PERFORMANCE_ANALYSIS.md](docs/RESEARCH_PERFORMANCE_ANALYSIS.md)
 - **Retraction — QR-NGC research paradigm**: [docs/NEXTGEN_RESEARCH_PARADIGM.md](docs/NEXTGEN_RESEARCH_PARADIGM.md)
+- **Retraction — AZK-MACP protocol paper**: [docs/NOVEL_RESEARCH_METHODOLOGY.md](docs/NOVEL_RESEARCH_METHODOLOGY.md)
 - *Historical, superseded*: [docs/architecture_overview.md](docs/architecture_overview.md)

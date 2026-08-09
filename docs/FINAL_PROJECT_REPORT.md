@@ -198,7 +198,7 @@ What replaced them is described in
 
 | Command | Result |
 |---|---|
-| `npm test --workspaces` | 120 passing, 2 skipped, 0 failing |
+| `npm test` | 120 passing, 2 skipped, 0 failing |
 | `apps/ai-service` pytest | 63 passing |
 | `apps/scope-guard` pytest | 29 passing |
 | `pytest packages/ledger-client/test/test_ml_dsa.py` | 18 passing |

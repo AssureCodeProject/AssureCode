@@ -6,15 +6,14 @@ import {
   GitBranch,
   CheckCircle2,
   Loader2,
-  AlertTriangle,
   XCircle,
 } from 'lucide-react';
 
 const PIPELINE_STEPS = [
   {
     id: 1,
-    label: 'Kafka Event Intercepted',
-    description: 'Push event received from GitHub webhook and routed via Kafka topic.',
+    label: 'Webhook Verified & Event Published',
+    description: 'GitHub push received, HMAC signature verified, event published to the Redis Streams bus.',
     duration: 1800,
   },
   {
@@ -37,23 +36,12 @@ const PIPELINE_STEPS = [
   },
 ];
 
-function generateMockResults() {
-  const maintainability = Math.floor(Math.random() * 25) + 72; // 72–96
-  const totalTests = 5;
-  const passedTests = Math.random() > 0.3 ? totalTests : Math.floor(Math.random() * 2) + 3;
-  const vulnerabilities = Math.random() > 0.7 ? Math.floor(Math.random() * 3) + 1 : 0;
-
-  const passed = passedTests === totalTests && vulnerabilities === 0;
-
-  return {
-    maintainability,
-    passedTests,
-    totalTests,
-    vulnerabilities,
-    passed,
-    scanDuration: (Math.random() * 3 + 4).toFixed(1),
-  };
-}
+// There is deliberately no local result generator here. An earlier version of
+// this component fell back to Math.random() telemetry whenever the audit stream
+// failed — maintainability 72–96, a 70% chance of full test pass, a 70% chance
+// of zero vulnerabilities. A dropped WebSocket therefore rendered an invented
+// passing audit that was indistinguishable from a real one. If the pipeline
+// cannot be observed, this view reports that it could not be observed.
 
 export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
   // Pipeline state
@@ -62,6 +50,7 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
   const [completedSteps, setCompletedSteps] = useState([]);
   const [pipelineComplete, setPipelineComplete] = useState(false);
   const [results, setResults] = useState(null);
+  const [error, setError] = useState(null);
 
   // Refs for socket state
   const isRunningRef = useRef(false);
@@ -83,6 +72,17 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
     setCompletedSteps([]);
     setPipelineComplete(false);
     setResults(null);
+    setError(null);
+
+    // Abandon the run and surface why. Never leaves a result behind.
+    const fail = (message) => {
+      isRunningRef.current = false;
+      pipelineCompleteRef.current = true;
+      setIsRunning(false);
+      setPipelineComplete(false);
+      setResults(null);
+      setError(message);
+    };
 
     const contractId = contractData.contractId;
     const wsUrl = `/api/audits/${contractId}/stream`;
@@ -96,8 +96,11 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
 
     try {
       await callApi(`/api/contracts/${contractId}/simulate-push`, 'POST');
-    } catch (error) {
-      console.error('Failed to trigger simulate-push:', error);
+    } catch (err) {
+      // If the push never reached the gateway there is no audit to stream.
+      // Opening a socket at this point would only produce a slower failure.
+      fail(`Could not trigger the audit: ${err instanceof Error ? err.message : String(err)}`);
+      return;
     }
 
     try {
@@ -121,55 +124,48 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
             isRunningRef.current = false;
             setPipelineComplete(true);
             setIsRunning(false);
-            fetchResults().then((res) => {
-              if (res && !isClosed) {
-                setResults(res);
-              }
-            });
+            // Not gated on isClosed: the server closes the socket right after
+            // audit-complete, so this fetch normally resolves after onclose.
+            // Dropping it there would leave the view blank on a successful run.
+            fetchResults()
+              .then((res) => {
+                if (res) {
+                  setResults(res);
+                } else {
+                  fail('The audit completed but returned no results.');
+                }
+              })
+              .catch((err) => {
+                fail(
+                  `The audit completed but its results could not be read: ${
+                    err instanceof Error ? err.message : String(err)
+                  }`,
+                );
+              });
           }
         } catch (err) {
           console.error('Failed to parse WebSocket message:', err);
         }
       };
 
-      socket.onerror = (error) => {
-        console.error('WebSocket error:', error);
+      socket.onerror = () => {
         if (!isClosed) {
-          isRunningRef.current = false;
-          pipelineCompleteRef.current = true;
-          setIsRunning(false);
-          setResults(generateMockResults());
-          setPipelineComplete(true);
+          fail('Lost the connection to the audit stream. No results were produced.');
         }
       };
 
       socket.onclose = () => {
-        console.log('WebSocket closed');
         isClosed = true;
-        if (isRunningRef.current) {
-          if (!pipelineCompleteRef.current) {
-            setResults(generateMockResults());
-            pipelineCompleteRef.current = true;
-            setPipelineComplete(true);
-          }
-          isRunningRef.current = false;
-          setIsRunning(false);
+        // A close before audit-complete means the audit did not finish. The run
+        // is abandoned rather than completed with substituted telemetry.
+        if (isRunningRef.current && !pipelineCompleteRef.current) {
+          fail('The audit stream closed before the pipeline finished. No results were produced.');
         }
       };
-    } catch (error) {
-      console.error('WebSocket failed, falling back to mock:', error);
-      for (let i = 0; i < PIPELINE_STEPS.length; i++) {
-        setActiveStep(i + 1);
-        await new Promise((r) => setTimeout(r, PIPELINE_STEPS[i].duration || 2000));
-        setCompletedSteps((prev) => [...prev, i + 1]);
-      }
-
-      await new Promise((r) => setTimeout(r, 800));
-      pipelineCompleteRef.current = true;
-      isRunningRef.current = false;
-      setResults(generateMockResults());
-      setPipelineComplete(true);
-      setIsRunning(false);
+    } catch (err) {
+      fail(
+        `Could not open the audit stream: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }, [contractData?.contractId, fetchResults]);
 
@@ -188,8 +184,24 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
 
         <div className="flex items-center justify-between font-mono text-xs text-prose-muted uppercase tracking-widest mb-3">
           <span>PHASE 02 of 04 ───────────────────────────────────────────</span>
-          <span className={pipelineComplete ? 'text-signal' : isRunning ? 'text-prose animate-pulse' : 'text-prose-dim'}>
-            {pipelineComplete ? '✓ VERIFICATION COMPLETE' : isRunning ? '● RUNNING AUDIT' : '○ READY'}
+          <span
+            className={
+              error
+                ? 'text-fail'
+                : pipelineComplete
+                  ? 'text-signal'
+                  : isRunning
+                    ? 'text-prose animate-pulse'
+                    : 'text-prose-dim'
+            }
+          >
+            {error
+              ? '✕ VERIFICATION FAILED'
+              : pipelineComplete
+                ? '✓ VERIFICATION COMPLETE'
+                : isRunning
+                  ? '● RUNNING AUDIT'
+                  : '○ READY'}
           </span>
         </div>
 
@@ -207,7 +219,7 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
           <span className="text-xs text-prose-muted uppercase tracking-wider block mb-1">Target Contract</span>
           <h2 className="text-base font-bold text-prose">{contractData?.title || 'Untitled Contract'}</h2>
           <p className="text-xs text-prose-muted mt-0.5">
-            ID: {contractData?.contractId || 'CTR-2026-8941'} │ MERKLE: <span className="text-prose">{contractData?.hash ? `${contractData.hash.slice(0, 14)}…` : '—'}</span>
+            ID: {contractData?.contractId || '—'} │ LEDGER HASH: <span className="text-prose">{contractData?.hash ? `${contractData.hash.slice(0, 14)}…` : '—'}</span>
           </p>
         </div>
 
@@ -287,6 +299,23 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
           })}
         </div>
       </div>
+
+      {/* Failure state — shown instead of results, never alongside them */}
+      {error && (
+        <div className="bg-ink-2 border border-fail p-6 font-mono space-y-3">
+          <div className="flex items-center gap-2 text-fail text-xs uppercase tracking-wider">
+            <XCircle className="w-4 h-4" />
+            <span>Audit did not complete</span>
+          </div>
+          <p className="text-sm text-prose">{error}</p>
+          <p className="text-xs text-prose-muted">
+            No telemetry is shown because none was measured. This view does not substitute
+            placeholder metrics when the pipeline cannot be observed — a missing audit and a
+            passing audit must not look the same. Check that the API gateway and the CI worker
+            are running, then trigger the push again.
+          </p>
+        </div>
+      )}
 
       {/* Results Telemetry */}
       <AnimatePresence>

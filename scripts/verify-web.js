@@ -241,30 +241,59 @@ if (fs.existsSync(appJsxPath)) {
   recordResult('tier4', false, 'App.jsx missing for Tier 4 evaluation');
 }
 
-// 3. Mock Data Contracts Verification
-const mockXaiPath = path.join(WEB_DIR, 'src/data/mockXaiData.js');
-const mockEscrowPath = path.join(WEB_DIR, 'src/data/mockEscrowData.js');
+// 3. Live-data compliance
+//
+// This block previously asserted that src/data/mockXaiData.js and
+// mockEscrowData.js *existed*, and failed when they did not. Those modules were
+// deleted when the views were pointed at real endpoints, so the harness was
+// failing the build for having removed the fixtures it was written to guard.
+// The assertion is inverted to match the design the project actually commits to:
+// every phase view reads live data, and no view falls back to fabricated data
+// when the backend is unavailable.
 
-if (fs.existsSync(mockXaiPath)) {
-  const xaiContent = fs.readFileSync(mockXaiPath, 'utf-8');
-  if (xaiContent.includes('score') || xaiContent.includes('categories') || xaiContent.includes('auditLog') || xaiContent.includes('ragScopeGuard')) {
-    recordResult('tier4', true, 'mockXaiData.js provides required XAI metrics, category breakdown, and RAG ScopeGuard data');
-  } else {
-    recordResult('tier4', false, 'mockXaiData.js missing required XAI data structure fields');
-  }
+const legacyMockModules = ['src/data/mockXaiData.js', 'src/data/mockEscrowData.js'];
+const survivingMocks = legacyMockModules.filter((rel) => fs.existsSync(path.join(WEB_DIR, rel)));
+
+if (survivingMocks.length === 0) {
+  recordResult('tier4', true, 'No mock data modules remain — all phase views read live endpoints');
 } else {
-  recordResult('tier4', false, 'src/data/mockXaiData.js missing');
+  recordResult('tier4', false, `Mock data modules reintroduced: ${survivingMocks.join(', ')}`);
 }
 
-if (fs.existsSync(mockEscrowPath)) {
-  const escrowContent = fs.readFileSync(mockEscrowPath, 'utf-8');
-  if (escrowContent.includes('vault') || escrowContent.includes('milestones') || escrowContent.includes('oracleSignals') || escrowContent.includes('merkleTree')) {
-    recordResult('tier4', true, 'mockEscrowData.js provides required vault status, milestone payments, 5-oracle signals, and Merkle tree data');
-  } else {
-    recordResult('tier4', false, 'mockEscrowData.js missing required Escrow data structure fields');
+const PHASE_VIEWS = [
+  ['ContractInitialization.jsx', 'Phase 1 (contract)'],
+  ['VerificationDashboard.jsx', 'Phase 2 (verification)'],
+  ['XaiTrustScoreView.jsx', 'Phase 3 (trust score)'],
+  ['EscrowSettlementView.jsx', 'Phase 4 (escrow)'],
+];
+
+for (const [file, label] of PHASE_VIEWS) {
+  const viewPath = path.join(WEB_DIR, 'src/components', file);
+  if (!fs.existsSync(viewPath)) {
+    recordResult('tier4', false, `${label}: ${file} missing`);
+    continue;
   }
-} else {
-  recordResult('tier4', false, 'src/data/mockEscrowData.js missing');
+
+  const raw = fs.readFileSync(viewPath, 'utf-8');
+
+  // Strip comments before scanning. VerificationDashboard.jsx documents the
+  // removed Math.random() fallback in a comment explaining why it is gone;
+  // matching that text would fail the file for describing the fix.
+  const source = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+  const callsBackend = /callApi\s*\(|fetch\s*\(|new WebSocket\s*\(/.test(source);
+
+  // Math.random() driving displayed telemetry is the specific defect this check
+  // exists to catch: it makes an unreachable backend render as a passing audit.
+  const fabricatesData = /Math\.random\s*\(/.test(source);
+
+  if (callsBackend && !fabricatesData) {
+    recordResult('tier4', true, `${label}: reads live data, no fabricated fallback`);
+  } else if (!callsBackend) {
+    recordResult('tier4', false, `${label}: makes no backend call — cannot be reading live data`);
+  } else {
+    recordResult('tier4', false, `${label}: contains Math.random() — displayed telemetry may be fabricated`);
+  }
 }
 
 

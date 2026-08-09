@@ -170,7 +170,7 @@ something, found it didn't work, and said so.
 
 | Command | What it demonstrates |
 |---|---|
-| `npm test --workspaces` | 120 passing, 2 skipped, 0 failing |
+| `npm test` | 120 passing, 2 skipped, 0 failing |
 | `python tools/eval/matchmaking_eval.py` | Matchmaking at N=100/1000 + the weight ablation |
 | `node tools/benchmark.js` | Live contract flow. **Exits non-zero if the gateway is down** — never simulates |
 | `python tools/verify_phase4_live.py` | Drift detector, 18/18 |

@@ -5,6 +5,7 @@
 import { randomUUID } from 'node:crypto';
 import type { EventEnvelope } from '@assurecode/shared';
 import { Redis } from 'ioredis';
+import { Kafka } from 'kafkajs';
 import { getCorrelationId, runWithCorrelationId } from '@assurecode/config';
 import { trace, context, propagation, type Context } from '@opentelemetry/api';
 import { metrics } from '@assurecode/telemetry';
@@ -314,14 +315,8 @@ export class KafkaBus implements EventBus {
   private isConnected = false;
 
   constructor(brokers: string[], clientId = 'assurecode-bus') {
-    try {
-      const { Kafka } = require('kafkajs');
-      this.kafka = new Kafka({ clientId, brokers });
-      this.producer = this.kafka.producer();
-    } catch {
-      this.kafka = null;
-      this.producer = null;
-    }
+    this.kafka = new Kafka({ clientId, brokers });
+    this.producer = this.kafka.producer();
   }
 
   private async ensureProducerConnected(): Promise<void> {

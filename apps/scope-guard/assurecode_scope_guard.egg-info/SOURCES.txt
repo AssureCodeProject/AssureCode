@@ -1,0 +1,14 @@
+pyproject.toml
+app/__init__.py
+app/deps.py
+app/main.py
+app/services/__init__.py
+app/services/drift_detector.py
+assurecode_scope_guard.egg-info/PKG-INFO
+assurecode_scope_guard.egg-info/SOURCES.txt
+assurecode_scope_guard.egg-info/dependency_links.txt
+assurecode_scope_guard.egg-info/requires.txt
+assurecode_scope_guard.egg-info/top_level.txt
+tests/test_drift_detector.py
+tests/test_health.py
+tests/test_main.py

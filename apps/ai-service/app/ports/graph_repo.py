@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol, Sequence, runtime_checkable
 
 import numpy as np
@@ -165,15 +165,7 @@ class InMemoryGraphRepo:
     def update_trust_score(self, freelancer_id: str, trust_score: float) -> bool:
         if freelancer_id in self._freelancers:
             fp = self._freelancers[freelancer_id]
-            self._freelancers[freelancer_id] = FreelancerProfile(
-                id=fp.id,
-                name=fp.name,
-                trust_score=trust_score,
-                skills=fp.skills,
-                deliveries=fp.deliveries,
-                avg_ast=fp.avg_ast,
-                hourly_rate_cents=fp.hourly_rate_cents,
-            )
+            self._freelancers[freelancer_id] = replace(fp, trust_score=trust_score)
             return True
         return False
 

@@ -484,7 +484,7 @@ server.post<{
   const { requirements, topK } = request.body || {};
 
   try {
-    const aiRes = await fetch('http://localhost:8000/match', {
+    const aiRes = await fetch(`${aiServiceUrl}/match`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

@@ -46,7 +46,7 @@ function apiError(response, payload) {
 export async function callApi(endpoint, method = 'GET', body = null) {
   const response = await authorizedFetch(endpoint, {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers: body ? { 'Content-Type': 'application/json' } : {},
     body: body ? JSON.stringify(body) : undefined,
   });
 
@@ -66,7 +66,7 @@ export async function callApi(endpoint, method = 'GET', body = null) {
 export async function apiRequest(endpoint, { method = 'GET', body } = {}) {
   const response = await authorizedFetch(endpoint, {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 

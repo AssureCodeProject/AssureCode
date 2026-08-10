@@ -4,7 +4,7 @@ initTracing('webhook-ingest');
 import crypto from 'node:crypto';
 import Fastify from 'fastify';
 import { loadConfig, runWithCorrelationId } from '@assurecode/config';
-import { createEventBus } from '@assurecode/event-bus';
+import { createEventBus, eventBusOptionsFromConfig } from '@assurecode/event-bus';
 import { EVENT_TOPICS } from '@assurecode/shared';
 
 const config = loadConfig();
@@ -12,7 +12,7 @@ const fastify = Fastify({
   logger: { level: config.LOG_LEVEL || 'info' },
 });
 
-const eventBus = createEventBus(config.REDIS_URL);
+const eventBus = createEventBus(eventBusOptionsFromConfig(config));
 const GITHUB_WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET || 'assurecode_github_secret';
 
 // Correlation ID hook
@@ -99,7 +99,7 @@ fastify.post('/webhooks/github', async (request, reply) => {
   });
 });
 
-const start = async () => {
+async function start(): Promise<void> {
   try {
     const port = Number(process.env.PORT) || 3002;
     await fastify.listen({ port, host: '0.0.0.0' });
@@ -108,7 +108,7 @@ const start = async () => {
     fastify.log.error(err);
     process.exit(1);
   }
-};
+}
 
 if (process.env.NODE_ENV !== 'test') {
   start();

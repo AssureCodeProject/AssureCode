@@ -47,12 +47,14 @@ from app.deps import (
     RagStoreUnavailable,
     ScopeDecisionRecord,
     ScopeLogUnavailable,
+    get_drift_calibration,
     get_embedder,
     get_ledger_anchor,
     get_rag_store,
     get_scope_log,
     get_settings,
 )
+from app.services.drift_detector import ConformalDriftDetector, NotCalibrated
 
 app = FastAPI(
     title="AssureCode Scope Guard",
@@ -96,6 +98,135 @@ def healthz() -> dict[str, str]:
 @app.get("/")
 def root() -> dict[str, str]:
     return {"service": "assurecode-scope-guard", "status": "active", "version": "1.0.0a0"}
+
+
+class DriftStepOut(BaseModel):
+    index: int
+    residual: float
+    p_value: float
+    log_martingale: float
+    cumulative_drift: float
+    alarmed: bool
+
+
+class DriftAssessment(BaseModel):
+    contract_id: str
+    genesis_hash: str
+    messages_observed: int
+    alarmed: bool
+    alarmed_at: Optional[int]
+    alarm_reason: str
+    delta: float
+    epsilon: float
+    calibration_n: int
+    calibration_is_synthetic: bool
+    coverage_note: str
+    steps: list[DriftStepOut]
+    ledger_payload: dict
+
+
+@app.get("/scope/drift/{contract_id}", response_model=DriftAssessment)
+def assess_drift(
+    contract_id: str,
+    anchor=Depends(get_ledger_anchor),
+    scope_log=Depends(get_scope_log),
+) -> DriftAssessment:
+    """Cumulative scope-drift assessment over a contract's recorded decisions.
+
+    This is the C1 detector applied to the sequence the scope guard has already
+    written down, rather than a parallel stream of its own. Two consequences
+    worth stating: the assessment is reproducible by anyone with read access to
+    scope_checks, and it cannot disagree with the per-message decisions, because
+    it is computed from them.
+
+    The endpoint does not itself write to the ledger. It returns `ledger_payload`
+    for the gateway to anchor, so the RFC 8785 canonical serializer stays a
+    single implementation in TypeScript — a second one here could disagree, and
+    a hash chain with two serializers is the defect Phase 8 removed.
+    """
+    settings = get_settings()
+
+    # Anchor first, for the same reason /scope/check does: an assessment that
+    # cannot name the contract version it was made against is not auditable.
+    try:
+        contract_anchor = anchor.genesis(contract_id)
+    except LedgerAnchorUnavailable as err:
+        raise HTTPException(status_code=409, detail=str(err))
+
+    calibration, synthetic = get_drift_calibration()
+    if not calibration:
+        # The honest failure. There is no T2 calibration set yet (Phase 7), and
+        # a martingale run against a default would report a false-alarm rate for
+        # a distribution nobody measured — indistinguishable in this response
+        # from a real one.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "No drift calibration set is configured, so no anytime-valid false-alarm rate "
+                "can be reported. The conformal guarantee requires calibration residuals from "
+                "known in-scope traffic (the T2 set). Set SCOPE_DRIFT_CALIBRATION_PATH. "
+                "Refusing to return an alarm whose delta would describe nothing."
+            ),
+        )
+
+    try:
+        residuals = scope_log.residuals(contract_id)
+    except ScopeLogUnavailable as err:
+        raise HTTPException(status_code=503, detail=f"Scope decision log unavailable: {err}")
+
+    if not residuals:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"No scope decisions are recorded for {contract_id}. Drift is a property of a "
+                "sequence; there is no sequence to assess."
+            ),
+        )
+
+    # The contract centroid would normally anchor the cumulative-drift term. The
+    # embeddings of past messages are not retained (only their similarities are),
+    # so D_t is not computed here and the alarm rests on the residual stream —
+    # which is what carries the guarantee. Stated rather than silently omitted.
+    try:
+        detector = ConformalDriftDetector(
+            contract_centroid=[1.0],
+            calibration_residuals=calibration,
+            delta=settings.drift_delta,
+            epsilon=settings.drift_epsilon,
+            calibration_is_synthetic=synthetic,
+        )
+    except NotCalibrated as err:
+        raise HTTPException(status_code=503, detail=str(err))
+
+    for residual in residuals:
+        detector.observe_residual(residual)
+
+    state = detector.state
+    return DriftAssessment(
+        contract_id=contract_id,
+        genesis_hash=contract_anchor.genesis_hash,
+        messages_observed=len(state.steps),
+        alarmed=state.alarmed,
+        alarmed_at=state.alarmed_at,
+        alarm_reason=state.alarm_reason,
+        delta=detector.delta,
+        epsilon=detector.epsilon,
+        calibration_n=detector.calibration_n,
+        calibration_is_synthetic=detector.calibration_is_synthetic,
+        coverage_note=detector.coverage_note,
+        steps=[
+            DriftStepOut(
+                index=s.index,
+                residual=round(s.residual, 6),
+                p_value=round(s.p_value, 6),
+                log_martingale=round(s.log_martingale, 6),
+                cumulative_drift=round(s.cumulative_drift, 6),
+                alarmed=s.alarmed,
+            )
+            for s in state.steps
+        ],
+        ledger_payload=detector.ledger_record(contract_id, contract_anchor.genesis_hash),
+    )
 
 
 @app.post("/scope/check", response_model=ScopeCheckResponse)

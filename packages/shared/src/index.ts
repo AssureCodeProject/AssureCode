@@ -54,6 +54,10 @@ export const InitializeContractSchema = z.object({
   requirements: z.string().min(1),
   budgetCents: z.number().int().positive(),
   deadline: z.string().date(),
+  // Full text extracted from an uploaded requirements PDF (POST /api/pdf/extract),
+  // stored separately from `requirements` — the client may edit the summary
+  // that gets hashed without losing the source document RAG ingests against.
+  pdfRawText: z.string().optional(),
 });
 export type InitializeContract = z.infer<typeof InitializeContractSchema>;
 

@@ -34,7 +34,13 @@ describe('webhook-ingest', () => {
   it('returns 202 on /webhooks/github when signature is valid', async () => {
     const body = { contract_id: 'c1', after: 'abc1234' };
     const rawBody = Buffer.from(JSON.stringify(body));
-    const hmac = crypto.createHmac('sha256', 'assurecode_github_secret').update(rawBody).digest('hex');
+    // Derive the secret the same way the server does, rather than hardcoding
+    // its fallback. The literal 'assurecode_github_secret' only matched while
+    // GITHUB_WEBHOOK_SECRET happened to be unset, so the test began failing the
+    // moment the services started reading .env — for a signature that was
+    // correct, against a server that was working.
+    const secretUnderTest = process.env.GITHUB_WEBHOOK_SECRET || 'assurecode_github_secret';
+    const hmac = crypto.createHmac('sha256', secretUnderTest).update(rawBody).digest('hex');
 
     const response = await fastify.inject({
       method: 'POST',

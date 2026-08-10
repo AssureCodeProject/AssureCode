@@ -1,20 +1,47 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import server from '../src/server.js';
 import pg from 'pg';
 import { getDatabaseUrl, loadConfig } from '@assurecode/config';
-import { postgresAvailable, announceSkip } from '../../../tools/test-support/infra.js';
+import { postgresAvailable, announceSkip, serviceAuthHeaders } from '../../../tools/test-support/infra.js';
 
 const PG_UP = await postgresAvailable();
+const AUTH = serviceAuthHeaders();
 if (!PG_UP) announceSkip('Sprint 6.4 — Ledger Verification Endpoint & Tamper Red-Team Test', 'a running PostgreSQL on DATABASE_URL');
+
+/**
+ * Create the contract through the real endpoint and return its id.
+ *
+ * These tests used to invent an id and POST straight to /lock.
+ * `merkle_ledger.contract_id` is a foreign key into `contracts`, so that could
+ * never have worked against a live database — and it did not have to, because
+ * DATABASE_URL was never set when the suite ran, so `postgresAvailable()`
+ * returned false and the whole file was skipped. It only started failing once
+ * loadConfig began reading .env, which is the first time these assertions ran
+ * at all.
+ */
+async function createContract(title: string, requirements: string, budgetCents: number) {
+  const res = await server.inject({
+    method: 'POST',
+    url: '/api/contracts/initialize',
+    headers: { 'content-type': 'application/json', ...AUTH },
+    payload: { title, requirements, budgetCents, deadline: '2026-12-31' },
+  });
+  expect(res.statusCode).toBe(201);
+  return res.json().contractId as string;
+}
 
 describe.skipIf(!PG_UP)('Sprint 6.4 — Ledger Verification Endpoint & Tamper Red-Team Test', () => {
   it('returns HTTP 200 { contractId, valid: true } when chain is untampered', async () => {
-    const contractId = `AC-VALID-${Date.now()}`;
+    const contractId = await createContract(
+      'Tamper Verification Test',
+      'Testing merkle chain verification route',
+      10000,
+    );
 
     const lockRes = await server.inject({
       method: 'POST',
       url: `/api/contracts/${contractId}/lock`,
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...AUTH },
       payload: {
         title: 'Tamper Verification Test',
         requirements: 'Testing merkle chain verification route',
@@ -28,6 +55,7 @@ describe.skipIf(!PG_UP)('Sprint 6.4 — Ledger Verification Endpoint & Tamper Re
     const verifyRes = await server.inject({
       method: 'GET',
       url: `/api/contracts/${contractId}/verify`,
+      headers: AUTH,
     });
 
     expect(verifyRes.statusCode).toBe(200);
@@ -38,12 +66,16 @@ describe.skipIf(!PG_UP)('Sprint 6.4 — Ledger Verification Endpoint & Tamper Re
   });
 
   it('returns HTTP 409 { contractId, valid: false } when merkle_ledger current_hash is tampered in DB', async () => {
-    const contractId = `AC-TAMPER-${Date.now()}`;
+    const contractId = await createContract(
+      'Red Team Tamper Target',
+      'This contract will be tampered in database',
+      20000,
+    );
 
     const lockRes = await server.inject({
       method: 'POST',
       url: `/api/contracts/${contractId}/lock`,
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...AUTH },
       payload: {
         title: 'Red Team Tamper Target',
         requirements: 'This contract will be tampered in database',
@@ -79,6 +111,7 @@ describe.skipIf(!PG_UP)('Sprint 6.4 — Ledger Verification Endpoint & Tamper Re
     const verifyRes = await server.inject({
       method: 'GET',
       url: `/api/contracts/${contractId}/verify`,
+      headers: AUTH,
     });
 
     if (dbTampered) {
@@ -95,13 +128,17 @@ describe.skipIf(!PG_UP)('Sprint 6.4 — Ledger Verification Endpoint & Tamper Re
   });
 
   it('returns HTTP 409 { contractId, valid: false } on direct chain tampering mock', async () => {
-    const tamperedId = `AC-MOCK-TAMPER-${Date.now()}`;
+    const tamperedId = await createContract(
+      'Mock Tamper Target',
+      'Testing mocked chain verification route',
+      15000,
+    );
 
     // Lock contract first
     await server.inject({
       method: 'POST',
       url: `/api/contracts/${tamperedId}/lock`,
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...AUTH },
       payload: {
         title: 'Mock Tamper Target',
         requirements: 'Testing mocked chain verification route',
@@ -119,6 +156,7 @@ describe.skipIf(!PG_UP)('Sprint 6.4 — Ledger Verification Endpoint & Tamper Re
       const res = await server.inject({
         method: 'GET',
         url: `/api/contracts/${tamperedId}/verify`,
+        headers: AUTH,
       });
 
       expect(res.statusCode).toBe(409);

@@ -3,20 +3,30 @@
 > **Auditor**: Lead Technical Project Manager & Zero-Trust Auditor (`zt-auditor`)  
 > **Target Subsystems**: API Gateway, Settlement Worker, Ledger Client, Stripe Adapter, AI Service  
 > **Date**: July 31, 2026  
-> **Audit Outcome**: 🛡️ **0 LOOPHOLES DETECTED — SYSTEM SECURE & HARDENED**
+> **Audit Outcome**: ⚠️ **Corrected — see note below. Do not cite "0 loopholes" in a defense.**
 
----
+> **Corrected 2026-08-09.** This report originally claimed "0 LOOPHOLES DETECTED" as an
+> absolute, and described Vector 4's defense as Poincaré hyperbolic-space geodesic
+> distance ($d_{\mathbb{H}} > 2.5$). Neither claim survives inspection: an absolute
+> "zero loopholes" is not a claim any audit of this size can support, and the scope
+> guard (`apps/scope-guard/app/main.py`) has never used hyperbolic geometry — it
+> retrieves contract chunks and scores messages by plain cosine similarity over
+> Sentence-BERT embeddings. Vector 4 below is corrected in place; the rest of this
+> document describes real, checkable defenses (idempotency guard, webhook HMAC
+> verification, Merkle chain hash-break detection, connection/listener cleanup) and
+> is left as originally written except where noted. See `docs/PRESENTATION_GUIDE.md`
+> for the retraction this correction is consistent with.
 
 ## Executive Audit Summary
 
-A comprehensive Zero-Trust Security Audit was conducted across the AssureCode codebase to evaluate 5 potential loophole vectors:
+A Zero-Trust Security Audit was conducted across the AssureCode codebase to evaluate 5 potential loophole vectors:
 1. **Double Payout / Financial Settlement Race Conditions**
 2. **Stripe Webhook Signature Forgery**
 3. **Merkle Ledger Tampering & Historical Fraud**
 4. **Adversarial Prompt Injection & Scope Guard Bypass**
 5. **Unsanitized Stack Trace Error Leakage**
 
-All 5 vectors were verified to be **completely hardened and protected** by multi-layer zero-trust defenses.
+Defenses were found in place for all 5 vectors (details below). This is evidence the specific mechanisms described exist and do what they claim — it is not a claim that no other loophole exists anywhere in the system.
 
 ---
 
@@ -37,8 +47,8 @@ All 5 vectors were verified to be **completely hardened and protected** by multi
 │ 3. Merkle Ledger Rewriting             │ SHA-256 Chain Hashing + Advisory Locks (`pg_advisory`)   │
 │    (Row modification / terms fraud)    │ + Instant `verifyChain()` Hash Break Detection (HTTP 409)│
 │                                        │                                                          │
-│ 4. Scope Guard Prompt Injection        │ Sentence-BERT Vector Embedding + Poincaré Hyperbolic H^d │
-│    (Adversarial text injection)        │ Non-Euclidean Geodesic Distance Boundary (d_H <= 2.5)    │
+│ 4. Scope Guard Prompt Injection        │ Sentence-BERT Vector Embedding + Cosine Similarity        │
+│    (Adversarial text injection)        │ Retrieval Against Indexed Contract Chunks                │
 │                                        │                                                          │
 │ 5. Memory Connection Leakage           │ Explicit `finally` Client Release Blocks (`BUG-005`)     │
 │    (Resource exhaustion denial)        │ + WebSocket `socket.close` Listener Cleanup (`BUG-010`)  │
@@ -74,12 +84,12 @@ All 5 vectors were verified to be **completely hardened and protected** by multi
 
 ---
 
-### 🛡️ Vector 4: Scope Guard Prompt Injection Audit
+### 🛡️ Vector 4: Scope Guard Prompt Injection Audit *(corrected 2026-08-09)*
 
 - **Audit Findings**:
   - Adversarial text injections such as `"Ignore system instructions"` do not alter vector embeddings because inputs are encoded into semantic space (`Sentence-BERT` / `FakeEmbedder`).
-  - In our QR-NGC protocol upgrade ([`apps/ai-service/app/services/hyperbolic.py`](file:///C:/Users/hp/AssureCode/apps/ai-service/app/services/hyperbolic.py)), semantic distance is evaluated in **Poincaré Hyperbolic Space ($\mathbb{H}^d$)** via Poincaré Geodesic Distance ($d_{\mathbb{H}}(\mathbf{u}, \mathbf{v})$).
-  - Off-scope requests exceeding the geodesic threshold ($d_{\mathbb{H}} > 2.5$) are rejected with HTTP 403 Forbidden.
+  - `apps/scope-guard/app/main.py` retrieves the top-k indexed contract chunks and scores the incoming message by **cosine similarity** against them — plain Euclidean-space cosine similarity, not hyperbolic geometry. There is no `hyperbolic.py`, no Poincaré ball, and no geodesic distance anywhere in the codebase; an earlier version of this document described one that was never implemented.
+  - Off-scope requests below the similarity threshold are rejected with HTTP 403 Forbidden (see `apps/scope-guard/app/main.py:233` `check_scope`). The held-out accuracy of this threshold is documented as a known weakness elsewhere in the repo — do not present it as a strong guarantee.
 
 ---
 
@@ -92,6 +102,6 @@ All 5 vectors were verified to be **completely hardened and protected** by multi
 
 ---
 
-## 🎯 Final Security Conclusion
+## 🎯 Final Security Conclusion *(corrected 2026-08-09)*
 
-The **AssureCode** application architecture contains **0 active security loopholes, 0 double-settlement race conditions, and 0 cryptographic forgery vulnerabilities**. All zero-trust boundaries are fully enforced.
+The five mechanisms audited above — idempotency guard, webhook HMAC verification, Merkle chain hash-break detection, scope-guard cosine retrieval, and connection/listener cleanup — are real and independently checkable in the current codebase. That is a narrower and more defensible claim than "0 loopholes": it says these five specific attack vectors are covered, not that no other loophole exists anywhere in the system. Treat any absolute security claim in a viva the same way — cite the mechanism, not the total.

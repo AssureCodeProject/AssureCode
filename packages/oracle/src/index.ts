@@ -1,6 +1,12 @@
 /**
  * Durable oracle state for the settlement decision.
  *
+ * This lives in a package rather than inside the settlement worker because two
+ * services need the verdict: the worker, which acts on it, and the gateway,
+ * which reports it to the UI. A second copy of `evaluate()` in the gateway would
+ * be a second definition of the money-releasing gate, free to drift from the
+ * one that actually releases the money. The gateway only ever reads.
+ *
  * The signals used to live in a module-level `Map`. That had two consequences
  * neither of which is acceptable for something that releases money:
  *

@@ -13,11 +13,11 @@ AssureCode/
 │   ├── web/                            # React 18 / Vite 4-Phase Frontend (Pure JS/JSX)
 │   ├── api-gateway/                    # Fastify REST + WebSocket Gateway & BFF
 │   ├── ci-worker/                      # Zero-Trust Ephemeral Docker Sandbox Audit Engine
-│   ├── ai-service/                     # Python FastAPI NLP Matchmaker, RAG & Poincaré H^d
-│   └── settlement-worker/              # 5-Signal Oracle Single-Fire Settlement Daemon
+│   ├── ai-service/                     # Python FastAPI NLP Matchmaker & pgvector RAG
+│   └── settlement-worker/              # Four-Signal Oracle Single-Fire Settlement Daemon
 │
 ├── packages/                           # Shared Monorepo Packages
-│   ├── ledger-client/                  # Merkle Chain, Topological Braid-Ledger & Post-Quantum ML-DSA
+│   ├── ledger-client/                  # RFC 8785 canonicalization, RFC 6962 Merkle tree, FIPS 204 ML-DSA-87
 │   ├── stripe-adapter/                 # PaymentIntent Escrow Adapter & Webhook Signatures
 │   ├── event-bus/                      # Redis Streams EventBus & Transactional Outbox
 │   ├── config/                         # Unified Monorepo Configuration & Logger
@@ -25,20 +25,24 @@ AssureCode/
 │   └── shared/                         # Zod Schemas & Event Topic Contracts
 │
 ├── tools/                              # Verification & Benchmarking Test Harnesses
-│   ├── test_100_freelancers_matchmaking.py  # 100-Freelancer Matchmaker Evaluation (3.44ms/req)
-│   ├── test-qr-ngc-protocol.py         # Quantum-Resilient Neural-Geometric Consensus Harness
-│   ├── test-matchmaking.py             # 5-Domain NLP Matchmaking Test Suite
-│   ├── benchmark.ts                    # 100-Contract System Load Benchmark Engine
-│   └── analyze_benchmark.py            # Data Science Statistical Benchmark Report Generator
+│   ├── eval/matchmaking_eval.py        # Matchmaking retrieval eval, N=100/1000, w1/w2/w3 ablation
+│   ├── test-matchmaking.py             # 5-scenario qualitative smoke test (8-profile fixture)
+│   ├── benchmark.js                    # Contract-flow benchmark against live HTTP endpoints
+│   ├── verify_phase4_live.py           # C1 drift detector, live checks
+│   ├── verify_phase5_live.mjs          # Telemetry trust score + settlement oracle, live checks
+│   ├── verify_phase8_live.mjs          # Merkle tree + ML-DSA-87 root signing, live checks
+│   └── analyze_benchmark.py            # Statistical benchmark report generator
 │
-├── docs/                               # Comprehensive Technical Documentation & Papers
-│   ├── FINAL_PROJECT_REPORT.md         # Final Executive Project Completion Report
-│   ├── PRESENTATION_GUIDE.md           # Step-by-Step UI Presentation Script & Oral Defense
-│   ├── ZERO_TRUST_LOOPHOLE_AUDIT.md    # Zero-Trust Security & Loophole Audit Report
-│   ├── NEXTGEN_RESEARCH_PARADIGM.md    # QR-NGC Breakthrough Academic Research Paper
-│   ├── NOVEL_RESEARCH_METHODOLOGY.md   # AZK-MACP Protocol Research Formulation
-│   ├── RESEARCH_PERFORMANCE_ANALYSIS.md# Codebase Big-O & Performance Audit
-│   └── benchmarks/                     # Raw Benchmark JSON & BENCHMARK_REPORT.md
+├── docs/                               # Technical documentation
+│   ├── ASSURECODE_COMPLETE_TECHNICAL_SPECIFICATION.md  # Authoritative spec
+│   ├── FINAL_PROJECT_REPORT.md         # Project report with measured results
+│   ├── PRESENTATION_GUIDE.md           # Demo script & oral defense answers
+│   ├── ZERO_TRUST_LOOPHOLE_AUDIT.md    # Zero-trust security & loophole audit
+│   ├── NEXTGEN_RESEARCH_PARADIGM.md    # RETRACTED — QR-NGC withdrawal notice
+│   ├── NOVEL_RESEARCH_METHODOLOGY.md   # RETRACTED — AZK-MACP withdrawal notice
+│   ├── RESEARCH_PERFORMANCE_ANALYSIS.md # Optimization proposals (projections, not measurements)
+│   ├── architecture_overview.md        # Historical snapshot, superseded by the spec
+│   └── benchmarks/                     # BENCHMARK_REPORT.md, MATCHMAKING_REPORT.md + raw JSON
 │
 ├── scripts/                            # E2E Automated Build & Compliance Runners
 │   └── verify-web.js                   # 4-Tier Web Application Verification Harness
@@ -59,22 +63,24 @@ npm run dev:web
 # 2. Run 4-Tier E2E Web Application Verification
 node scripts/verify-web.js
 
-# 3. Run 100-Freelancer Matchmaking Benchmark
-python tools/test_100_freelancers_matchmaking.py
+# 3. Run the matchmaking retrieval evaluation (N=100 and N=1000, real embedder)
+python tools/eval/matchmaking_eval.py
 
-# 4. Run QR-NGC Next-Gen Research Protocol Engine
-python tools/test-qr-ngc-protocol.py
-
-# 5. Run 100-Contract System Load Benchmark
-npx tsx tools/benchmark.ts
+# 4. Run the contract-flow benchmark (requires the gateway; exits non-zero if it is down)
+node tools/benchmark.js
 ```
 
 ---
 
 ## 📚 Key Technical Documentation
 
-- **Project Presentation Guide**: [docs/PRESENTATION_GUIDE.md](file:///C:/Users/hp/AssureCode/docs/PRESENTATION_GUIDE.md)
-- **Final Technical Report**: [docs/FINAL_PROJECT_REPORT.md](file:///C:/Users/hp/AssureCode/docs/FINAL_PROJECT_REPORT.md)
-- **Zero-Trust Security Audit**: [docs/ZERO_TRUST_LOOPHOLE_AUDIT.md](file:///C:/Users/hp/AssureCode/docs/ZERO_TRUST_LOOPHOLE_AUDIT.md)
-- **Research Paper (QR-NGC Protocol)**: [docs/NEXTGEN_RESEARCH_PARADIGM.md](file:///C:/Users/hp/AssureCode/docs/NEXTGEN_RESEARCH_PARADIGM.md)
-- **Benchmark Metrics Report**: [docs/benchmarks/BENCHMARK_REPORT.md](file:///C:/Users/hp/AssureCode/docs/benchmarks/BENCHMARK_REPORT.md)
+- **Technical Specification** (authoritative): [docs/ASSURECODE_COMPLETE_TECHNICAL_SPECIFICATION.md](docs/ASSURECODE_COMPLETE_TECHNICAL_SPECIFICATION.md)
+- **Final Project Report**: [docs/FINAL_PROJECT_REPORT.md](docs/FINAL_PROJECT_REPORT.md)
+- **Demonstration & Oral Defense Guide**: [docs/PRESENTATION_GUIDE.md](docs/PRESENTATION_GUIDE.md)
+- **Benchmark Report** (contract flow, scope accuracy): [docs/benchmarks/BENCHMARK_REPORT.md](docs/benchmarks/BENCHMARK_REPORT.md)
+- **Matchmaking Report** (retrieval metrics, weight ablation): [docs/benchmarks/MATCHMAKING_REPORT.md](docs/benchmarks/MATCHMAKING_REPORT.md)
+- **Zero-Trust Security Audit**: [docs/ZERO_TRUST_LOOPHOLE_AUDIT.md](docs/ZERO_TRUST_LOOPHOLE_AUDIT.md)
+- **Optimization proposals** (projections, *not* measurements): [docs/RESEARCH_PERFORMANCE_ANALYSIS.md](docs/RESEARCH_PERFORMANCE_ANALYSIS.md)
+- **Retraction — QR-NGC research paradigm**: [docs/NEXTGEN_RESEARCH_PARADIGM.md](docs/NEXTGEN_RESEARCH_PARADIGM.md)
+- **Retraction — AZK-MACP protocol paper**: [docs/NOVEL_RESEARCH_METHODOLOGY.md](docs/NOVEL_RESEARCH_METHODOLOGY.md)
+- *Historical, superseded*: [docs/architecture_overview.md](docs/architecture_overview.md)

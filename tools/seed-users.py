@@ -6,8 +6,8 @@ Populates 3 Client accounts and 12 Freelancer profiles with precomputed
 vector(384) embeddings into PostgreSQL.
 """
 
-import sys
 import os
+import sys
 from pathlib import Path
 
 # Add apps/ai-service to sys.path
@@ -15,11 +15,13 @@ root_dir = Path(__file__).resolve().parent.parent
 ai_service_dir = root_dir / "apps" / "ai-service"
 sys.path.insert(0, str(ai_service_dir))
 
-from app.ports.embedder import FakeEmbedder, SentenceTransformerEmbedder
+from app.ports.embedder import FakeEmbedder, SentenceTransformerEmbedder  # noqa: E402
+from app.ports.graph_repo import to_pgvector_literal  # noqa: E402
 
-# Simple argon2id hash or fallback demo hash for 'demo1234'
-# $argon2id$v=19$m=65536,t=3,p=4$...
-DEMO_PASSWORD_HASH = "$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQ$p3aXlT+qL1mZ9O0aR18XJg"
+# Real argon2id hash of the demo password 'demo1234', generated with
+# @node-rs/argon2 (the same library the gateway verifies against) so it is
+# actually usable for login, not just plausible-looking.
+DEMO_PASSWORD_HASH = "$argon2id$v=19$m=19456,t=2,p=1$QgV5gQdfEGK4QFgZ/vw1+A$uGWPLqOLWrjcqn3fi29MZ7/FEUvFGh/M7cNmLIkQt+U"
 
 CLIENTS = [
     {
@@ -165,6 +167,7 @@ FREELANCERS = [
     },
 ]
 
+
 def get_embedder():
     try:
         embedder = SentenceTransformerEmbedder("all-MiniLM-L6-v2", dim=384)
@@ -175,55 +178,56 @@ def get_embedder():
         print(f"[seed] Falling back to FakeEmbedder: {err}")
         return FakeEmbedder(dim=384)
 
-def vector_literal(values):
-    return "[" + ",".join(f"{float(x):.7f}" for x in values) + "]"
 
-def main():
+def upsert_user(cur, user_id: str, email: str, display_name: str, role: str) -> None:
+    """Insert or refresh a login account. Clients and freelancers differ only by role."""
+    cur.execute(
+        """
+        INSERT INTO users (user_id, email, password_hash, role, display_name)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (user_id) DO UPDATE SET
+            email = EXCLUDED.email,
+            password_hash = EXCLUDED.password_hash,
+            display_name = EXCLUDED.display_name
+        """,
+        (user_id, email, DEMO_PASSWORD_HASH, role, display_name),
+    )
+
+
+def main() -> None:
+    # This writes a real, publicly-documented password hash (DEMO_PASSWORD_HASH
+    # above) for every seeded account. Fine for a dev/demo database; a real
+    # backdoor if run against production. V012's migration deliberately does
+    # NOT do this — it seeds 'legacy-client' with an unusable hash — so this
+    # script is the only path that makes any demo account loginable.
+    if os.environ.get("NODE_ENV") == "production":
+        print("[seed] Refusing to seed demo accounts with a known password: NODE_ENV=production.")
+        sys.exit(1)
+
     try:
         import psycopg2 as psycopg
     except ImportError:
         import psycopg
 
     db_url = os.environ.get("DATABASE_URL", "postgresql://assurecode:assurecode_local_dev@localhost:5432/assurecode")
-    print(f"[seed] Connecting to PostgreSQL...")
+    print("[seed] Connecting to PostgreSQL...")
 
     conn = psycopg.connect(db_url)
     embedder = get_embedder()
 
     with conn.cursor() as cur:
-        # Seed Clients
         for c in CLIENTS:
-            cur.execute(
-                """
-                INSERT INTO users (user_id, email, password_hash, role, display_name)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (user_id) DO UPDATE SET
-                    email = EXCLUDED.email,
-                    display_name = EXCLUDED.display_name
-                """,
-                (c["user_id"], c["email"], DEMO_PASSWORD_HASH, c["role"], c["display_name"]),
-            )
+            upsert_user(cur, c["user_id"], c["email"], c["display_name"], c["role"])
 
-        # Seed Freelancers
         for f in FREELANCERS:
-            # 1. User account
-            cur.execute(
-                """
-                INSERT INTO users (user_id, email, password_hash, role, display_name)
-                VALUES (%s, %s, %s, 'freelancer', %s)
-                ON CONFLICT (user_id) DO UPDATE SET
-                    email = EXCLUDED.email,
-                    display_name = EXCLUDED.display_name
-                """,
-                (f["id"], f["email"], DEMO_PASSWORD_HASH, f["name"]),
-            )
+            upsert_user(cur, f["id"], f["email"], f["name"], "freelancer")
 
-            # 2. Profile embedding
+            # The profile text embedded here is the same shape the matchmaker
+            # embeds its query against — keep it in sync with tools/eval.
             profile_text = f"{f['name']} {' '.join(f['skills'])}"
             embedding = embedder.embed(profile_text)
-            vec_str = vector_literal(embedding.tolist())
+            vec_str = to_pgvector_literal(embedding.tolist())
 
-            # 3. Freelancer profile
             cur.execute(
                 """
                 INSERT INTO freelancer_profiles (
@@ -253,7 +257,11 @@ def main():
 
     conn.commit()
     conn.close()
-    print("[seed] Seeded 3 clients and 12 freelancer profiles successfully.")
+    print(
+        f"[seed] Seeded {len(CLIENTS)} clients and {len(FREELANCERS)} "
+        "freelancer profiles successfully."
+    )
+
 
 if __name__ == "__main__":
     main()

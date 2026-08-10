@@ -1,22 +1,35 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import server from '../src/server.js';
 import pg from 'pg';
 import { loadConfig, getDatabaseUrl } from '@assurecode/config';
-import { postgresAvailable, announceSkip } from '../../../tools/test-support/infra.js';
+import { postgresAvailable, announceSkip, serviceAuthHeaders } from '../../../tools/test-support/infra.js';
 
 const PG_UP = await postgresAvailable();
+const AUTH = serviceAuthHeaders();
 if (!PG_UP) announceSkip('Sprint 6.1 — Idempotency Concurrency & Race Condition Challenge', 'a running PostgreSQL on DATABASE_URL');
 
 describe.skipIf(!PG_UP)('Sprint 6.1 — Idempotency Concurrency & Race Condition Challenge', () => {
   it('empirically challenges 5 concurrent requests with exact same idempotency key', async () => {
     const key = `test-concurrent-key-${Date.now()}`;
-    const contractId = `AC-CONCURRENCY-${Date.now()}`;
     const payload = {
       title: 'Concurrent Lock Test Contract',
       requirements: 'Testing 5 concurrent lock requests with same key',
       budgetCents: 100000,
       deadline: '2026-12-31',
     };
+
+    // The contract has to exist: merkle_ledger.contract_id is a foreign key
+    // into contracts, so locking an invented id can never append. This test
+    // used to do exactly that and was only ever green because the whole file
+    // was skipped for want of a DATABASE_URL.
+    const initRes = await server.inject({
+      method: 'POST',
+      url: '/api/contracts/initialize',
+      headers: { 'content-type': 'application/json', ...AUTH },
+      payload,
+    });
+    expect(initRes.statusCode).toBe(201);
+    const contractId = initRes.json().contractId as string;
 
     // Prepare 5 concurrent HTTP requests with exact same x-idempotency-key
     const concurrentRequests = Array.from({ length: 5 }, () =>
@@ -26,6 +39,7 @@ describe.skipIf(!PG_UP)('Sprint 6.1 — Idempotency Concurrency & Race Condition
         headers: {
           'content-type': 'application/json',
           'x-idempotency-key': key,
+          ...AUTH,
         },
         payload,
       })

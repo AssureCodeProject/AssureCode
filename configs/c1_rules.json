@@ -1,0 +1,90 @@
+{
+  "$comment": [
+    "C1 pre-specified decision rules. Frozen-config protocol, step 1.",
+    "",
+    "This file exists to be written BEFORE the statistics it governs are computed.",
+    "Every rule below is a researcher degree of freedom: a choice that, made after",
+    "seeing the data, lets the analyst pick whichever answer they preferred. Writing",
+    "the rule down first converts it from a choice into a commitment.",
+    "",
+    "Nothing here has been run against data. At the time of writing, the T2",
+    "calibration set does not exist (Phase 7), so no domain-effect test has been",
+    "performed and no threshold has been selected from real residuals. The",
+    "'observed' fields are null and must stay null until T2 is built.",
+    "",
+    "If any rule below is changed after a statistic has been computed, that change",
+    "is a post-hoc adjustment and must be reported as one, with the pre-freeze",
+    "numbers shown alongside."
+  ],
+
+  "version": 1,
+  "frozen_at": "2026-08-04",
+  "status": "PRE_DATA",
+
+  "residual": {
+    "$comment": "s_t = 1 - max cosine similarity between the message embedding and the retrieved contract chunks. Uses the same embedder and the same retrieval path as the shipped scope guard, so the detector cannot be evaluated on a representation the product does not use.",
+    "definition": "1 - max_cos_to_retrieved_chunks",
+    "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+    "embedding_dim": 384,
+    "retrieval_k": 5,
+    "normalization": "none"
+  },
+
+  "drift_state": {
+    "$comment": "Cumulative centroid, anchored at the contract centroid c_0 computed at lock time. D_t = 1 - cos(c_t, c_0). eta is the update rate; it is fixed here rather than tuned, because tuning it on the evaluation set is the most direct way to overfit a change-point detector.",
+    "eta": 0.15,
+    "anchor": "contract_centroid_at_lock"
+  },
+
+  "cusum": {
+    "$comment": "S_t = max(0, S_{t-1} + (s_t - kappa)). kappa is the per-message slack: drift smaller than this accumulates nothing. h is the alarm threshold. Both are to be SELECTED ON T2 ONLY, by targeting the average run length below on in-scope sequences. The values here are placeholders and are marked as such; they are not defaults to fall back on.",
+    "kappa": null,
+    "h": null,
+    "selection_rule": "choose the smallest h whose in-control average run length on T2 in-scope sequences is >= target_arl_0",
+    "target_arl_0": 500
+  },
+
+  "conformal": {
+    "$comment": "Anytime-valid detection via a conformal test martingale (Vovk 2003) with Ville's inequality. p_t is the conformal p-value of the current residual against the calibration set; M_t = prod(epsilon * p_i^(epsilon-1)); alarm when M_t > 1/delta. This is what replaces an arbitrary threshold with a stated false-alarm rate.",
+    "epsilon": 0.92,
+    "delta": 0.05,
+    "alarm_rule": "M_t > 1/delta",
+    "calibration_strategy": "pooled",
+    "calibration_strategy_rule": {
+      "$comment": "Pooled by default. Mondrian (per-domain) ONLY if the domain effect is significant AND each domain has enough calibration points for the realized coverage to be worth quoting. Both conditions are required; either alone is not enough. See the Beta(n+1-l, l) arithmetic in the plan: at n≈40 a nominal 5% realizes anywhere in roughly 1-12%, which is not a result.",
+      "test": "kruskal_wallis",
+      "alpha": 0.05,
+      "min_n_per_domain": 100,
+      "switch_to_mondrian_if": "p_value < alpha AND min_domain_n >= min_n_per_domain",
+      "otherwise": "collapse to 2-3 coarse domain groups, or stay pooled"
+    },
+    "observed_kruskal_wallis_statistic": null,
+    "observed_kruskal_wallis_p_value": null,
+    "calibration_n": null
+  },
+
+  "evaluation": {
+    "$comment": "T1 is opened exactly once, at the end, after configs/c1_final.json is committed. Any T1 result that informs a design change must be disclosed as post-hoc. With 10-20 sequences T1 cannot support significance testing and must be reported per-sequence, never as an aggregate with a p-value.",
+    "development_set": "T2",
+    "holdout_set": "T1",
+    "holdout_opened": false,
+    "holdout_runs_permitted": 1,
+    "baselines": [
+      "cosine_threshold",
+      "poincare_hyperbolic_distance",
+      "per_message_llm_judge",
+      "cusum_without_conformal_calibration"
+    ],
+    "metrics": ["auc", "detection_delay_messages_from_onset", "empirical_false_alarm_rate_vs_delta"],
+    "reporting": "T2 and T1 in separate tables, never pooled"
+  },
+
+  "annotation": {
+    "$comment": "What happens if the pilot disagrees, decided before the pilot runs.",
+    "annotators": 2,
+    "agreement_metric": "cohens_kappa",
+    "pilot_size_messages": 50,
+    "min_pilot_kappa": 0.6,
+    "if_below_min": "revise the annotation schema and re-run the pilot; do not scale to the full set on a schema the annotators do not agree on"
+  }
+}

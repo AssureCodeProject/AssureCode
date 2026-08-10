@@ -1,68 +1,108 @@
-# AssureCode System Benchmarking & Performance Evaluation
+# AssureCode Benchmark Report
 
-> **Publication Report** | Generated on 2026-07-31T16:42:59.785Z | Sample Size: **100 Contracts**
+> Generated from `docs/benchmarks/benchmark_results.json` by `tools/analyze_benchmark.py`.
+> Run at **2026-08-04T15:31:46.154Z** against **http://localhost:4000**.
+> Sample: **50 contracts** at concurrency **2**.
 
----
+Every number here comes from a real HTTP round trip against a running gateway.
+`tools/benchmark.js` exits non-zero if the gateway is unreachable rather than
+falling back to simulation, so an absent report means the run did not happen.
 
-## Executive Summary
-
-The **AssureCode System Benchmarking Suite** evaluated end-to-end contract execution performance across **100 synthetic software contracts** operating under a concurrency factor of **10 concurrent workers**.
-
-- **Total Execution Throughput**: **26.95 contracts/sec** (100 contracts in 3.71s)
-- **End-to-End Latency (p50 / p90 / p99)**: **364 ms** / **384 ms** / **399 ms**
-- **RAG Scope Verification Accuracy**: **100.00%** (Precision: **100.00%**, Recall: **100.00%**, F1 Score: **100.00%**)
-- **Zero-Trust Settlement Invariant**: **100% Single-Fire Settlement Compliance** under concurrent load.
+> **Redis was not configured for this run** (`readiness.redis = "not_configured"`), so the gateway used the in-process event bus. Every latency below therefore excludes network hops to a broker and understates a deployed configuration.
 
 ---
 
-## 1. End-to-End Latency Breakdown by Phase
+## 1. Run summary
 
-The multi-stage pipeline encompasses 6 lifecycle phases: **Initialization**, **Test Generation**, **Contract Locking**, **Escrow Funding**, **RAG Scope Check**, and **Oracle Settlement**.
+| | |
+|---|---|
+| Contracts attempted | 50 |
+| Contracts completed | 50 |
+| Contracts with at least one error | 0 |
+| Wall-clock duration | 48.41 s |
+| Throughput | 1.03 contracts/sec |
+| Gateway readiness at start | `status=ready` `db=ok` `redis=not_configured` |
 
-| Pipeline Phase | Mean (ms) | p50 (ms) | p90 (ms) | p99 (ms) | Min (ms) | Max (ms) |
-|----------------|-----------|----------|----------|----------|----------|----------|
-| **1. Initialization** | 50.73 | 50 | 58 | 62 | 44 | 64 |
-| **2. Test Generation** | 77.73 | 77 | 84 | 91 | 62 | 104 |
-| **3. Contract Lock** | 47.32 | 46 | 53 | 64 | 36 | 66 |
-| **4. Escrow Funding** | 63.14 | 63 | 71 | 76 | 49 | 77 |
-| **5. RAG Scope Check** | 42.07 | 44 | 48 | 55 | 30 | 55 |
-| **6. Oracle Settlement** | 67.16 | 80 | 93 | 100 | 0 | 115 |
-| **OVERALL E2E PIPELINE** | **348.15** | **364** | **384** | **399** | **258** | **406** |
+Terminal status distribution:
+
+- `DELIVERED` — 8 (16%)
+- `SCOPE_BLOCKED` — 42 (84%)
 
 ---
 
-## 2. RAG Scope Verification Accuracy & Confusion Matrix
+## 2. Latency by phase
 
-The RAG Scope Guard evaluates incoming communication against specified contract boundaries to prevent unauthorized scope creep.
+Four phases are timed: contract initialization, locking (which anchors the
+ledger entry), escrow funding, and the RAG scope check. Test generation and
+settlement are not driven by this harness and are reported as such rather than
+filled in.
 
-### Confusion Matrix
+| Phase | Mean (ms) | p50 | p90 | p99 | Min | Max |
+|---|---|---|---|---|---|---|
+| **1. Initialization** | 729.16 | 742.89 | 790.69 | 859.79 | 165.79 | 859.79 |
+| **2. Contract lock** | 227.29 | 164.7 | 178.57 | 1282.53 | 140.19 | 1282.53 |
+| **3. Escrow funding** | 461.77 | 450 | 470.99 | 1072.39 | 421.65 | 1072.39 |
+| **4. RAG scope check** | 494.14 | 490.16 | 516.34 | 555.59 | 458.45 | 555.59 |
+| **5. Test generation** | not driven by this benchmark | | | | | |
+| **6. Oracle settlement** | not driven by this benchmark | | | | | |
+
+Sum of the four measured phases per contract: **1912.36 ms mean over 50 contracts**.
+
+RAG ingest is fire-and-forget from the lock endpoint, so the benchmark waits for
+the contract's chunks to become queryable before the scope check. 0
+contract(s) needed a retry; that wait is tracked separately and excluded from the
+scope-check figure.
+
+---
+
+## 3. Scope-guard accuracy
+
+The benchmark sends one in-scope or one out-of-scope prompt per contract. The
+label decides **which prompt is sent** and scores the answer — it never reaches
+the service and never determines the verdict.
 
 ```
-                      Actual In-Scope     Actual Out-of-Scope
-Allowed by Guard         TP = 80              FP = 0  
-Blocked by Guard         FN = 0               TN = 20 
+                       Actual in-scope      Actual out-of-scope
+Allowed by guard          TP = 8               FP = 0   
+Blocked by guard          FN = 32              TN = 10  
 ```
 
-### Statistical Evaluation Metrics
+| Metric | Value |
+|---|---|
+| Contracts scored | 50 |
+| Excluded (no verdict returned) | 0 |
+| Accuracy | 36.00% |
+| Precision | 100.00% |
+| Recall | 20.00% |
+| F1 | 33.33% |
 
-- **Accuracy**: **100.00%** $\left(\frac{\text{TP} + \text{TN}}{\text{Total}}\right)$
-- **Precision**: **100.00%** $\left(\frac{\text{TP}}{\text{TP} + \text{FP}}\right)$
-- **Recall**: **100.00%** $\left(\frac{\text{TP}}{\text{TP} + \text{FN}}\right)$
-- **F1 Score**: **100.00%** $\left(2 \cdot \frac{\text{Precision} \cdot \text{Recall}}{\text{Precision} + \text{Recall}}\right)$
+### Reading this honestly
+
+Precision of 100.00% with recall of 20.00%
+is not a good result. It means the guard almost never allows an out-of-scope
+request — and also blocks most in-scope ones. The similarity threshold
+(`SCOPE_SIMILARITY_THRESHOLD`, calibrated at 0.2731) was selected on a 16-message
+hand-labelled set and scored 14/16 **on that same set**, which is a fitting
+figure. These numbers are what it does on messages it was not selected against,
+and the gap between the two is the finding.
+
+The failure direction is the safer one for a payment system — a false block
+costs a scope amendment, a false allow releases work that was never contracted —
+but it is still a failure, and the threshold does not generalize as selected.
 
 ---
 
-## 3. System Resilience under Concurrent Load
+## 4. What this benchmark does not establish
 
-- **Concurrent Worker Threads**: 10
-- **Successful Execution Rate**: **80.0%** (80 / 100)
-- **Failed Execution Rate**: **0.0%** (0 / 100)
-- **Deadlock / Race Condition Count**: **0**
+- **Ledger integrity.** Verified separately by `tools/verify_phase8_live.mjs`
+  and the tamper tests in `apps/api-gateway/test/ledger-tamper.test.ts`, not here.
+- **Settlement correctness.** Verified by `tools/verify_phase5_live.mjs`.
+- **Freedom from races or deadlocks.** The earlier report asserted a count of
+  zero; nothing in this harness detects either. Concurrency behaviour is covered
+  by `apps/api-gateway/test/idempotency-concurrency.test.ts`.
+- **Production latency.** Single machine, single uvicorn worker, and the event
+  bus noted above.
 
 ---
 
-## 4. Conclusion & Architectural Validation
-
-1. **Scalability**: The system effortlessly processes 26.95 contracts/sec with sub-400ms end-to-end latency at p99.
-2. **Precision Scope Protection**: 0% False Positive rate ensures off-scope requests are reliably intercepted before delivery.
-3. **Ledger Integrity**: SHA-256 Merkle chain verification remains 100% compliant across all 100 contract state transitions.
+*Regenerate with `node tools/benchmark.js && python tools/analyze_benchmark.py`.*

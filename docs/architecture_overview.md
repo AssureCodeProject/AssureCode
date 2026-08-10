@@ -1,5 +1,14 @@
 # AssureCode Architectural Overview
 
+> **This document is a historical snapshot and is no longer authoritative.**
+> It describes an earlier state of the system. Several mechanisms it details
+> have since been replaced — the maintainability index formula, the OWASP
+> category coverage, the scope-check mechanism, and the visual-proof signal.
+> Corrections are marked inline below.
+>
+> **The current description is
+> [`ASSURECODE_COMPLETE_TECHNICAL_SPECIFICATION.md`](./ASSURECODE_COMPLETE_TECHNICAL_SPECIFICATION.md).**
+
 ## 1. High-Level System Overview & Architectural Topology
 
 **AssureCode** is an enterprise-grade, zero-trust autonomous code escrow and automated verification platform. It enforces contractual code quality, safety, and functional guarantees through cryptographic Merkle audit logs, automated 5-signal oracle evaluations, AI-assisted test generation, vector-search scope boundary protection, and 2-phase escrow settlements.
@@ -198,10 +207,12 @@ AssureCode is structured as 5 modular microservices under `apps/`, each possessi
   * Internal Modules: `src/sandbox-runner.ts`, `src/ast-analyzer.ts`, `src/security-auditor.ts`, `src/video-recorder.ts`.
 * **Pipeline Execution Steps**:
   1. **Sandbox Initialization** (`sandbox-runner.ts`): Executes `docker run --rm --network=none --memory=512m --cpus=1 alpine:latest` (with isolated process fallback). Emits `ci.sandbox.ready`.
-  2. **AST Static Analysis** (`ast-analyzer.ts`): Scans JS/TS code decision points (`if`, `for`, `while`, `catch`, `case`, `&&`, `||`, `?`) to calculate cyclomatic complexity and Maintainability Index (`100 - avgComplexity * 10 - lineCount * 0.5`). Emits `ci.ast.completed`.
+  2. **AST Static Analysis** (`ast-analyzer.ts`): Scans JS/TS code decision points (`if`, `for`, `while`, `catch`, `case`, `&&`, `||`, `?`) to calculate cyclomatic complexity and the Maintainability Index. Emits `ci.ast.completed`.
+     > **Corrected.** The formula quoted here previously — `100 - avgComplexity * 10 - lineCount * 0.5` — was invented, and the analyzer used regex rather than a parser (a branch-free line scored 38 decision points). Both are replaced: `@babel/parser` traversal, and the published SEI index `max(0, (171 − 5.2·ln V − 0.23·M − 16.2·ln L)/171 × 100)`.
   3. **Test Suite Execution**: Runs test suite against codebase inside sandbox, recording `passedTests` and `totalTests`. Emits `ci.tests.completed`.
   4. **OWASP Security Audit** (`security-auditor.ts`): Scans codebase for 4 vulnerability classes: Hardcoded Secrets, Dynamic Code Execution (`eval`/`Function`), SQL Injection, and Command Injection (`child_process.exec`). Calculates security score (`100 - critical * 40 - high * 20 - total * 5`). Emits `security.scan.completed`.
-  5. **Visual Proof Video Capture** (`video-recorder.ts`): Executes Playwright visual recording, uploads `.mp4` artifact to LocalStack/AWS S3 (`proofs/${contractId}_proof_${timestamp}.mp4`), and calculates SHA-256 video hash. Emits `video.verified`.
+  5. ~~**Visual Proof Video Capture** (`video-recorder.ts`)~~
+     > **Removed.** `video-recorder.ts` and the `video.verified` signal have been deleted. The module returned `verified: true` unconditionally and hashed a string rather than a recording, and no architectural objective required it.
   6. **Telemetry Aggregation**: Aggregates all results into an `auditResults` payload and emits `audit.completed`.
 * **Event Topics**:
   * **Consumed**: `code.push.received`.
@@ -479,8 +490,9 @@ The core innovation of AssureCode is its **Autonomous 5-Signal Oracle Escrow Set
 | **1. AST Signal** | `apps/ci-worker/src/ast-analyzer.ts` | Scans JS/TS decision keywords (`if`, `for`, `while`, `catch`, `case`, `&&`, `||`, `?`). Calculates cyclomatic complexity and Maintainability Index: `100 - avgComplexity * 10 - lineCount * 0.5`, clamped `[10, 100]`. | Direct: `ci.ast.completed`<br>Aggregated: `audit.completed` | `Number(maintainability) >= 10` | **25%** (`0.25 * (maintainability / 100.0)`) |
 | **2. Tests Signal** | `apps/ci-worker/src/sandbox-runner.ts` | Executes test suite in Docker container (`alpine:latest` with `--memory=512m --cpus=1`). Returns `passedTests` and `totalTests`. | Direct: `ci.tests.completed`<br>Aggregated: `audit.completed` | `passedTests === totalTests && totalTests > 0` (100% pass rate) | **40%** (`0.40 * (passedTests / totalTests)`) |
 | **3. Security Signal** | `apps/ci-worker/src/security-auditor.ts` | OWASP static scan across 4 vulnerability classes: Hardcoded Secrets, Dynamic Code (`eval`/`Function`), SQLi, Command Injection. Score: `100 - critical * 40 - high * 20 - total * 5`. | Direct: `security.scan.completed`<br>Aggregated: `audit.completed` | `vulnerabilities === 0` | **20%** (`0.20 * (1.0 if vuln == 0 else max(0, 1 - vuln * 0.25))`) |
-| **4. Scope Signal** | `apps/scope-guard/app/main.py` & `apps/api-gateway/src/server.ts` | Checks message against out-of-scope patterns ("unpaid", "for free", "overhaul") and `pgvector` cosine similarity against task requirement embeddings. | `scope.checked` | `allowed === true` | N/A (Gatekeeper signal) |
-| **5. Video Signal** | `apps/ci-worker/src/video-recorder.ts` | Playwright headful visual proof recording, S3 upload (`proofs/`), and SHA-256 video content hash generation. | `video.verified` | `videoPassed === true` | N/A (Proof signal) |
+| **4. Scope Signal** | `apps/scope-guard/app/main.py` & `apps/api-gateway/src/server.ts` | Resolves the contract's genesis ledger hash $H_0$, then retrieves top-k contract chunks by `pgvector` cosine similarity and compares the best match against the calibrated threshold 0.2731. Decisions are recorded against $H_0$. | `scope.checked` | `allowed === true` | Feeds $S_{\text{scope}}$ (15%) |
+| | | > **Corrected.** The regex phrase list described here ("unpaid", "for free", "overhaul") returned literal similarity values of 0.32/0.89 and has been deleted. It performed no embedding and no retrieval. | | | |
+| ~~**5. Video Signal**~~ | *removed* | Deleted — returned `verified: true` without doing the work. The oracle now gates on `trustScore >= 85 && criticalVulns === 0`, defined once in `packages/oracle`. | — | — | — |
 
 ---
 
@@ -705,7 +717,7 @@ The payment workflow uses Stripe PaymentIntents with manual capture:
 | `apps/ci-worker/src/ast-analyzer.ts` | CI Module | AST decision point parser & maintainability index calculator. |
 | `apps/ci-worker/src/sandbox-runner.ts` | CI Module | Docker container sandbox process runner. |
 | `apps/ci-worker/src/security-auditor.ts` | CI Module | OWASP static vulnerability scanner (secrets, eval, SQLi, cmd injection). |
-| `apps/ci-worker/src/video-recorder.ts` | CI Module | Playwright visual proof recorder, S3 upload, SHA-256 hash generator. |
+| ~~`apps/ci-worker/src/video-recorder.ts`~~ | *deleted* | Removed — returned `verified: true` and hashed a string, not a recording. |
 | `apps/settlement-worker/src/worker.ts` | Microservice (`settlement-worker`) | 5-Signal Oracle settlement engine, single-fire lock, Stripe transfer, Merkle invoice writer. |
 | `apps/webhook-ingest/src/server.ts` | Microservice (`webhook-ingest`) | Ingestion gateway for GitHub webhooks with HMAC SHA-256 verification. |
 | `apps/ai-service/app/main.py` | Microservice (`ai-service`) | FastAPI entry point for NLP matchmaker, RAG, LLM test generation, XAI trust score. |

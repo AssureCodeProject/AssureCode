@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import server from '../src/server.js';
 import { IdempotencyKeyHeaderSchema } from '@assurecode/shared';
-import { postgresAvailable, announceSkip } from '../../../tools/test-support/infra.js';
+import { postgresAvailable, announceSkip, serviceAuthHeaders } from '../../../tools/test-support/infra.js';
 
 const PG_UP = await postgresAvailable();
+const AUTH = serviceAuthHeaders();
 if (!PG_UP) announceSkip('Sprint 6.1 — Idempotency Keys End-to-End', 'a running PostgreSQL on DATABASE_URL');
 
 describe.skipIf(!PG_UP)('Sprint 6.1 — Idempotency Keys End-to-End', () => {
@@ -31,6 +32,7 @@ describe.skipIf(!PG_UP)('Sprint 6.1 — Idempotency Keys End-to-End', () => {
       headers: {
         'content-type': 'application/json',
         'idempotency-key': key,
+        ...AUTH,
       },
       payload,
     });
@@ -46,6 +48,7 @@ describe.skipIf(!PG_UP)('Sprint 6.1 — Idempotency Keys End-to-End', () => {
       headers: {
         'content-type': 'application/json',
         'idempotency-key': key,
+        ...AUTH,
       },
       payload,
     });
@@ -73,6 +76,7 @@ describe.skipIf(!PG_UP)('Sprint 6.1 — Idempotency Keys End-to-End', () => {
       headers: {
         'content-type': 'application/json',
         'x-idempotency-key': key,
+        ...AUTH,
       },
       payload,
     });
@@ -86,6 +90,7 @@ describe.skipIf(!PG_UP)('Sprint 6.1 — Idempotency Keys End-to-End', () => {
       headers: {
         'content-type': 'application/json',
         'x-idempotency-key': key,
+        ...AUTH,
       },
       payload,
     });

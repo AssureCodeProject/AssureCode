@@ -15,8 +15,11 @@ initTracing('api-gateway');
 import fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
 import fastifyWebsocket from '@fastify/websocket';
+import fastifyMultipart from '@fastify/multipart';
 import { randomUUID } from 'node:crypto';
+import net from 'node:net';
 import pg from 'pg';
+import { ZodError } from 'zod';
 import {
   loadConfig,
   createLogger,
@@ -26,8 +29,9 @@ import {
   getCorrelationId,
 } from '@assurecode/config';
 import { LedgerClient } from '@assurecode/ledger-client';
+import { OracleStore, TRUST_SCORE_THRESHOLD } from '@assurecode/oracle';
 import { createEscrowAdapter, type EscrowPort } from '@assurecode/stripe-adapter';
-import { createEventBus, OutboxRelay, InMemoryBus } from '@assurecode/event-bus';
+import { createEventBus, OutboxRelay, eventBusOptionsFromConfig, type EventBus } from '@assurecode/event-bus';
 import {
   InitializeContractSchema,
   ContractLockedSchema,
@@ -39,7 +43,9 @@ import {
   type EventEnvelope,
 } from '@assurecode/shared';
 import { withIdempotency } from './middleware/idempotency.js';
-import { logSecurityAudit } from './middleware/rbac.js';
+import { logSecurityAudit, type AuthUser } from './middleware/rbac.js';
+import { registerAuth, verifyPassword } from './middleware/auth.js';
+import { extractPdfText, MAX_PDF_BYTES } from './middleware/pdf.js';
 
 // ── Configuration ─────────────────────────────────────────────────────
 
@@ -49,6 +55,10 @@ const logger = createLogger('api-gateway', config.LOG_LEVEL);
 const databaseUrl = getDatabaseUrl(config);
 const dbPool = new pg.Pool(buildDbConfig(databaseUrl));
 const ledgerClient = new LedgerClient(databaseUrl);
+// Read-only here. The settlement worker owns writing oracle state and acting on
+// the verdict; the gateway shares the same `evaluate()` so what the UI shows and
+// what releases the money cannot disagree.
+const oracleStore = new OracleStore(dbPool);
 const escrowAdapter: EscrowPort = createEscrowAdapter({
   secretKey: config.STRIPE_SECRET_KEY || 'sk_test_mock',
   webhookSecret: config.STRIPE_WEBHOOK_SECRET || 'whsec_mock',
@@ -57,6 +67,18 @@ const escrowAdapter: EscrowPort = createEscrowAdapter({
 // BUG-013: Fail fast in production when Stripe keys are absent.
 if (config.NODE_ENV === 'production' && !config.STRIPE_SECRET_KEY) {
   logger.error('STRIPE_SECRET_KEY is required in production. Set the env var and restart.');
+  process.exit(1);
+}
+
+// A dev-default JWT secret or service token in production means every login
+// token and every "machine caller" bypass is forgeable by anyone who has
+// read this source file.
+if (
+  config.NODE_ENV === 'production' &&
+  (config.JWT_SECRET === 'dev_insecure_jwt_secret_change_me' ||
+    config.SERVICE_TOKEN === 'dev_insecure_service_token_change_me')
+) {
+  logger.error('JWT_SECRET and SERVICE_TOKEN must be set to non-default values in production.');
   process.exit(1);
 }
 
@@ -69,8 +91,11 @@ const redisHealthUrl = (() => {
 async function pingRedis(): Promise<'ok' | 'error' | 'not_configured'> {
   if (!redisHealthUrl) return 'not_configured';
   return new Promise<'ok' | 'error'>((resolve) => {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const net = require('node:net') as typeof import('node:net');
+    // `require` is not defined in an ES module, so this threw ReferenceError on
+    // every call and /readyz answered 500 unconditionally — for a probe whose
+    // entire job is to report whether the service is ready. An orchestrator
+    // would never have routed traffic here. Static import instead; `net` is a
+    // builtin, so there is nothing to defer.
     const socket = net.createConnection(
       { host: redisHealthUrl!.hostname, port: Number(redisHealthUrl!.port || 6379), timeout: 2000 },
       () => { socket.destroy(); resolve('ok'); },
@@ -80,17 +105,23 @@ async function pingRedis(): Promise<'ok' | 'error' | 'not_configured'> {
   });
 }
 
-
-// Use InMemoryBus for Sprint 0; will be RedisStreamsBus in production
-const eventBus = createEventBus(config.REDIS_URL) as InMemoryBus;
+// EVENT_BUS_TYPE selects the backend: 'redis' (default), 'kafka', or 'memory'.
+// The old `createEventBus(config.REDIS_URL)` call passed a bare string, which
+// the factory only ever resolves to RedisStreamsBus/InMemoryBus — Kafka was
+// unreachable from here regardless of what any env var said.
+const eventBus: EventBus = createEventBus(eventBusOptionsFromConfig(config));
 
 // Outbox Relay background daemon for zero-loss transactional outbox pumping
 const outboxRelay = new OutboxRelay({ databaseUrl, eventBus });
 outboxRelay.start();
 
-// ── AI Service Client ──────────────────────────────────────────────────
+// ── Downstream Service Clients ─────────────────────────────────────────
 
 const aiServiceUrl = `http://localhost:${config.AI_SERVICE_PORT}`;
+// The XAI scorer and the scope guard are addressed by env var rather than by
+// config port, because both are routinely run out-of-cluster during a demo.
+const scorerUrl = process.env.AI_SERVICE_URL || 'http://localhost:8000';
+const scopeGuardUrl = process.env.SCOPE_GUARD_URL || 'http://localhost:8001';
 
 /** Fire-and-forget call to ai-service — logs errors but doesn't block. */
 async function callAiService(path: string, body: unknown): Promise<void> {
@@ -113,6 +144,24 @@ async function callAiService(path: string, body: unknown): Promise<void> {
   }
 }
 
+/**
+ * The most recent audit_results payload for a contract, or null if the CI
+ * pipeline has never recorded one. Throws if the lookup itself fails — "we
+ * could not ask" is not the same answer as "there is nothing", and the two
+ * routes that read this map them to different status codes.
+ */
+async function latestAuditPayload(contractId: string): Promise<Record<string, unknown> | null> {
+  const res = await dbPool.query(
+    `SELECT payload FROM audit_results
+      WHERE contract_id = $1
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [contractId],
+  );
+  if (res.rowCount === 0) return null;
+  return res.rows[0].payload as Record<string, unknown>;
+}
+
 // ── Server Setup ───────────────────────────────────────────────────────
 
 const server = fastify({
@@ -132,6 +181,33 @@ void server.register(fastifyCors, {
   allowedHeaders: ['Content-Type', 'Authorization', 'x-correlation-id', 'idempotency-key', 'x-idempotency-key'],
 });
 
+// Same workspace-hoisting type friction as @fastify/jwt (see middleware/auth.ts) —
+// registers and runs correctly, cast at the boundary rather than fought.
+void server.register(fastifyMultipart as any, {
+  limits: { fileSize: MAX_PDF_BYTES, files: 1 },
+});
+
+// A rejected request body is the caller's error, not the server's.
+//
+// Routes parse their bodies with Zod and let a ZodError propagate. Fastify's
+// default handler turns any uncaught throw into HTTP 500, so a request missing
+// a required field was reported as an internal server error — which sends the
+// caller looking at our logs for a fault that is in their payload, and inflates
+// the server-error rate in any benchmark or SLO built on status codes.
+server.setErrorHandler((error, request, reply) => {
+  if (error instanceof ZodError) {
+    request.log.info({ issues: error.issues }, 'Rejected malformed request body');
+    return reply.status(400).send({
+      error: 'Invalid request body',
+      issues: error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
+    });
+  }
+  request.log.error({ err: error }, 'Unhandled error');
+  return reply.status(error.statusCode ?? 500).send({
+    error: error.statusCode && error.statusCode < 500 ? error.message : 'Internal Server Error',
+  });
+});
+
 // Correlation ID middleware hook
 server.addHook('onRequest', (request, reply, done) => {
   const correlationId =
@@ -143,6 +219,12 @@ server.addHook('onRequest', (request, reply, done) => {
     done();
   });
 });
+
+// JWT bearer auth (or x-service-token for machine callers) on every route
+// except the allow-list inside registerAuth (health/ready/metrics/login/
+// webhooks). Registered after the correlation-id hook so a 401 still carries
+// one.
+registerAuth(server, config.JWT_SECRET, config.SERVICE_TOKEN);
 
 // Liveness probe
 server.get('/healthz', async () => {
@@ -183,6 +265,147 @@ server.get('/metrics', async (_request, reply) => {
   return metrics.getMetrics();
 });
 
+// ── Auth Endpoints ───────────────────────────────────────────────────────
+
+server.post<{
+  Body: { email: string; password: string };
+}>('/auth/login', async (request, reply) => {
+  const { email, password } = request.body || {};
+  if (!email || !password) {
+    return reply.status(400).send({ error: 'email and password are required' });
+  }
+
+  const res = await dbPool.query(
+    `SELECT user_id, email, password_hash, role, display_name, kyc_status, mfa_enabled
+       FROM users WHERE email = $1`,
+    [email],
+  );
+
+  // Same response whether the email is unknown or the password is wrong —
+  // distinguishing the two would let a caller enumerate registered emails.
+  const invalid = () => reply.status(401).send({ error: 'Invalid email or password' });
+  if (res.rowCount === 0) return invalid();
+
+  const row = res.rows[0];
+  const valid = await verifyPassword(password, row.password_hash);
+  if (!valid) {
+    await logSecurityAudit(dbPool, {
+      userId: row.user_id,
+      action: 'LOGIN_FAILED',
+      resource: 'auth',
+      ipAddress: request.ip,
+      status: 'DENIED',
+    });
+    return invalid();
+  }
+
+  const token = (server as any).jwt.sign({
+    sub: row.user_id,
+    email: row.email,
+    role: row.role,
+    kycStatus: row.kyc_status,
+    mfaEnabled: row.mfa_enabled,
+  });
+
+  await logSecurityAudit(dbPool, {
+    userId: row.user_id,
+    action: 'LOGIN',
+    resource: 'auth',
+    ipAddress: request.ip,
+    status: 'SUCCESS',
+  });
+
+  return reply.send({
+    token,
+    user: {
+      userId: row.user_id,
+      email: row.email,
+      role: row.role,
+      displayName: row.display_name,
+    },
+  });
+});
+
+// JWT is stateless and carries no server-side session to revoke; the client
+// discards the token. This route exists for API symmetry and audit logging.
+server.post('/auth/logout', async (request, reply) => {
+  const user = (request as any).user as AuthUser | undefined;
+  if (user) {
+    await logSecurityAudit(dbPool, {
+      userId: user.userId,
+      action: 'LOGOUT',
+      resource: 'auth',
+      ipAddress: request.ip,
+      status: 'SUCCESS',
+    });
+  }
+  return reply.send({ success: true });
+});
+
+server.get('/auth/me', async (request, reply) => {
+  const user = (request as any).user as AuthUser | undefined;
+  if (!user) {
+    // Reached only via a valid x-service-token, which has no user identity.
+    return reply.send({ authenticated: false, serviceCaller: true });
+  }
+  // The JWT doesn't carry display_name (it wasn't needed at sign time), so
+  // this is the one auth route that reads the database rather than the token.
+  const res = await dbPool.query(`SELECT display_name FROM users WHERE user_id = $1`, [user.userId]);
+  return reply.send({
+    authenticated: true,
+    userId: user.userId,
+    email: user.email,
+    role: user.role,
+    kycStatus: user.kycStatus,
+    displayName: res.rows[0]?.display_name ?? user.email,
+  });
+});
+
+// ── PDF Requirements Upload ─────────────────────────────────────────────
+//
+// Standalone, not tied to a contractId: the client uploads before the form
+// is submitted, reviews the extracted text, and only then initializes the
+// contract with whatever they approved — see ContractInitialization.jsx.
+// "The client must see and approve exactly what gets hashed" (plan F3) is
+// why extraction returns text for review rather than silently populating
+// `requirements` server-side.
+const PDF_TOO_LARGE_ERROR = `File too large (max ${MAX_PDF_BYTES / (1024 * 1024)} MB)`;
+
+server.post('/api/pdf/extract', async (request, reply) => {
+  let data;
+  try {
+    // Same cross-version type friction as the plugin registration above —
+    // @fastify/multipart's `request.file()` decorator is real at runtime.
+    data = await (request as any).file();
+  } catch {
+    // @fastify/multipart throws when the stream exceeds `limits.fileSize`.
+    return reply.status(413).send({ error: PDF_TOO_LARGE_ERROR });
+  }
+
+  if (!data) {
+    return reply.status(400).send({ error: 'No file uploaded' });
+  }
+  if (data.mimetype !== 'application/pdf') {
+    return reply.status(400).send({ error: `Expected application/pdf, got ${data.mimetype}` });
+  }
+
+  const buffer = await data.toBuffer();
+  if (data.file.truncated) {
+    return reply.status(413).send({ error: PDF_TOO_LARGE_ERROR });
+  }
+
+  try {
+    const { text, pageCount, truncated } = await extractPdfText(buffer);
+    if (!text.trim()) {
+      return reply.status(422).send({ error: 'No extractable text found in this PDF (scanned image? empty document?)' });
+    }
+    return reply.send({ text, pageCount, truncated });
+  } catch (err: any) {
+    logger.warn({ err: err.message }, 'PDF extraction failed');
+    return reply.status(422).send({ error: 'Could not extract text from this PDF — is it a valid, unencrypted PDF?' });
+  }
+});
+
 // ── Contract Endpoints ────────────────────────────────────────────────
 
 server.post<{
@@ -192,16 +415,40 @@ server.post<{
   return withIdempotency(dbPool, request, reply, async () => {
     const body = InitializeContractSchema.parse(request.body);
 
-    const contractId = `AC-${Date.now().toString(36).toUpperCase()}`;
-    const clientId = randomUUID();
+    // `AC-${Date.now().toString(36)}` alone collides: two contracts initialized
+    // in the same millisecond get the same id, and the second one's INSERT
+    // below would fail — or worse, silently attach to the first one's ledger.
+    // The random suffix makes the identifier unique rather than merely usually
+    // unique.
+    const contractId = `AC-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 6).toUpperCase()}`;
+
+    // client_id used to be a fresh randomUUID() per contract — it matched no
+    // real user, which is why the V012 migration had 114 rows to backfill
+    // before it could add the FK. A logged-in client now owns the contract
+    // for real; a SERVICE_TOKEN caller (CI harnesses, benchmark scripts) has
+    // no user identity, so it falls back to the seeded legacy-client account
+    // rather than being blocked entirely.
+    const user = (request as any).user as AuthUser | undefined;
+    if (user && user.role !== 'client') {
+      return {
+        statusCode: 403,
+        contractId: '',
+        body: { error: `Role '${user.role}' cannot initialize a contract` } as any,
+      };
+    }
+    const clientId = user?.userId ?? 'legacy-client';
     const correlationId = randomUUID();
 
-    // Persist contract to database so downstream endpoints can reference it
+    // Persist contract to database so downstream endpoints can reference it.
+    // pdf_raw_text is the full extracted document (POST /api/pdf/extract),
+    // stored separately from `requirements` — the client may have trimmed or
+    // edited the summary that gets hashed without losing the source text the
+    // lock-time RAG ingest uses.
     await dbPool.query(
-      `INSERT INTO contracts (contract_id, client_id, title, requirements, budget_cents, deadline, status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'DRAFT')
+      `INSERT INTO contracts (contract_id, client_id, title, requirements, pdf_raw_text, budget_cents, deadline, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'DRAFT')
        ON CONFLICT (contract_id) DO NOTHING`,
-      [contractId, clientId, body.title, body.requirements, body.budgetCents, body.deadline],
+      [contractId, clientId, body.title, body.requirements, body.pdfRawText ?? null, body.budgetCents, body.deadline],
     );
 
     logger.info(
@@ -398,10 +645,26 @@ server.post<{
   });
 });
 
+// ── Test Generation ─────────────────────────────────────────────────────
 
-
-
-
+/**
+ * What /generate-tests answers with when ai-service cannot produce a bundle.
+ * `stub: true` is the honest marker: HTTP 200 with an empty bundle would
+ * otherwise read as "zero tests were generated for these requirements".
+ */
+function stubGeneratedTests(contractId: string): { statusCode: number; contractId: string; body: any } {
+  return {
+    statusCode: 200,
+    contractId,
+    body: {
+      contractId,
+      testBundleUrl: '',
+      testCount: 0,
+      generatedAt: new Date().toISOString(),
+      stub: true,
+    } as any,
+  };
+}
 
 server.post<{
   Params: { contractId: string };
@@ -471,17 +734,7 @@ server.post<{
 
       if (!aiRes.ok) {
         logger.warn({ contractId, status: aiRes.status }, 'ai-service generate-tests unavailable, returning stub response');
-        return {
-          statusCode: 200,
-          contractId,
-          body: {
-            contractId,
-            testBundleUrl: '',
-            testCount: 0,
-            generatedAt: new Date().toISOString(),
-            stub: true,
-          } as any,
-        };
+        return stubGeneratedTests(contractId);
       }
 
       const genRaw = (await aiRes.json()) as {
@@ -532,17 +785,7 @@ server.post<{
       };
     } catch (err) {
       logger.warn({ contractId, err }, 'ai-service generate-tests unreachable, returning stub response');
-      return {
-        statusCode: 200,
-        contractId,
-        body: {
-          contractId,
-          testBundleUrl: '',
-          testCount: 0,
-          generatedAt: new Date().toISOString(),
-          stub: true,
-        } as any,
-      };
+      return stubGeneratedTests(contractId);
     }
   });
 });
@@ -593,9 +836,20 @@ server.post<{
     );
 
     // Fire-and-forget: ingest contract text into RAG store for scope checking.
+    // Prefer the full extracted PDF text over the (possibly trimmed) summary
+    // in `requirements` — it gives the scope guard's retrieval real material
+    // to match against instead of a one-line brief.
+    let ragText = body.requirements;
+    try {
+      const pdfRes = await dbPool.query(`SELECT pdf_raw_text FROM contracts WHERE contract_id = $1`, [contractId]);
+      const pdfRawText = pdfRes.rows[0]?.pdf_raw_text as string | null | undefined;
+      if (pdfRawText && pdfRawText.trim()) ragText = pdfRawText;
+    } catch (err) {
+      logger.warn({ contractId, err }, 'Failed to read pdf_raw_text for RAG ingest, using requirements');
+    }
     void callAiService('/rag/ingest', {
       contract_id: contractId,
-      text: body.requirements,
+      text: ragText,
       target_chars: 512,
       overlap_chars: 64,
     });
@@ -715,7 +969,6 @@ server.post<{
   });
 });
 
-
 // ── Stripe Webhook ──────────────────────────────────────────────────────
 
 server.post<{
@@ -813,7 +1066,6 @@ server.get<{
 
 // ── Job Polling & Ledger Verification Endpoints ─────────────────────────
 
-
 server.get<{
   Params: { jobId: string };
   Reply:
@@ -862,11 +1114,28 @@ server.get<{
 
 // ── Audit / CI Endpoints ────────────────────────────────────────────────
 
+// A demo stand-in only, used when the caller supplies no code of their own —
+// there is no real freelancer code-submission flow yet, so this route has no
+// other source of "what got pushed". Labeled honestly rather than passed off
+// as a real submission: ci-worker's processCodePush refuses to run with no
+// code at all (`No code supplied`, enforced by its own tests), so silently
+// sending nothing — which this route did before — meant the audit pipeline
+// could never produce a result through this path, ever, even fully wired up.
+const SIMULATED_PUSH_DEMO_CODE = `// Demo push — no real freelancer submission flow exists yet.
+function add(a, b) {
+  return a + b;
+}
+
+module.exports = { add };
+`;
+
 server.post<{
   Params: { contractId: string };
+  Body: { code?: string };
   Reply: { message: string; eventId: string } | { error: string };
 }>('/api/contracts/:contractId/simulate-push', async (request, reply) => {
   const { contractId } = request.params;
+  const code = request.body?.code?.trim() || SIMULATED_PUSH_DEMO_CODE;
 
   const eventId = randomUUID();
 
@@ -877,11 +1146,11 @@ server.post<{
 
   await eventBus.publish(
     EVENT_TOPICS.CODE_PUSH_RECEIVED,
-    { contractId, repository: 'test-repo', commitSha: 'abc123', eventId },
+    { contractId, repository: 'test-repo', commitSha: 'abc123', eventId, code },
     eventId,
   );
 
-  logger.info({ contractId, eventId }, 'Simulated GitHub push event');
+  logger.info({ contractId, eventId, codeSource: request.body?.code ? 'caller-supplied' : 'demo-fallback' }, 'Simulated GitHub push event');
 
   return reply.status(200).send({
     message: 'GitHub push event simulated',
@@ -911,35 +1180,29 @@ server.get<{
   // reconstruct the numbers by scanning the ledger for an AUDIT_COMPLETED
   // action and, failing that, returned a body of zeros with HTTP 200 — which
   // reads as "maintainability 0, no vulnerabilities" rather than "never ran".
-  let res: Record<string, unknown>;
+  let payload: Record<string, unknown>;
   try {
-    const auditRes = await dbPool.query(
-      `SELECT payload FROM audit_results
-        WHERE contract_id = $1
-        ORDER BY created_at DESC
-        LIMIT 1`,
-      [contractId],
-    );
-    if (auditRes.rowCount === 0) {
+    const latest = await latestAuditPayload(contractId);
+    if (latest === null) {
       return reply.status(404).send({ error: `No audit has been run for ${contractId}` });
     }
-    res = auditRes.rows[0].payload as Record<string, unknown>;
+    payload = latest;
   } catch (err) {
     request.log.error({ err, contractId }, 'Audit results lookup failed');
     return reply.status(503).send({ error: 'Audit results unavailable' });
   }
 
-  const maintainability = Number(res.maintainability ?? 0);
-  const passedTests = Number(res.passedTests ?? 0);
-  const totalTests = Number(res.totalTests ?? 0);
-  const vulnerabilities = Number(res.vulnerabilities ?? 0);
+  const maintainability = Number(payload.maintainability ?? 0);
+  const passedTests = Number(payload.passedTests ?? 0);
+  const totalTests = Number(payload.totalTests ?? 0);
+  const vulnerabilities = Number(payload.vulnerabilities ?? 0);
   const passed = Boolean(
     maintainability >= 10 &&
     passedTests === totalTests &&
     totalTests > 0 &&
     vulnerabilities === 0
   );
-  const scanDuration = Number(res.scanDuration ?? 0);
+  const scanDuration = Number(payload.scanDuration ?? 0);
 
   return reply.status(200).send({
     maintainability,
@@ -956,15 +1219,39 @@ server.get<{
 server.get<{
   Params: { contractId: string };
   Reply:
-  | {
-    contractId: string;
-    freelancerId: string;
-    trustScore: number;
-    criticalVulns: number;
-    justifications: string[];
-    scoredAt: string;
-  }
-  | { error: string };
+    | {
+        contractId: string;
+        freelancerId: string;
+        trustScore: number;
+        criticalVulns: number;
+        scopeMeasured: boolean;
+        threshold: number;
+        // The per-term arithmetic that produced the score. This is the whole
+        // interpretability claim, so it is forwarded rather than reduced to a
+        // single number the caller has to take on trust.
+        terms: Array<{
+          name: string;
+          value: number;
+          weight: number;
+          contribution: number;
+          justification: string;
+        }>;
+        // Advisory explanation of trustScore, generated after it's final.
+        // Absent when the LLM is unavailable — the score is unaffected either way.
+        narrative: string | null;
+        telemetry: {
+          maintainability: number;
+          cyclomaticComplexity: number;
+          passedTests: number;
+          totalTests: number;
+          vulnerabilities: number;
+          criticalVulns: number;
+          highVulns: number;
+        };
+        justifications: string[];
+        scoredAt: string;
+      }
+    | { error: string };
 }>('/api/contracts/:contractId/score', async (request, reply) => {
   const { contractId } = request.params;
   const chain = await ledgerClient.getChain(contractId);
@@ -993,15 +1280,9 @@ server.get<{
   let freelancerId: string;
 
   try {
-    const auditRes = await dbPool.query(
-      `SELECT payload FROM audit_results
-        WHERE contract_id = $1
-        ORDER BY created_at DESC
-        LIMIT 1`,
-      [contractId],
-    );
+    const auditPayload = await latestAuditPayload(contractId);
 
-    if (auditRes.rowCount === 0) {
+    if (auditPayload === null) {
       return reply.status(409).send({
         error:
           `No audit results recorded for ${contractId}. The trust score is computed from CI ` +
@@ -1009,15 +1290,14 @@ server.get<{
       });
     }
 
-    const p = auditRes.rows[0].payload as Record<string, unknown>;
     audit = {
-      maintainability: Number(p.maintainability),
-      cyclomaticComplexity: Number(p.cyclomaticComplexity),
-      passedTests: Number(p.passedTests),
-      totalTests: Number(p.totalTests),
-      vulnerabilities: Number(p.vulnerabilities),
-      criticalVulns: Number(p.criticalVulns ?? 0),
-      highVulns: Number(p.highVulns ?? 0),
+      maintainability: Number(auditPayload.maintainability),
+      cyclomaticComplexity: Number(auditPayload.cyclomaticComplexity),
+      passedTests: Number(auditPayload.passedTests),
+      totalTests: Number(auditPayload.totalTests),
+      vulnerabilities: Number(auditPayload.vulnerabilities),
+      criticalVulns: Number(auditPayload.criticalVulns ?? 0),
+      highVulns: Number(auditPayload.highVulns ?? 0),
     };
 
     const contractRes = await dbPool.query(
@@ -1036,11 +1316,26 @@ server.get<{
     });
   }
 
-  const aiServiceUrl = process.env.AI_SERVICE_URL || 'http://localhost:8000';
-  let scored: { trust_score: number; justifications: string[]; critical_vulnerabilities: number };
+  let scored: {
+    trust_score: number;
+    justifications: string[];
+    critical_vulnerabilities: number;
+    scope_measured: boolean;
+    terms: Array<{
+      name: string;
+      value: number;
+      weight: number;
+      contribution: number;
+      justification: string;
+    }>;
+    // Advisory only — see apps/ai-service/app/routes/xai.py _generate_narrative.
+    // Passed through as-is; nothing here reads it. The oracle gate downstream
+    // (packages/oracle) evaluates trust_score alone.
+    narrative: string | null;
+  };
 
   try {
-    const aiRes = await fetch(`${aiServiceUrl}/xai/score`, {
+    const aiRes = await fetch(`${scorerUrl}/xai/score`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1079,6 +1374,9 @@ server.get<{
   const scoredAt = new Date().toISOString();
   const correlationId = randomUUID();
 
+  // narrative is deliberately not part of this payload — it never enters the
+  // event bus, never reaches oracle.recordScore, and cannot affect the
+  // settlement gate. It is added to the HTTP reply only, below.
   const scorePayload = {
     contractId,
     freelancerId,
@@ -1090,7 +1388,201 @@ server.get<{
 
   await eventBus.publish(EVENT_TOPICS.XAI_SCORED, scorePayload, correlationId);
 
-  return reply.status(200).send(scorePayload);
+  return reply.status(200).send({
+    ...scorePayload,
+    scopeMeasured: scored.scope_measured,
+    threshold: TRUST_SCORE_THRESHOLD,
+    terms: scored.terms,
+    narrative: scored.narrative,
+    telemetry: {
+      maintainability: audit.maintainability,
+      cyclomaticComplexity: audit.cyclomaticComplexity,
+      passedTests: audit.passedTests,
+      totalTests: audit.totalTests,
+      vulnerabilities: audit.vulnerabilities,
+      criticalVulns: audit.criticalVulns,
+      highVulns: audit.highVulns,
+    },
+  });
+});
+
+// ── Scope Drift (C1) ────────────────────────────────────────────────────
+//
+// Assess cumulative drift over the contract's recorded scope decisions, then
+// anchor the assessment in the Merkle ledger.
+//
+// The anchoring is the point, and it is why this route exists in the gateway
+// rather than inside the scope guard. A scope flag that freezes a payment has
+// to be re-derivable in a dispute: the ledger entry binds the decision to the
+// contract's genesis hash and to the statistics that produced it, so a later
+// reader can recompute rather than take it on trust. It also keeps the RFC 8785
+// canonical serializer a single implementation — a Python copy in the scope
+// guard could disagree, and a hash chain with two serializers is exactly the
+// defect V009 removed.
+server.post<{
+  Params: { contractId: string };
+  Reply: { assessment: Record<string, unknown>; ledgerId: number; currentHash: string } | { error: string };
+}>('/api/contracts/:contractId/drift', async (request, reply) => {
+  const { contractId } = request.params;
+
+  let assessment: Record<string, unknown>;
+  try {
+    const res = await fetch(
+      `${scopeGuardUrl}/scope/drift/${encodeURIComponent(contractId)}`,
+      { signal: AbortSignal.timeout(10_000) },
+    );
+
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      // 409 (nothing recorded yet) and 503 (no calibration set) are both
+      // propagated rather than flattened: "there is no sequence to assess" and
+      // "there is no calibrated guarantee available" are different answers and
+      // the caller must be able to tell them apart.
+      return reply
+        .status(res.status === 409 || res.status === 503 ? res.status : 502)
+        .send({ error: `Drift assessment unavailable: scope guard returned ${res.status}. ${detail}` });
+    }
+
+    assessment = (await res.json()) as Record<string, unknown>;
+  } catch (err) {
+    request.log.error({ err, contractId }, 'Scope guard unreachable for drift assessment');
+    return reply.status(502).send({ error: 'Drift assessment unavailable: scope guard unreachable' });
+  }
+
+  const ledgerPayload = assessment.ledger_payload as Record<string, unknown> | undefined;
+  if (!ledgerPayload) {
+    return reply.status(502).send({ error: 'Scope guard returned no ledger payload to anchor' });
+  }
+
+  try {
+    const row = await ledgerClient.append(contractId, 'SCOPE_DRIFT_ASSESSED', ledgerPayload);
+    return reply.status(200).send({
+      assessment,
+      ledgerId: row.ledgerId,
+      currentHash: row.currentHash,
+    });
+  } catch (err) {
+    // The assessment is not returned if it could not be anchored. An
+    // unanchored drift flag is an assertion, and the whole claim of this
+    // endpoint is that it is evidence.
+    request.log.error({ err, contractId }, 'Failed to anchor drift assessment');
+    return reply.status(503).send({
+      error: 'Drift assessment computed but could not be anchored to the ledger; not returning an unanchored flag.',
+    });
+  }
+});
+
+// ── Settlement Oracle State ─────────────────────────────────────────────
+//
+// The settlement UI previously rendered five hardcoded "VERIFIED" oracle cards
+// from a mock module, so it showed a passing oracle for contracts that had
+// never been audited. This is the same verdict the settlement worker acts on —
+// `OracleStore.evaluate` — read through the shared package, so the screen and
+// the payment cannot disagree.
+server.get<{
+  Params: { contractId: string };
+  Reply:
+    | {
+        contractId: string;
+        freelancerId: string | null;
+        approved: boolean;
+        threshold: number;
+        signals: {
+          astPassed: boolean;
+          testsPassed: boolean;
+          securityPassed: boolean;
+          scopePassed: boolean;
+          trustScore: number | null;
+          criticalVulns: number | null;
+        };
+        blockers: string[];
+        scopeChecks: { allowed: number; rejected: number; total: number };
+        escrow: {
+          paymentIntentId: string;
+          amountCents: number;
+          status: string;
+          createdAt: string;
+        } | null;
+        settlement: { status: string; transferId: string | null; updatedAt: string } | null;
+      }
+    | { error: string };
+}>('/api/contracts/:contractId/oracle', async (request, reply) => {
+  const { contractId } = request.params;
+
+  const chain = await ledgerClient.getChain(contractId);
+  if (chain.length === 0) {
+    return reply.status(404).send({ error: 'Contract not found' });
+  }
+
+  try {
+    const verdict = await oracleStore.evaluate(contractId);
+
+    const scopeRes = await dbPool.query(
+      `SELECT count(*) FILTER (WHERE allowed)     AS allowed,
+              count(*) FILTER (WHERE NOT allowed) AS rejected,
+              count(*)                            AS total
+         FROM scope_checks WHERE contract_id = $1`,
+      [contractId],
+    );
+    const sc = scopeRes.rows[0] ?? {};
+
+    // Any escrow row, not just PENDING: after a capture the row is RELEASED,
+    // and the UI needs to be able to say so.
+    const escrowRes = await dbPool.query(
+      `SELECT payment_intent_id, amount_cents, status, created_at
+         FROM escrow WHERE contract_id = $1
+        ORDER BY created_at DESC LIMIT 1`,
+      [contractId],
+    );
+    const settlementRes = await dbPool.query(
+      `SELECT status, transfer_id, updated_at FROM settlements WHERE contract_id = $1`,
+      [contractId],
+    );
+
+    // The settlement UI needs the payee. It used to send the literal 'f_alex'.
+    const contractRes = await dbPool.query(
+      `SELECT freelancer_id FROM contracts WHERE contract_id = $1`,
+      [contractId],
+    );
+
+    const escrowRow = escrowRes.rows[0];
+    const settlementRow = settlementRes.rows[0];
+
+    return reply.status(200).send({
+      contractId,
+      freelancerId: contractRes.rows[0]?.freelancer_id ?? null,
+      approved: verdict.approved,
+      threshold: TRUST_SCORE_THRESHOLD,
+      signals: verdict.signals,
+      blockers: verdict.blockers,
+      scopeChecks: {
+        allowed: Number(sc.allowed ?? 0),
+        rejected: Number(sc.rejected ?? 0),
+        total: Number(sc.total ?? 0),
+      },
+      escrow: escrowRow
+        ? {
+            paymentIntentId: escrowRow.payment_intent_id,
+            amountCents: Number(escrowRow.amount_cents),
+            status: escrowRow.status,
+            createdAt: new Date(escrowRow.created_at).toISOString(),
+          }
+        : null,
+      settlement: settlementRow
+        ? {
+            status: settlementRow.status,
+            transferId: settlementRow.transfer_id,
+            updatedAt: new Date(settlementRow.updated_at).toISOString(),
+          }
+        : null,
+    });
+  } catch (err) {
+    // An unreadable oracle is not an approving one, and it is not an empty one
+    // either — returning a body of `false` signals would render as a definite
+    // rejection rather than as "we could not find out".
+    request.log.error({ err, contractId }, 'Oracle state lookup failed');
+    return reply.status(503).send({ error: 'Oracle state unavailable' });
+  }
 });
 
 // ── Chat & Scope Guard Interceptors (Tasks 3.2 & 3.4) ────────────────────
@@ -1112,7 +1604,19 @@ server.post<{
     return reply.status(400).send({ error: 'Message is required' });
   }
 
-  const scopeGuardUrl = process.env.SCOPE_GUARD_URL || 'http://localhost:8001';
+  // No permissive fallback. This used to deliver the message when the guard was
+  // unreachable *and* when it answered with any non-2xx — logging "allowing with
+  // default check", which is not a check. Two things went wrong at once: an
+  // out-of-scope request got through whenever the guard was down, and because
+  // the guard is what writes scope_checks, the trust score's adherence term was
+  // computed over a history that silently omitted those messages. An
+  // unavailable guard is an unavailable guard; say so.
+  let checkResult: {
+    allowed: boolean;
+    similarity_score: number;
+    reason: string;
+    suggested_mediation?: string;
+  };
 
   try {
     const scopeRes = await fetch(`${scopeGuardUrl}/scope/check`, {
@@ -1122,40 +1626,50 @@ server.post<{
       signal: AbortSignal.timeout(5000),
     });
 
-    if (scopeRes.ok) {
-      const checkResult = (await scopeRes.json()) as {
-        allowed: boolean;
-        similarity_score: number;
-        reason: string;
-        suggested_mediation?: string;
-      };
-
-      if (!checkResult.allowed) {
-        logger.warn({ contractId, reason: checkResult.reason }, 'Scope Guard intercepted off-scope message');
-
-        const correlationId = randomUUID();
-        await eventBus.publish(
-          EVENT_TOPICS.SCOPE_CHECKED,
-          {
-            contractId,
-            message,
-            allowed: false,
-            reason: checkResult.reason,
-            mediation: checkResult.suggested_mediation,
-          },
-          correlationId,
-        );
-
-        return reply.status(403).send({
-          delivered: false,
-          blocked: true,
-          reason: checkResult.reason,
-          mediation: checkResult.suggested_mediation || 'Off-scope change request blocked by automated Scope Guard.',
-        });
-      }
+    if (!scopeRes.ok) {
+      const detail = await scopeRes.text().catch(() => '');
+      logger.warn({ contractId, status: scopeRes.status, detail }, 'Scope Guard declined to check');
+      // 409 means the guard has no indexed contract to compare against — a
+      // caller-fixable state, so it is propagated rather than flattened to 503.
+      return reply.status(scopeRes.status === 409 ? 409 : 503).send({
+        error:
+          `Message not delivered: the scope guard returned ${scopeRes.status} and the request ` +
+          `was therefore never checked. ${detail}`,
+      });
     }
+
+    checkResult = (await scopeRes.json()) as typeof checkResult;
   } catch (err) {
-    logger.warn({ contractId, err }, 'Scope Guard service unreachable, allowing with default check');
+    logger.error({ contractId, err }, 'Scope Guard unreachable');
+    return reply.status(503).send({
+      error:
+        'Message not delivered: the scope guard is unreachable, so this request could not be ' +
+        'checked against the contract.',
+    });
+  }
+
+  if (!checkResult.allowed) {
+    logger.warn({ contractId, reason: checkResult.reason }, 'Scope Guard intercepted off-scope message');
+
+    const rejectionId = randomUUID();
+    await eventBus.publish(
+      EVENT_TOPICS.SCOPE_CHECKED,
+      {
+        contractId,
+        message,
+        allowed: false,
+        reason: checkResult.reason,
+        mediation: checkResult.suggested_mediation,
+      },
+      rejectionId,
+    );
+
+    return reply.status(403).send({
+      delivered: false,
+      blocked: true,
+      reason: checkResult.reason,
+      mediation: checkResult.suggested_mediation || 'Off-scope change request blocked by automated Scope Guard.',
+    });
   }
 
   const correlationId = randomUUID();
@@ -1194,43 +1708,44 @@ server.get<{
   });
 });
 
+// The pipeline step each topic completes, in the order the UI renders them.
+// Single source of truth for both what the socket subscribes to and what it
+// reports — the two used to be separate lists that had to be kept in step by
+// hand. AUDIT_COMPLETED closes the run and is handled separately below.
+const AUDIT_STREAM_STEP_BY_TOPIC: Record<string, number> = {
+  [EVENT_TOPICS.CODE_PUSH_RECEIVED]: 0,
+  [EVENT_TOPICS.CI_SANDBOX_READY]: 1,
+  [EVENT_TOPICS.CI_AST_COMPLETED]: 2,
+  [EVENT_TOPICS.CI_TESTS_COMPLETED]: 3,
+  [EVENT_TOPICS.SECURITY_SCAN_COMPLETED]: 4,
+};
+
+/** The frame to push for a pipeline topic, or null if the topic says nothing. */
+function auditStreamFrame(topic: string, contractId: string): Record<string, unknown> | null {
+  if (topic === EVENT_TOPICS.AUDIT_COMPLETED) {
+    return { type: 'audit-complete', contractId };
+  }
+  const stepId = AUDIT_STREAM_STEP_BY_TOPIC[topic];
+  if (stepId === undefined) return null;
+  return { type: 'step-complete', stepId, contractId };
+}
+
 server.get<{
   Params: { contractId: string };
 }>('/api/audits/:contractId/stream', { websocket: true }, async (connection, request) => {
   const { contractId } = request.params;
   logger.info({ contractId }, 'Audit WebSocket stream opened');
 
-  const topicsToWatch = [
-    EVENT_TOPICS.CODE_PUSH_RECEIVED,
-    EVENT_TOPICS.CI_SANDBOX_READY,
-    EVENT_TOPICS.CI_AST_COMPLETED,
-    EVENT_TOPICS.CI_TESTS_COMPLETED,
-    EVENT_TOPICS.SECURITY_SCAN_COMPLETED,
-    EVENT_TOPICS.AUDIT_COMPLETED,
-  ];
+  const topicsToWatch = [...Object.keys(AUDIT_STREAM_STEP_BY_TOPIC), EVENT_TOPICS.AUDIT_COMPLETED];
 
   const unsubs: Array<() => Promise<void>> = [];
 
   for (const topic of topicsToWatch) {
     const unsub = await eventBus.subscribe(topic, async (event: EventEnvelope) => {
       if (event.payload.contractId === contractId && connection.socket.readyState === connection.socket.OPEN) {
-        let msgPayload: any = null;
-        if (topic === EVENT_TOPICS.CODE_PUSH_RECEIVED) {
-          msgPayload = { type: 'step-complete', stepId: 0, contractId };
-        } else if (topic === EVENT_TOPICS.CI_SANDBOX_READY) {
-          msgPayload = { type: 'step-complete', stepId: 1, contractId };
-        } else if (topic === EVENT_TOPICS.CI_AST_COMPLETED) {
-          msgPayload = { type: 'step-complete', stepId: 2, contractId };
-        } else if (topic === EVENT_TOPICS.CI_TESTS_COMPLETED) {
-          msgPayload = { type: 'step-complete', stepId: 3, contractId };
-        } else if (topic === EVENT_TOPICS.SECURITY_SCAN_COMPLETED) {
-          msgPayload = { type: 'step-complete', stepId: 4, contractId };
-        } else if (topic === EVENT_TOPICS.AUDIT_COMPLETED) {
-          msgPayload = { type: 'audit-complete', contractId };
-        }
-
-        if (msgPayload) {
-          connection.socket.send(JSON.stringify(msgPayload));
+        const frame = auditStreamFrame(topic, contractId);
+        if (frame) {
+          connection.socket.send(JSON.stringify(frame));
         }
       }
     });
@@ -1245,8 +1760,34 @@ server.get<{
 
 // ── Start Server ───────────────────────────────────────────────────────
 
-const start = async () => {
+// tools/seed-users.py writes this exact argon2id hash (password "demo1234")
+// onto every demo account it seeds. It refuses to run when NODE_ENV=production
+// itself, but that only guards the one call site — this catches the row
+// directly, in case the database was seeded some other way (a stale snapshot
+// restored into prod, a script run with the wrong env). Defense in depth for
+// a hardcoded-credential backdoor, not a substitute for the seed script's own
+// guard.
+const KNOWN_DEMO_PASSWORD_HASH =
+  '$argon2id$v=19$m=19456,t=2,p=1$QgV5gQdfEGK4QFgZ/vw1+A$uGWPLqOLWrjcqn3fi29MZ7/FEUvFGh/M7cNmLIkQt+U';
+
+async function refuseIfDemoCredentialsInProduction(): Promise<void> {
+  if (config.NODE_ENV !== 'production') return;
+  const res = await dbPool.query(`SELECT user_id FROM users WHERE password_hash = $1 LIMIT 5`, [
+    KNOWN_DEMO_PASSWORD_HASH,
+  ]);
+  if (res.rowCount && res.rowCount > 0) {
+    const ids = res.rows.map((r) => r.user_id).join(', ');
+    logger.error(
+      `Refusing to start in production: user(s) [${ids}] have the known demo password hash. ` +
+        `Rotate their password_hash before deploying.`,
+    );
+    process.exit(1);
+  }
+}
+
+async function start(): Promise<void> {
   try {
+    await refuseIfDemoCredentialsInProduction();
     const port = config.GATEWAY_PORT || 4000;
     await server.listen({ port, host: '0.0.0.0' });
     logger.info(`API Gateway listening on port ${port}`);
@@ -1254,30 +1795,23 @@ const start = async () => {
     logger.error(err);
     process.exit(1);
   }
-};
+}
 
-process.on('SIGTERM', async () => {
-  logger.info('SIGTERM received, shutting down...');
+async function shutdown(signal: string): Promise<void> {
+  logger.info(`${signal} received, shutting down...`);
   await outboxRelay.close();
   await dbPool.end();
   await ledgerClient.close();
   await server.close();
   process.exit(0);
-});
+}
 
-process.on('SIGINT', async () => {
-  logger.info('SIGINT received, shutting down...');
-  await outboxRelay.close();
-  await dbPool.end();
-  await ledgerClient.close();
-  await server.close();
-  process.exit(0);
-});
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
+process.on('SIGINT', () => void shutdown('SIGINT'));
 
 if (process.env.NODE_ENV !== 'test') {
   start();
 }
 
 export { server };
-
-
+export default server;

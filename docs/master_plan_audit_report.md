@@ -1,3 +1,22 @@
+> **⚠️ HISTORICAL DOCUMENT — corrected 2026-08-09, do not cite in a defense.**
+> This report audits the original, largely aspirational 5-phase spec, not the
+> corrected one. Several of its "INSTALLED" claims never existed as described:
+> the **Phase 5 "5-Signal Oracle"** below counts a `videoPassed` signal from
+> Playwright recording that was always mocked (`video-recorder.ts` returned a
+> static S3 URL, never a real MP4); the actual oracle
+> (`packages/oracle/src/index.ts`) gates on **four** signals — `astPassed`,
+> `testsPassed`, `securityPassed`, `scopePassed` — deliberately, because a video
+> file's existence proves nothing a machine can check. The Playwright video
+> path and the EVM/ZK-SNARK items in this report were considered and rejected,
+> not merely left undone. The **75.0% "Composite Architecture Score"** below is
+> a score against that retracted spec and should not be quoted as the system's
+> current completeness. See `docs/PRESENTATION_GUIDE.md` (its own retraction
+> notice) and the working plan in this repo for what is actually implemented
+> today. The rest of this document is left as originally written for audit-trail
+> purposes — read it as "what an earlier audit believed," not as current fact.
+
+---
+
 # AssureCode (Trust-Code 2.0) — Definitive Master Plan Audit Report
 
 **Target System**: AssureCode (Trust-Code 2.0) — Zero-Trust Event-Driven Multi-Agent Freelance Ecosystem  

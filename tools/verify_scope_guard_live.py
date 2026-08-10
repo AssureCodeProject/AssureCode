@@ -116,8 +116,10 @@ def main() -> int:
                 (contract_id, "client-verify", "Scope guard live verification",
                  " ".join(REQUIREMENTS), 100000, "2026-12-31", "LOCKED"),
             )
+            # V009: append_ledger takes canonical RFC 8785 bytes, not jsonb. The
+            # literal below is already canonical (single key, no whitespace).
             cur.execute(
-                "SELECT append_ledger(%s, %s, %s::jsonb)",
+                "SELECT append_ledger(%s, %s, %s)",
                 (contract_id, "GENESIS", '{"source":"verify_scope_guard_live"}'),
             )
             cur.execute(

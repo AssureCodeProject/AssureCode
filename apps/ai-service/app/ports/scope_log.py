@@ -34,6 +34,7 @@ which per-message thresholding cannot do.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 
@@ -80,6 +81,14 @@ class ScopeAdherence:
 class PostgresScopeLog:
     """Writes to and reads from the scope_checks table (V008)."""
 
+    # Bounded, because libpq's default is to wait indefinitely. Without this the
+    # trust score endpoint hung for as long as the client would hold the socket
+    # open — measured at over 60 seconds against an unresponsive Supabase host —
+    # rather than raising ScopeLogUnavailable and being turned into the 503 the
+    # callers already handle. An unreachable log has to fail, and failing has to
+    # take a bounded amount of time or it is indistinguishable from working.
+    CONNECT_TIMEOUT_SECONDS = int(os.environ.get("SCOPE_LOG_CONNECT_TIMEOUT", "10"))
+
     def __init__(self, database_url: str) -> None:
         self._database_url = database_url
         self._conn = None
@@ -92,7 +101,11 @@ class PostgresScopeLog:
         except ImportError as err:  # pragma: no cover — packaging issue
             raise ScopeLogUnavailable("psycopg is not installed") from err
         try:
-            self._conn = psycopg.connect(self._database_url, autocommit=True)
+            self._conn = psycopg.connect(
+                self._database_url,
+                autocommit=True,
+                connect_timeout=self.CONNECT_TIMEOUT_SECONDS,
+            )
         except Exception as err:
             self._conn = None
             raise ScopeLogUnavailable(f"cannot connect to the scope log: {err}") from err
@@ -142,6 +155,32 @@ class PostgresScopeLog:
             raise ScopeLogUnavailable(f"failed to read scope adherence: {err}") from err
         return ScopeAdherence(contract_id=contract_id, allowed=int(row[0]), total=int(row[1]))
 
+    def residuals(self, contract_id: str) -> list[float]:
+        """Per-message residuals s_t = 1 - similarity, oldest first.
+
+        The drift detector (C1) needs the *sequence*, not the summary, and the
+        sequence is already here: every scope decision recorded its best
+        retrieved similarity. Re-deriving residuals from the log rather than
+        holding them in memory means the detector has no state of its own to
+        drift from the decisions it is reasoning about, and a restart does not
+        reset a partially accumulated alarm.
+        """
+        conn = self._connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT similarity FROM scope_checks
+                     WHERE contract_id = %s
+                     ORDER BY check_id ASC
+                    """,
+                    (contract_id,),
+                )
+                return [1.0 - float(r[0]) for r in cur.fetchall()]
+        except Exception as err:
+            self._conn = None
+            raise ScopeLogUnavailable(f"failed to read scope residuals: {err}") from err
+
 
 class InMemoryScopeLog:
     """Process-local log for tests and offline runs."""
@@ -160,3 +199,6 @@ class InMemoryScopeLog:
             allowed=sum(1 for r in rows if r.allowed),
             total=len(rows),
         )
+
+    def residuals(self, contract_id: str) -> list[float]:
+        return [1.0 - float(r.similarity) for r in self._rows if r.contract_id == contract_id]

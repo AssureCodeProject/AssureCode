@@ -13,14 +13,14 @@
  * 'acct_freelancer_123', so the escrow was never actually released and every
  * settlement paid the same placeholder account.
  */
-import { createEventBus } from '@assurecode/event-bus';
+import { createEventBus, eventBusOptionsFromConfig } from '@assurecode/event-bus';
 import { loadConfig, createLogger, getDatabaseUrl, buildDbConfig } from '@assurecode/config';
 import { LedgerClient } from '@assurecode/ledger-client';
 import { createEscrowAdapter } from '@assurecode/stripe-adapter';
 import { EVENT_TOPICS, EventEnvelope, SettlementRequested } from '@assurecode/shared';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
-import { OracleStore } from './oracle-store.js';
+import { OracleStore } from '@assurecode/oracle';
 
 const config = loadConfig();
 const logger = createLogger('settlement-worker', config.LOG_LEVEL);
@@ -33,14 +33,28 @@ const escrowAdapter = createEscrowAdapter({
   webhookSecret: config.STRIPE_WEBHOOK_SECRET ?? '',
 });
 
-const eventBus = createEventBus(config.REDIS_URL);
+const eventBus = createEventBus(eventBusOptionsFromConfig(config));
 const oracle = new OracleStore(dbPool);
 
-async function start() {
-  logger.info('Starting settlement oracle...');
+/** Mark the contract's settlement row failed. Callers decide whether to swallow. */
+function markSettlementFailed(contractId: string): Promise<unknown> {
+  return dbPool.query(
+    `UPDATE settlements SET status = 'FAILED', updated_at = NOW() WHERE contract_id = $1`,
+    [contractId],
+  );
+}
 
-  // ── 1. CI signals ──────────────────────────────────────────────────
-  eventBus.subscribe(EVENT_TOPICS.AUDIT_COMPLETED, async (event: EventEnvelope) => {
+function publishSettlementRejected(
+  contractId: string,
+  reason: string,
+  correlationId: string,
+): Promise<unknown> {
+  return eventBus.publish(EVENT_TOPICS.SETTLEMENT_REJECTED, { contractId, reason }, correlationId);
+}
+
+// ── 1. CI signals ────────────────────────────────────────────────────
+function subscribeAuditSignals(): void {
+  void eventBus.subscribe(EVENT_TOPICS.AUDIT_COMPLETED, async (event: EventEnvelope) => {
     const payload = event.payload as any;
     const contractId = payload.contractId || payload.auditResults?.contractId;
     if (!contractId) return;
@@ -66,13 +80,15 @@ async function start() {
       logger.error({ contractId, err: err.message }, 'Failed to persist audit signals');
     }
   });
+}
 
-  // ── 2. Trust score ─────────────────────────────────────────────────
-  //
-  // Without this subscription the score was computed, published, and ignored:
-  // nothing in the settlement path ever read it, so the ">= 85" gate the
-  // objective specifies did not exist anywhere in the running system.
-  eventBus.subscribe(EVENT_TOPICS.XAI_SCORED, async (event: EventEnvelope) => {
+// ── 2. Trust score ───────────────────────────────────────────────────
+//
+// Without this subscription the score was computed, published, and ignored:
+// nothing in the settlement path ever read it, so the ">= 85" gate the
+// objective specifies did not exist anywhere in the running system.
+function subscribeTrustScore(): void {
+  void eventBus.subscribe(EVENT_TOPICS.XAI_SCORED, async (event: EventEnvelope) => {
     const payload = event.payload as any;
     const contractId = payload.contractId;
     if (!contractId) return;
@@ -91,13 +107,15 @@ async function start() {
       logger.error({ contractId, err: err.message }, 'Failed to persist trust score');
     }
   });
+}
 
-  // ── 3. Scope decisions ─────────────────────────────────────────────
-  //
-  // The scope signal is derived from scope_checks at evaluation time, so this
-  // subscription exists only to log. Recomputing on read is what stops a single
-  // early in-scope message from latching the signal open.
-  eventBus.subscribe(EVENT_TOPICS.SCOPE_CHECKED, async (event: EventEnvelope) => {
+// ── 3. Scope decisions ───────────────────────────────────────────────
+//
+// The scope signal is derived from scope_checks at evaluation time, so this
+// subscription exists only to log. Recomputing on read is what stops a single
+// early in-scope message from latching the signal open.
+function subscribeScopeDecisions(): void {
+  void eventBus.subscribe(EVENT_TOPICS.SCOPE_CHECKED, async (event: EventEnvelope) => {
     const payload = event.payload as any;
     if (!payload?.contractId) return;
     logger.info(
@@ -105,9 +123,123 @@ async function start() {
       'Scope decision observed (signal is derived from scope_checks on evaluation)',
     );
   });
+}
 
-  // ── 4. Settlement ──────────────────────────────────────────────────
-  eventBus.subscribe(EVENT_TOPICS.SETTLEMENT_REQUESTED, async (event: EventEnvelope) => {
+// ── 4. Settlement ────────────────────────────────────────────────────
+
+/**
+ * Claim the right to settle this contract, exactly once.
+ *
+ * The first INSERT wins and concurrent ones no-op, so a duplicated
+ * SETTLEMENT_REQUESTED event cannot capture the same PaymentIntent twice.
+ * Returns false when this process is not the claimant — including when the
+ * guard query itself failed, since an unconfirmed claim is not a claim.
+ */
+async function claimSettlement(contractId: string): Promise<boolean> {
+  let guardRes;
+  try {
+    guardRes = await dbPool.query(
+      `INSERT INTO settlements (contract_id, status)
+       VALUES ($1, 'PROCESSING')
+       ON CONFLICT (contract_id) DO NOTHING
+       RETURNING contract_id`,
+      [contractId],
+    );
+  } catch (dbErr: any) {
+    logger.error({ contractId, err: dbErr.message }, 'Settlement guard query failed');
+    return false;
+  }
+
+  if (guardRes.rowCount !== 1) {
+    logger.warn({ contractId }, 'Settlement already in progress or complete; ignoring');
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Record the release atomically: ledger entry, escrow row, settlement row, and
+ * the freelancer's trust score all commit together or not at all.
+ *
+ * On failure the settlement row is marked FAILED and the error is rethrown —
+ * the caller owns publishing the rejection.
+ */
+async function commitSettlement(args: {
+  contractId: string;
+  freelancerId: string;
+  paymentIntentId: string;
+  trustScore: number | null;
+  settlementPayload: Record<string, unknown>;
+}): Promise<void> {
+  const { contractId, freelancerId, paymentIntentId, trustScore, settlementPayload } = args;
+
+  const client = await dbPool.connect();
+  try {
+    await client.query('BEGIN');
+    // SETTLEMENT_COMPLETED as the ledger action type, so the chain records
+    // what happened rather than a generic INVOICE.
+    await ledgerClient.append(contractId, 'SETTLEMENT_COMPLETED', settlementPayload, client);
+    await client.query(
+      `UPDATE escrow SET status = 'RELEASED' WHERE payment_intent_id = $1`,
+      [paymentIntentId],
+    );
+    await client.query(
+      `UPDATE settlements
+          SET status = 'COMPLETED', transfer_id = $1, updated_at = NOW()
+        WHERE contract_id = $2`,
+      [paymentIntentId, contractId],
+    );
+
+    // Write the measured trust score back onto the freelancer's profile,
+    // in the same transaction as the settlement it came from. Before this,
+    // freelancer_profiles.trust_score was whatever tools/seed-users.py
+    // last wrote — invented numbers feeding 35% of the matchmaker's
+    // ranking, never touched by the system's own audit pipeline.
+    // oracle.trustScore is 0-100 (TRUST_SCORE_THRESHOLD = 85); the profile
+    // column is 0-1, matching every other trust_score in that table.
+    // Non-null here: `verdict.approved` (checked by the caller) requires a
+    // scored trust value — OracleStore.evaluate() blocks approval otherwise.
+    if (freelancerId && trustScore !== null) {
+      await client.query(
+        `UPDATE freelancer_profiles
+            SET trust_score = $1,
+                deliveries = deliveries + 1
+          WHERE freelancer_id = $2`,
+        [trustScore / 100, freelancerId],
+      );
+    }
+
+    await client.query('COMMIT');
+  } catch (txErr) {
+    await client.query('ROLLBACK');
+    await markSettlementFailed(contractId);
+    throw txErr;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Seal the chain's Merkle root now that the contract's history is final.
+ *
+ * Before this, computeAndStoreRoot() was only ever called by
+ * tools/verify_phase8_live.mjs directly against the library — no live request
+ * path called it, so merkle_roots stayed empty regardless of how many
+ * contracts actually settled. A failure here doesn't unwind the settlement
+ * that already committed: the money moved for real, and this is a summary over
+ * an already-committed chain, not a condition of moving it.
+ */
+async function sealMerkleRoot(contractId: string): Promise<void> {
+  try {
+    const { root, leafCount } = await ledgerClient.computeAndStoreRoot(contractId);
+    logger.info({ contractId, root, leafCount }, 'Merkle root computed and stored');
+  } catch (rootErr: any) {
+    logger.error({ contractId, err: rootErr.message }, 'Failed to compute/store Merkle root after settlement');
+  }
+}
+
+function subscribeSettlementRequests(): void {
+  void eventBus.subscribe(EVENT_TOPICS.SETTLEMENT_REQUESTED, async (event: EventEnvelope) => {
     const payload = event.payload as SettlementRequested;
     const { contractId, freelancerId, amountCents } = payload;
     const correlationId = randomUUID();
@@ -120,9 +252,9 @@ async function start() {
     } catch (err: any) {
       // An unreadable oracle is not an approving one.
       logger.error({ contractId, err: err.message }, 'Oracle evaluation failed');
-      await eventBus.publish(
-        EVENT_TOPICS.SETTLEMENT_REJECTED,
-        { contractId, reason: `Oracle state unavailable: ${err.message}` },
+      await publishSettlementRejected(
+        contractId,
+        `Oracle state unavailable: ${err.message}`,
         correlationId,
       );
       return;
@@ -143,25 +275,7 @@ async function start() {
       return;
     }
 
-    // Single-fire guard: the first INSERT wins, concurrent ones no-op.
-    let guardRes;
-    try {
-      guardRes = await dbPool.query(
-        `INSERT INTO settlements (contract_id, status)
-         VALUES ($1, 'PROCESSING')
-         ON CONFLICT (contract_id) DO NOTHING
-         RETURNING contract_id`,
-        [contractId],
-      );
-    } catch (dbErr: any) {
-      logger.error({ contractId, err: dbErr.message }, 'Settlement guard query failed');
-      return;
-    }
-
-    if (guardRes.rowCount !== 1) {
-      logger.warn({ contractId }, 'Settlement already in progress or complete; ignoring');
-      return;
-    }
+    if (!(await claimSettlement(contractId))) return;
 
     logger.info(
       { contractId, trustScore: verdict.signals.trustScore },
@@ -192,53 +306,40 @@ async function start() {
         settledAt: new Date().toISOString(),
       };
 
-      const client = await dbPool.connect();
-      try {
-        await client.query('BEGIN');
-        // SETTLEMENT_COMPLETED as the ledger action type, so the chain records
-        // what happened rather than a generic INVOICE.
-        await ledgerClient.append(contractId, 'SETTLEMENT_COMPLETED', settlementPayload, client);
-        await client.query(
-          `UPDATE escrow SET status = 'RELEASED' WHERE payment_intent_id = $1`,
-          [held.paymentIntentId],
-        );
-        await client.query(
-          `UPDATE settlements
-              SET status = 'COMPLETED', transfer_id = $1, updated_at = NOW()
-            WHERE contract_id = $2`,
-          [held.paymentIntentId, contractId],
-        );
-        await client.query('COMMIT');
-      } catch (txErr) {
-        await client.query('ROLLBACK');
-        await dbPool.query(
-          `UPDATE settlements SET status = 'FAILED', updated_at = NOW() WHERE contract_id = $1`,
-          [contractId],
-        );
-        throw txErr;
-      } finally {
-        client.release();
-      }
+      await commitSettlement({
+        contractId,
+        freelancerId,
+        paymentIntentId: held.paymentIntentId,
+        trustScore: verdict.signals.trustScore,
+        settlementPayload,
+      });
 
       await eventBus.publish(EVENT_TOPICS.SETTLEMENT_COMPLETED, settlementPayload, correlationId);
       logger.info(
         { contractId, paymentIntentId: held.paymentIntentId },
         'Settlement complete, escrow released',
       );
+
+      await sealMerkleRoot(contractId);
     } catch (err: any) {
       logger.error({ contractId, err: err.message }, 'Settlement execution failed');
-      await dbPool
-        .query(`UPDATE settlements SET status = 'FAILED', updated_at = NOW() WHERE contract_id = $1`, [
-          contractId,
-        ])
-        .catch(() => undefined);
-      await eventBus.publish(
-        EVENT_TOPICS.SETTLEMENT_REJECTED,
-        { contractId, reason: `Escrow release failed: ${err.message}` },
+      await markSettlementFailed(contractId).catch(() => undefined);
+      await publishSettlementRejected(
+        contractId,
+        `Escrow release failed: ${err.message}`,
         correlationId,
       );
     }
   });
+}
+
+async function start(): Promise<void> {
+  logger.info('Starting settlement oracle...');
+
+  subscribeAuditSignals();
+  subscribeTrustScore();
+  subscribeScopeDecisions();
+  subscribeSettlementRequests();
 
   logger.info('Settlement oracle ready.');
 }

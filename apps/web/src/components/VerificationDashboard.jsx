@@ -114,15 +114,7 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
 
     const contractId = contractData.contractId;
     let isClosed = false;
-
-    try {
-      await callApi(`/api/contracts/${contractId}/simulate-push`, 'POST');
-    } catch (err) {
-      // If the push never reached the gateway there is no audit to stream.
-      // Opening a socket at this point would only produce a slower failure.
-      fail(`Could not trigger the audit: ${err instanceof Error ? err.message : String(err)}`);
-      return;
-    }
+    let pushTriggered = false;
 
     try {
       const socket = new WebSocket(buildStreamUrl(contractId));
@@ -131,7 +123,20 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
         try {
           const data = JSON.parse(event.data);
 
-          if (data.type === 'step-complete' && 'stepId' in data && typeof data.stepId === 'number') {
+          if (data.type === 'ready') {
+            // The server only sends this once every consumer group behind
+            // this socket has joined. Triggering the push before now (or
+            // right after opening, without waiting) is a real race: this
+            // pipeline can finish in ~2s, faster than the ~3s a fresh
+            // consumer group takes to join, so an early push publishes
+            // every step event before anything is listening for it.
+            if (!pushTriggered) {
+              pushTriggered = true;
+              callApi(`/api/contracts/${contractId}/simulate-push`, 'POST').catch((err) => {
+                fail(`Could not trigger the audit: ${err instanceof Error ? err.message : String(err)}`);
+              });
+            }
+          } else if (data.type === 'step-complete' && 'stepId' in data && typeof data.stepId === 'number') {
             const stepId = data.stepId;
             setActiveStep(stepId);
             setCompletedSteps((prev) => (!prev.includes(stepId) ? [...prev, stepId] : prev));

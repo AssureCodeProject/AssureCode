@@ -16,11 +16,28 @@ const tracer = trace.getTracer('assurecode-event-bus');
 
 export type EventHandler = (event: EventEnvelope) => Promise<void> | void;
 
+export interface SubscribeOptions {
+  /**
+   * Consumer/group id to subscribe under. Defaults to a name derived from
+   * the topic, which is what durable competing-consumer workers (ci-worker,
+   * settlement-worker) want — multiple instances share one group and load-
+   * balance the topic's messages between them.
+   *
+   * Ephemeral fan-out listeners (a WebSocket relay tapping a topic for one
+   * browser connection) must NOT default to that shared group: joining it
+   * makes them a competing consumer against the real worker, so Kafka/Redis
+   * hands each message to only one of the two, and the two constantly
+   * rebalance against each other. Pass a unique groupId (e.g. per
+   * connection) to get an independent broadcast copy instead.
+   */
+  groupId?: string;
+}
+
 export interface EventBus {
   /** Publish an event to a topic. */
   publish(topic: string, payload: Record<string, unknown>, correlationId?: string): Promise<EventEnvelope>;
   /** Subscribe to a topic. Returns an unsubscribe function. */
-  subscribe(topic: string, handler: EventHandler): Promise<() => Promise<void>>;
+  subscribe(topic: string, handler: EventHandler, options?: SubscribeOptions): Promise<() => Promise<void>>;
   /** Graceful shutdown of consumers/connections. */
   close?(): Promise<void>;
 }
@@ -110,7 +127,9 @@ export class InMemoryBus implements EventBus {
     return envelope;
   }
 
-  async subscribe(topic: string, handler: EventHandler): Promise<() => Promise<void>> {
+  async subscribe(topic: string, handler: EventHandler, _options?: SubscribeOptions): Promise<() => Promise<void>> {
+    // Every subscriber already gets its own independent copy of each
+    // published event (see publish() above) — no group concept needed.
     let set = this.handlers.get(topic);
     if (!set) {
       set = new Set();
@@ -157,22 +176,24 @@ export class RedisStreamsBus implements EventBus {
     }
   }
 
-  async subscribe(topic: string, handler: EventHandler): Promise<() => Promise<void>> {
+  async subscribe(topic: string, handler: EventHandler, options?: SubscribeOptions): Promise<() => Promise<void>> {
+    const groupName = options?.groupId ?? this.groupName;
     const consumer = randomUUID();
 
-    if (!this.groupNameEnsured.has(topic)) {
+    const groupKey = `${topic}::${groupName}`;
+    if (!this.groupNameEnsured.has(groupKey)) {
       try {
-        await this.client.xgroup('CREATE', topic, this.groupName, '$', 'MKSTREAM');
+        await this.client.xgroup('CREATE', topic, groupName, '$', 'MKSTREAM');
       } catch (err) {
         if (!String(err).includes('BUSYGROUP')) throw err;
       }
-      this.groupNameEnsured.add(topic);
+      this.groupNameEnsured.add(groupKey);
     }
 
     const sub = { topic, consumer, stop: false };
     this.subscribers.push(sub);
 
-    void this.poll(topic, consumer, handler, sub);
+    void this.poll(topic, groupName, consumer, handler, sub);
 
     return async () => {
       sub.stop = true;
@@ -181,6 +202,7 @@ export class RedisStreamsBus implements EventBus {
 
   private async poll(
     topic: string,
+    groupName: string,
     consumer: string,
     handler: EventHandler,
     sub: { stop: boolean },
@@ -189,7 +211,7 @@ export class RedisStreamsBus implements EventBus {
       try {
         const res = (await this.client.xreadgroup(
           'GROUP',
-          this.groupName,
+          groupName,
           consumer,
           'COUNT',
           10,
@@ -290,7 +312,7 @@ export class RedisStreamsBus implements EventBus {
               );
             }
 
-            await this.client.xack(topic, this.groupName, id);
+            await this.client.xack(topic, groupName, id);
           }
         }
       } catch (err) {
@@ -353,12 +375,12 @@ export class KafkaBus implements EventBus {
     }
   }
 
-  async subscribe(topic: string, handler: EventHandler): Promise<() => Promise<void>> {
+  async subscribe(topic: string, handler: EventHandler, options?: SubscribeOptions): Promise<() => Promise<void>> {
     if (!this.kafka) {
       return async () => {};
     }
     const consumerId = randomUUID();
-    const consumer = this.kafka.consumer({ groupId: `assurecode-${topic}` });
+    const consumer = this.kafka.consumer({ groupId: options?.groupId ?? `assurecode-${topic}` });
     await consumer.connect();
     await consumer.subscribe({ topic, fromBeginning: false });
     this.consumers.set(consumerId, consumer);

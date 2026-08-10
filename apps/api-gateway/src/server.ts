@@ -1587,7 +1587,7 @@ server.get<{
 
 // ── Chat & Scope Guard Interceptors (Tasks 3.2 & 3.4) ────────────────────
 
-void server.register(fastifyWebsocket);
+await server.register(fastifyWebsocket);
 
 server.post<{
   Params: { contractId: string };
@@ -1688,21 +1688,31 @@ server.post<{
 
 server.get<{
   Params: { contractId: string };
-}>('/api/contracts/:contractId/chat/stream', { websocket: true }, async (connection, request) => {
+}>('/api/contracts/:contractId/chat/stream', { websocket: true }, async (socket, request) => {
   const { contractId } = request.params;
   logger.info({ contractId }, 'Chat WebSocket stream opened');
 
   // BUG-010: Store and call the unsubscribe function when the socket closes to prevent
   // handler accumulation and sending to already-closed sockets.
-  const unsubscribe = await eventBus.subscribe(EVENT_TOPICS.SCOPE_CHECKED, async (event: EventEnvelope) => {
-    if (event.payload.contractId === contractId) {
-      if (connection.socket.readyState === connection.socket.OPEN) {
-        connection.socket.send(JSON.stringify(event.payload));
+  //
+  // groupId is unique per connection: this is an ephemeral fan-out tap, not
+  // a durable worker. Subscribing under the shared `assurecode-${topic}`
+  // default would make it a competing consumer against any real worker on
+  // this topic, and the two would fight over partition ownership instead of
+  // both receiving every message.
+  const unsubscribe = await eventBus.subscribe(
+    EVENT_TOPICS.SCOPE_CHECKED,
+    async (event: EventEnvelope) => {
+      if (event.payload.contractId === contractId) {
+        if (socket.readyState === socket.OPEN) {
+          socket.send(JSON.stringify(event.payload));
+        }
       }
-    }
-  });
+    },
+    { groupId: `assurecode-ws-chat-${randomUUID()}` },
+  );
 
-  connection.socket.on('close', () => {
+  socket.on('close', () => {
     logger.info({ contractId }, 'Chat WebSocket closed — cleaning up event bus subscription');
     void unsubscribe();
   });
@@ -1732,27 +1742,47 @@ function auditStreamFrame(topic: string, contractId: string): Record<string, unk
 
 server.get<{
   Params: { contractId: string };
-}>('/api/audits/:contractId/stream', { websocket: true }, async (connection, request) => {
+}>('/api/audits/:contractId/stream', { websocket: true }, async (socket, request) => {
   const { contractId } = request.params;
   logger.info({ contractId }, 'Audit WebSocket stream opened');
 
   const topicsToWatch = [...Object.keys(AUDIT_STREAM_STEP_BY_TOPIC), EVENT_TOPICS.AUDIT_COMPLETED];
 
-  const unsubs: Array<() => Promise<void>> = [];
+  // Same reasoning as the chat stream above: a unique groupId per connection
+  // keeps this fan-out tap from competing with ci-worker's real subscription
+  // to the same topics.
+  const wsConnectionId = randomUUID();
 
-  for (const topic of topicsToWatch) {
-    const unsub = await eventBus.subscribe(topic, async (event: EventEnvelope) => {
-      if (event.payload.contractId === contractId && connection.socket.readyState === connection.socket.OPEN) {
-        const frame = auditStreamFrame(topic, contractId);
-        if (frame) {
-          connection.socket.send(JSON.stringify(frame));
-        }
-      }
-    });
-    unsubs.push(unsub);
+  // Subscribing sequentially (await in a loop) took ~3s per topic to join
+  // its Kafka consumer group — ~18s for all 6, well after a fast pipeline
+  // run has already finished and published everything. Subscribe to every
+  // topic in parallel so the whole set is ready in ~3s, not 6x that.
+  const unsubs: Array<() => Promise<void>> = await Promise.all(
+    topicsToWatch.map((topic) =>
+      eventBus.subscribe(
+        topic,
+        async (event: EventEnvelope) => {
+          if (event.payload.contractId === contractId && socket.readyState === socket.OPEN) {
+            const frame = auditStreamFrame(topic, contractId);
+            if (frame) {
+              socket.send(JSON.stringify(frame));
+            }
+          }
+        },
+        { groupId: `assurecode-ws-audit-${wsConnectionId}-${topic}` },
+      ),
+    ),
+  );
+
+  // Tells the client all consumer groups have joined and it's safe to
+  // trigger the push — without this, a client that pushes as soon as the
+  // socket opens can beat the subscriptions into existence and miss every
+  // event a fast pipeline run publishes before they're ready.
+  if (socket.readyState === socket.OPEN) {
+    socket.send(JSON.stringify({ type: 'ready' }));
   }
 
-  connection.socket.on('close', () => {
+  socket.on('close', () => {
     logger.info({ contractId }, 'Audit WebSocket closed — cleaning up event bus subscriptions');
     for (const u of unsubs) void u();
   });

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useId } from 'react';
 import { motion } from 'framer-motion';
 
 export function RadialGauge({
@@ -50,7 +50,13 @@ export function RadialGauge({
     dropShadowColor = 'rgba(0, 212, 255, 0.5)';
   }
 
-  const gradientId = `gauge-grad-${Math.random().toString(36).substring(2, 11)}`;
+  // useId, not Math.random(): the id was regenerated on every render, so the
+  // <defs> gradient and the fill referencing it were re-created continuously —
+  // wasted DOM work, and a mismatch risk under concurrent rendering, where the
+  // two can be produced in different render passes. useId is stable across a
+  // component's renders and unique across instances, which is exactly the
+  // property an SVG def reference needs.
+  const gradientId = `gauge-grad-${useId().replace(/:/g, '')}`;
 
   return (
     <div

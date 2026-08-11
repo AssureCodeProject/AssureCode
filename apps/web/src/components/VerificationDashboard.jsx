@@ -10,29 +10,47 @@ import {
 } from 'lucide-react';
 import ScopeGuardPanel from './ScopeGuardPanel';
 
+/**
+ * One row per topic the audit stream reports, keyed by the step id the server
+ * actually sends.
+ *
+ * These ids are a contract with AUDIT_STREAM_STEP_BY_TOPIC in
+ * apps/api-gateway/src/server.ts, which numbers the topics 0-4. This list was
+ * numbered 1-4, so every row was driven by the wrong event: step 0 addressed
+ * nothing and was dropped, "Webhook Verified" lit up when the sandbox became
+ * ready, "Sandbox Provisioned" lit up when the AST finished, and there was no
+ * row at all for the hidden-test run. The steps still animated in sequence,
+ * which is why it read as working.
+ */
 const PIPELINE_STEPS = [
   {
-    id: 1,
-    label: 'Webhook Verified & Event Published',
-    description: 'GitHub push received, HMAC signature verified, event published to the Redis Streams bus.',
-    duration: 1800,
+    id: 0,
+    label: 'Push Received & Event Published',
+    description: 'Code push accepted, HMAC signature verified, event published to the bus.',
+    duration: 1200,
   },
   {
-    id: 2,
-    label: 'Ephemeral Docker Sandbox Provisioned',
-    description: 'Isolated container spun up with project dependencies and test harness.',
+    id: 1,
+    label: 'Ephemeral Sandbox Provisioned',
+    description: 'Isolated runner started with the pushed code and the contract’s hidden tests.',
     duration: 2200,
   },
   {
-    id: 3,
+    id: 2,
     label: 'AST Cyclomatic Complexity Parsing',
     description: 'Abstract Syntax Tree analysis computing code complexity metrics.',
     duration: 2500,
   },
   {
+    id: 3,
+    label: 'Hidden Test Suite Executed',
+    description: 'The contract’s generated acceptance tests run against the pushed code.',
+    duration: 2400,
+  },
+  {
     id: 4,
     label: 'AI Security Auditor (OWASP Scan)',
-    description: 'Deep-scan for OWASP Top-10 vulnerabilities using AI-driven static analysis.',
+    description: 'Dual-layer scan for OWASP Top-10 vulnerabilities: static rules plus LLM review.',
     duration: 2800,
   },
 ];
@@ -80,7 +98,9 @@ function auditStatusLabel({ error, pipelineComplete, isRunning }) {
 export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
   // Pipeline state
   const [isRunning, setIsRunning] = useState(false);
-  const [activeStep, setActiveStep] = useState(0);
+  // null, not 0: 0 is now a real step id (CODE_PUSH_RECEIVED), so seeding this
+  // with 0 would render that step as EXECUTING before the run had started.
+  const [activeStep, setActiveStep] = useState(null);
   const [completedSteps, setCompletedSteps] = useState([]);
   const [pipelineComplete, setPipelineComplete] = useState(false);
   const [results, setResults] = useState(null);
@@ -96,7 +116,7 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
     isRunningRef.current = true;
     pipelineCompleteRef.current = false;
     setIsRunning(true);
-    setActiveStep(0);
+    setActiveStep(null);
     setCompletedSteps([]);
     setPipelineComplete(false);
     setResults(null);
@@ -262,7 +282,7 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
         </div>
 
         <div className="space-y-4">
-          {PIPELINE_STEPS.map((step) => {
+          {PIPELINE_STEPS.map((step, index) => {
             const isActive = activeStep === step.id;
             const isComplete = completedSteps.includes(step.id);
 
@@ -270,7 +290,9 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
               <div key={step.id} className="border-b border-rule/50 pb-4 last:border-0 last:pb-0">
                 <div className="flex items-center justify-between text-xs sm:text-sm">
                   <div className="flex items-center gap-3">
-                    <span className="text-prose-dim">STEP 0{step.id}</span>
+                    {/* Displayed 1-based for readers; `step.id` stays the
+                        server's 0-based protocol id. */}
+                    <span className="text-prose-dim">STEP {String(index + 1).padStart(2, '0')}</span>
                     <span className={stepLabelClasses(isComplete, isActive)}>
                       {step.label}
                     </span>

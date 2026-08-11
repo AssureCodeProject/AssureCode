@@ -121,7 +121,8 @@ export class LedgerClient {
         }
       }
       span.setAttribute('ledger.hash', row.currentHash);
-      metrics.ledgerAppendsTotal.inc({ action_type: actionType, contract_id: contractId });
+      // contract_id stays on the span, not on the counter — see metrics.ts.
+      metrics.ledgerAppendsTotal.inc({ action_type: actionType });
       return row;
     } catch (err) {
       span.recordException(err as Error);
@@ -186,7 +187,7 @@ export class LedgerClient {
         );
         const row = normalizeRow(result.rows[0].row as Record<string, unknown>);
         span.setAttribute('ledger.hash', row.currentHash);
-        metrics.ledgerAppendsTotal.inc({ action_type: actionType, contract_id: contractId });
+        metrics.ledgerAppendsTotal.inc({ action_type: actionType });
         return row;
       } catch (procErr) {
         // BUG-019: Record and log the stored procedure error before falling back

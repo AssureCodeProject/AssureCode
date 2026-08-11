@@ -101,7 +101,12 @@ export type TestsGenerated = z.infer<typeof TestsGeneratedSchema>;
 export const AuditResultsSchema = z.object({
   maintainability: z.number().min(0).max(100),
   passedTests: z.number().int().min(0),
-  totalTests: z.number().int().min(1),
+  // min(0), not min(1). 0/0 is the sandbox's indeterminate result and is a
+  // value the pipeline deliberately produces — `min(1)` made the schema reject
+  // the exact case the rest of the system is careful to represent. Consumers
+  // must treat totalTests === 0 as "unknown", never as a pass; see
+  // ci-worker's overallPassed and OracleStore.evaluate.
+  totalTests: z.number().int().min(0),
   vulnerabilities: z.number().int().min(0),
   passed: z.boolean(),
   scanDuration: z.number(),
@@ -150,18 +155,36 @@ export const SettlementRequestedSchema = z.object({
 });
 export type SettlementRequested = z.infer<typeof SettlementRequestedSchema>;
 
+/**
+ * Both schemas below described a wire format nothing produced.
+ *
+ * SettlementCompletedSchema required `transferId` and `completedAt`, but the
+ * settlement worker publishes `paymentIntentId` and `settledAt` — release is a
+ * *capture* of a held PaymentIntent, not a transfer, and there is no transfer
+ * id to report. SettlementRejectedSchema required `rejectedAt`, which was never
+ * sent at all. Neither schema is used to validate anything, so the drift was
+ * silent: a consumer that trusted these types would have read undefined from
+ * every field.
+ *
+ * Aligned with what settlement-worker actually publishes.
+ */
 export const SettlementCompletedSchema = z.object({
   contractId: z.string(),
-  amountCents: z.number().int().positive(),
-  transferId: z.string(),
-  completedAt: z.string().datetime({ offset: true }),
+  freelancerId: z.string(),
+  amountCents: z.number().int().nonnegative(),
+  paymentIntentId: z.string(),
+  captureStatus: z.string(),
+  trustScore: z.number().nullable(),
+  criticalVulns: z.number().nullable(),
+  settledAt: z.string().datetime({ offset: true }),
 });
 export type SettlementCompleted = z.infer<typeof SettlementCompletedSchema>;
 
 export const SettlementRejectedSchema = z.object({
   contractId: z.string(),
   reason: z.string(),
-  rejectedAt: z.string().datetime({ offset: true }),
+  /** Present only on the oracle-verdict rejection, not the failure paths. */
+  blockers: z.array(z.string()).optional(),
 });
 export type SettlementRejected = z.infer<typeof SettlementRejectedSchema>;
 

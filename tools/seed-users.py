@@ -179,18 +179,35 @@ def get_embedder():
         return FakeEmbedder(dim=384)
 
 
-def upsert_user(cur, user_id: str, email: str, display_name: str, role: str) -> None:
-    """Insert or refresh a login account. Clients and freelancers differ only by role."""
+def upsert_user(
+    cur, user_id: str, email: str, display_name: str, role: str, kyc_status: str = "UNVERIFIED"
+) -> None:
+    """Insert or refresh a login account. Clients and freelancers differ only by role.
+
+    kyc_status matters now that the gateway actually enforces it. /escrow and
+    /settle sit behind requireKycVerified, and users.kyc_status defaults to
+    'UNVERIFIED' (V011), so seeded clients could reach the funding step and be
+    refused there with no way forward: the KYC modal exists in the web app but
+    is not exported from components/ui/index.js and is mounted nowhere, so
+    there is no in-app route to verification.
+
+    Seeding demo clients as VERIFIED keeps the walkthrough runnable. It is
+    safe here only because this script already refuses to run when
+    NODE_ENV=production — the same guard that protects the shared password
+    hash above. Nothing else in the system grants VERIFIED without going
+    through POST /api/kyc/verify.
+    """
     cur.execute(
         """
-        INSERT INTO users (user_id, email, password_hash, role, display_name)
-        VALUES (%s, %s, %s, %s, %s)
+        INSERT INTO users (user_id, email, password_hash, role, display_name, kyc_status)
+        VALUES (%s, %s, %s, %s, %s, %s)
         ON CONFLICT (user_id) DO UPDATE SET
             email = EXCLUDED.email,
             password_hash = EXCLUDED.password_hash,
-            display_name = EXCLUDED.display_name
+            display_name = EXCLUDED.display_name,
+            kyc_status = EXCLUDED.kyc_status
         """,
-        (user_id, email, DEMO_PASSWORD_HASH, role, display_name),
+        (user_id, email, DEMO_PASSWORD_HASH, role, display_name, kyc_status),
     )
 
 
@@ -216,9 +233,13 @@ def main() -> None:
     embedder = get_embedder()
 
     with conn.cursor() as cur:
+        # Clients drive the money-moving routes, which are KYC-gated.
         for c in CLIENTS:
-            upsert_user(cur, c["user_id"], c["email"], c["display_name"], c["role"])
+            upsert_user(cur, c["user_id"], c["email"], c["display_name"], c["role"], "VERIFIED")
 
+        # Freelancers are payees, not payers; no route they use is KYC-gated,
+        # so they are left at the column default rather than granted a status
+        # they have not been through the flow for.
         for f in FREELANCERS:
             upsert_user(cur, f["id"], f["email"], f["name"], "freelancer")
 

@@ -286,7 +286,7 @@ export class RedisStreamsBus implements EventBus {
               const errorStack =
                 lastError instanceof Error ? lastError.stack ?? '' : '';
 
-              metrics.dlqDepth.inc({ stream: dlqTopic });
+              metrics.dlqMessagesTotal.inc({ stream: dlqTopic });
 
               console.error(
                 `[event-bus] Message ${id} failed after ${this.maxRetries} attempts on ${topic}. Forwarding to ${dlqTopic}`,

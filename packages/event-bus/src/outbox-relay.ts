@@ -4,6 +4,7 @@
  * and updates `sent_at` timestamp.
  */
 import pg from 'pg';
+import { buildDbConfig } from '@assurecode/config';
 import type { EventBus } from './index.js';
 
 export interface OutboxRelayOptions {
@@ -22,7 +23,10 @@ export class OutboxRelay {
   private isRunning = false;
 
   constructor(options: OutboxRelayOptions) {
-    this.pool = new pg.Pool({ connectionString: options.databaseUrl });
+    // buildDbConfig, not a bare connectionString: this was the last component
+    // still connecting without the pinned CA the rest of the system uses, and
+    // it carries every domain event on its way to the bus.
+    this.pool = new pg.Pool(buildDbConfig(options.databaseUrl));
     this.eventBus = options.eventBus;
     this.pollIntervalMs = options.pollIntervalMs ?? 500;
     this.batchSize = options.batchSize ?? 50;
@@ -73,12 +77,30 @@ export class OutboxRelay {
         [this.batchSize],
       );
 
+      // One failure must not sink the batch.
+      //
+      // A throwing publish used to escape to the catch below and roll the whole
+      // transaction back, so rows that had already published were re-published
+      // on the next pass — and, worse, a row that failed every time was picked
+      // up first on every pass (ORDER BY created_at ASC) and blocked the entire
+      // outbox behind it, permanently. Failures are now isolated to their own
+      // row: it stays unsent and is retried next tick, while the rest of the
+      // batch commits and drains.
       for (const row of res.rows) {
-        await this.eventBus.publish(
-          row.topic,
-          row.payload,
-          row.correlation_id || undefined,
-        );
+        try {
+          await this.eventBus.publish(
+            row.topic,
+            row.payload,
+            row.correlation_id || undefined,
+          );
+        } catch (err) {
+          console.error(
+            `[outbox-relay] publish failed for outbox_id=${row.outbox_id} topic=${row.topic}; ` +
+              'leaving it unsent for the next pass',
+            err,
+          );
+          continue;
+        }
 
         await client.query(
           `UPDATE outbox SET sent_at = NOW() WHERE outbox_id = $1`,

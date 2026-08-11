@@ -55,7 +55,15 @@ for (const workspace of ORDER) {
  * untrusted code unguarded, so a missed copy fails loudly; copying it here
  * means it never comes up.
  */
-const ASSETS = [['apps/ci-worker/src/sandbox/egress-guard.cjs', 'apps/ci-worker/dist/sandbox/egress-guard.cjs']];
+const ASSETS = [
+  ['apps/ci-worker/src/sandbox/egress-guard.cjs', 'apps/ci-worker/dist/sandbox/egress-guard.cjs'],
+  // test-harness.cjs is copied into each run's work directory and executed as
+  // the sandbox entrypoint. Like the guard it is CommonJS and outside every
+  // TypeScript program, so tsc does not emit it — and without it in dist/ the
+  // built worker materialises a workspace with no runner, which reports 0/0 and
+  // is indistinguishable from a pipeline that ran and measured nothing.
+  ['apps/ci-worker/src/sandbox/test-harness.cjs', 'apps/ci-worker/dist/sandbox/test-harness.cjs'],
+];
 
 for (const [from, to] of ASSETS) {
   const src = path.join(repoRoot, from);

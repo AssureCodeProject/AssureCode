@@ -66,11 +66,18 @@ function subscribeAuditSignals(): void {
     const passedTests = Number(auditData.passedTests ?? 0);
     const totalTests = Number(auditData.totalTests ?? 0);
     const vulnerabilities = Number(auditData.vulnerabilities ?? 1);
+    // Absent on payloads from producers predating the field. Treated as
+    // complete for those, since assuming otherwise would retroactively block
+    // contracts audited before the flag existed; new producers always set it.
+    const securityScanComplete = auditData.securityScanComplete !== false;
 
     const signals = {
       astPassed: maintainability >= 10,
       testsPassed: passedTests === totalTests && totalTests > 0,
-      securityPassed: vulnerabilities === 0,
+      // A scan that could not run Layer 2 found no LLM-detectable issues
+      // because it never looked. "Zero findings" from half a scan is not the
+      // same claim as zero findings, and must not release money.
+      securityPassed: vulnerabilities === 0 && securityScanComplete,
     };
 
     try {
@@ -125,15 +132,69 @@ function subscribeScopeDecisions(): void {
   });
 }
 
+// ── 3b. Escrow funding ───────────────────────────────────────────────
+//
+// The gateway publishes ESCROW_LOCKED from the Stripe webhook and nothing
+// subscribed to it, so a PaymentIntent that succeeded or failed at Stripe left
+// the local escrow row at 'PENDING' forever. That matters for settlement:
+// findEscrowPaymentIntent() selects on status = 'PENDING', so a *failed*
+// payment stayed eligible for capture and a settlement would try to release
+// funds that were never collected.
+function subscribeEscrowEvents(): void {
+  void eventBus.subscribe(EVENT_TOPICS.ESCROW_LOCKED, async (event: EventEnvelope) => {
+    const payload = event.payload as {
+      contractId?: string;
+      paymentIntentId?: string;
+      type?: string;
+    };
+    if (!payload?.paymentIntentId) return;
+
+    // Only a failure changes the row. A success leaves it PENDING, which is
+    // correct: with capture_method 'manual' the funds are authorised but still
+    // held, and the oracle is what decides whether they are captured.
+    if (payload.type !== 'payment_intent.payment_failed') {
+      logger.info(
+        { contractId: payload.contractId, type: payload.type },
+        'Escrow event observed; PaymentIntent remains held pending oracle verdict',
+      );
+      return;
+    }
+
+    try {
+      await dbPool.query(
+        `UPDATE escrow SET status = 'FAILED' WHERE payment_intent_id = $1 AND status = 'PENDING'`,
+        [payload.paymentIntentId],
+      );
+      logger.warn(
+        { contractId: payload.contractId, paymentIntentId: payload.paymentIntentId },
+        'Escrow payment failed; marked FAILED so it cannot be captured',
+      );
+    } catch (err: any) {
+      logger.error(
+        { contractId: payload.contractId, err: err.message },
+        'Failed to mark escrow row FAILED',
+      );
+    }
+  });
+}
+
 // ── 4. Settlement ────────────────────────────────────────────────────
 
 /**
- * Claim the right to settle this contract, exactly once.
+ * Claim the right to settle this contract.
  *
- * The first INSERT wins and concurrent ones no-op, so a duplicated
+ * The first claim wins and concurrent ones no-op, so a duplicated
  * SETTLEMENT_REQUESTED event cannot capture the same PaymentIntent twice.
  * Returns false when this process is not the claimant — including when the
  * guard query itself failed, since an unconfirmed claim is not a claim.
+ *
+ * A previously FAILED attempt is re-claimable. `ON CONFLICT DO NOTHING` alone
+ * was not: markSettlementFailed() leaves the row behind at status 'FAILED',
+ * `contract_id` is the primary key (V004), so after any transient failure — a
+ * Stripe timeout, a momentary database blip — the insert could never win again
+ * and the contract was permanently unsettleable with money still held in
+ * escrow. The WHERE clause is what keeps this from also re-claiming a
+ * PROCESSING or COMPLETED row: those are still the exactly-once cases.
  */
 async function claimSettlement(contractId: string): Promise<boolean> {
   let guardRes;
@@ -141,7 +202,9 @@ async function claimSettlement(contractId: string): Promise<boolean> {
     guardRes = await dbPool.query(
       `INSERT INTO settlements (contract_id, status)
        VALUES ($1, 'PROCESSING')
-       ON CONFLICT (contract_id) DO NOTHING
+       ON CONFLICT (contract_id) DO UPDATE
+         SET status = 'PROCESSING', updated_at = NOW()
+         WHERE settlements.status = 'FAILED'
        RETURNING contract_id`,
       [contractId],
     );
@@ -339,6 +402,7 @@ async function start(): Promise<void> {
   subscribeAuditSignals();
   subscribeTrustScore();
   subscribeScopeDecisions();
+  subscribeEscrowEvents();
   subscribeSettlementRequests();
 
   logger.info('Settlement oracle ready.');

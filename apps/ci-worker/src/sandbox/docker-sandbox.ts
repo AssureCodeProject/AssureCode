@@ -26,6 +26,19 @@ import { parseTestOutput } from './types.js';
 
 const IMAGE = 'node:20-alpine';
 
+/**
+ * Single-quote a value for the `sh -c` string below.
+ *
+ * The container command is the one place a shell is unavoidable (copy, then
+ * run), and the entrypoint path originates from the workspace builder rather
+ * than from untrusted input — but quoting it is what keeps that true of any
+ * future caller as well. Single quotes suppress every sh metacharacter; the
+ * `'\''` dance is how a literal single quote is embedded inside them.
+ */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 /** Run a binary with an argument array — never a shell string. */
 function execFileCapture(
   file: string,
@@ -166,17 +179,20 @@ export class DockerSandbox implements SandboxRunner {
         args.push('-v', `${options.hiddenTestsPath}:/hidden-tests:ro`);
       }
 
-      args.push(
-        '-w',
-        '/workspace',
-        IMAGE,
-        'sh',
-        '-c',
-        // /workspace is read-only, so install into a writable overlay under /tmp.
-        'cp -r /workspace /tmp/app && cd /tmp/app && ' +
+      // Two shapes of run. A workspace built by workspace-builder.ts carries its
+      // own dependency-free harness, so it is executed directly — `npm ci` there
+      // would fail for want of a lockfile it has no reason to have. A cloned
+      // repository is a real project and keeps the install-then-test path.
+      const shellCommand = options.entrypoint
+        ? 'cp -r /workspace /tmp/app && cd /tmp/app && ' +
+          (options.hiddenTestsPath ? 'cp -r /hidden-tests/. /tmp/app/tests/ 2>/dev/null; ' : '') +
+          `node ${shellQuote(options.entrypoint)} ${(options.entryArgs ?? []).map(shellQuote).join(' ')}`
+        : // /workspace is read-only, so install into a writable overlay under /tmp.
+          'cp -r /workspace /tmp/app && cd /tmp/app && ' +
           (options.hiddenTestsPath ? 'cp -r /hidden-tests/. /tmp/app/test/ 2>/dev/null; ' : '') +
-          'npm ci --silent 2>/dev/null && npm test -- --json 2>/dev/null',
-      );
+          'npm ci --silent 2>/dev/null && npm test -- --json 2>/dev/null';
+
+      args.push('-w', '/workspace', IMAGE, 'sh', '-c', shellCommand);
 
       const result = await execFileCapture('docker', args, { timeoutMs });
       const { passedTests, totalTests } = parseTestOutput(result.stdout);

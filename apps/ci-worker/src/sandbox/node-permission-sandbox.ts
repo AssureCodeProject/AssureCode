@@ -130,8 +130,11 @@ export class NodePermissionSandbox implements SandboxRunner {
     const scratch = await mkdtemp(path.join(tmpdir(), 'assurecode-sbx-'));
 
     try {
-      const command = options.command ?? ['npm', 'test', '--', '--reporter=json'];
-      const [, ...commandArgs] = command;
+      // The runner is invoked directly as a Node entrypoint: child processes
+      // are denied, so npm cannot be spawned to do it. The workspace builder
+      // writes `harness.cjs` into workDir for exactly this call.
+      const entrypoint = options.entrypoint ?? 'harness.cjs';
+      const entryArgs = options.entryArgs ?? [];
 
       const nodeArgs = [
         '--permission',
@@ -141,11 +144,8 @@ export class NodePermissionSandbox implements SandboxRunner {
         `--max-old-space-size=${memoryLimitMb}`,
         '--require',
         EGRESS_GUARD_PATH,
-        // Resolve the runner inside the work dir; npm itself is not spawned
-        // because child processes are denied, so the test runner must be
-        // invoked directly as a Node entrypoint.
-        path.join(workDir, 'node_modules', '.bin', 'vitest.mjs'),
-        ...commandArgs,
+        path.join(workDir, entrypoint),
+        ...entryArgs,
       ];
 
       const child = spawn(process.execPath, nodeArgs, {

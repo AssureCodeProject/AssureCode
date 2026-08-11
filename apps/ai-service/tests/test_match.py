@@ -45,6 +45,33 @@ def _use_real_embedder():
     deps.reset_deps_cache()
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _require_indexed_profiles(_use_real_embedder):
+    """Skip when there are no profile embeddings to rank against.
+
+    The relevance assertions below are about *semantic* ranking, which needs
+    the pgvector-indexed profiles tools/seed-users.py writes. Without a seeded
+    database the repo degrades to the in-process fixtures, whose profiles carry
+    no embedding — `retrieve_by_embedding` then reports similarity 0.0, an
+    explicit "unmeasured" by design, and the composite score falls back to
+    trust + history alone. Asserting that the top result is a React specialist
+    against that is asserting semantics nothing measured, so it is skipped with
+    the reason rather than failing as though the ranker were wrong.
+
+    Note this module previously could not run at all: get_graph_repo() returned
+    PostgresGraphRepo unconditionally and that adapter connected with no
+    timeout, so the whole file blocked forever against an absent database.
+    """
+    from app.deps import get_graph_repo
+
+    profiles = get_graph_repo().all_freelancers()
+    if not any(p.embedding for p in profiles):
+        pytest.skip(
+            "no indexed profile embeddings available — run tools/seed-users.py "
+            "against a live Postgres to exercise semantic ranking"
+        )
+
+
 def post_match(requirements: str, **params) -> dict:
     """POST /match, require a 200, and return the parsed body."""
     response = client.post("/match", json={"requirements": requirements, **params})

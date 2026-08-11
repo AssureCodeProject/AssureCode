@@ -77,6 +77,24 @@ describe('audit persistence', () => {
     expect(saved.maintainability).toBeGreaterThan(0);
   });
 
+  it('cannot report a pass when the Layer 2 security scan did not run', async () => {
+    // ai-service is unreachable in this suite, so the dual-layer scan degrades
+    // to Layer 1. "No findings" from half a scan is not the same claim as no
+    // findings, and must not be able to release money — so `passed` stays
+    // false and the degradation is recorded rather than being invisible.
+    const store = new InMemoryAuditStore();
+    await processCodePush('c-halfscan', 'corr-3', code, { auditStore: store });
+
+    const saved = store.saved[0] as unknown as {
+      securityScanComplete: boolean;
+      layersRun: string[];
+      passed: boolean;
+    };
+    expect(saved.securityScanComplete).toBe(false);
+    expect(saved.layersRun).toEqual(['static']);
+    expect(saved.passed).toBe(false);
+  });
+
   it('does not publish AUDIT_COMPLETED when the audit cannot be persisted', async () => {
     // The invariant: the oracle must never ingest signals for an audit the
     // score endpoint has no record of. If the write fails, nothing is emitted.

@@ -104,6 +104,80 @@ def test_generate_tests_returns_503_when_llm_unavailable() -> None:
     assert "unavailable" in response.json()["detail"].lower() or "overloaded" in response.json()["detail"].lower()
 
 
+def test_strip_code_fences_removes_markdown_wrapper() -> None:
+    """The defect that made every stored bundle unloadable JavaScript."""
+    from app.routes.test_gen import strip_code_fences
+
+    raw = (
+        "```javascript\n"
+        "const { it } = require('@jest/globals');\n"
+        "it('works', () => {});\n"
+        "```\n\n"
+        "Note: these tests assume the API is implemented."
+    )
+    out = strip_code_fences(raw)
+    assert "```" not in out
+    assert "Note:" not in out
+    assert out.startswith("const {")
+    assert out.endswith("it('works', () => {});")
+
+
+def test_strip_code_fences_passes_through_unfenced_code() -> None:
+    from app.routes.test_gen import strip_code_fences
+
+    raw = "it('already bare', () => {});"
+    assert strip_code_fences(raw) == raw
+
+
+def test_strip_code_fences_keeps_every_block() -> None:
+    from app.routes.test_gen import strip_code_fences
+
+    raw = "```js\nit('a', () => {});\n```\ntext\n```js\nit('b', () => {});\n```"
+    out = strip_code_fences(raw)
+    assert "it('a'" in out and "it('b'" in out
+    assert "text" not in out
+
+
+def test_count_test_cases_ignores_words_ending_in_it() -> None:
+    """`it(` as a substring also matches submit(, init(, wait(, exit(."""
+    from app.routes.test_gen import count_test_cases
+
+    code = """
+    submit(form);
+    init();
+    await wait(100);
+    process.exit(1);
+    it('a real case', () => {});
+    it.only('another', () => {});
+    test('a third', () => {});
+    """
+    assert count_test_cases(code) == 3
+
+
+def test_generated_bundle_is_loadable_javascript() -> None:
+    """End to end: what /generate-tests stores must not be markdown."""
+    gen = client.post(
+        "/generate-tests",
+        json={
+            "contract_id": "AC-FENCE",
+            "title": "Fence Check",
+            "requirements": "A service with three endpoints.",
+        },
+    )
+    assert gen.status_code == 200
+
+    fetched = client.get("/generate-tests/AC-FENCE")
+    assert fetched.status_code == 200
+    assert not fetched.text.lstrip().startswith("```")
+    assert "```" not in fetched.text
+
+
+def test_fetch_generated_tests_404_when_never_generated() -> None:
+    resp = client.get("/generate-tests/AC-NEVER-GENERATED")
+    assert resp.status_code == 404
+    assert "generate-tests" in resp.json()["detail"]
+
+
 def test_local_file_artifact_store(tmp_path) -> None:
     from app.ports.artifact_store import LocalFileArtifactStore
 

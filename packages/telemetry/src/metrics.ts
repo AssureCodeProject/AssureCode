@@ -3,10 +3,20 @@ import promClient from 'prom-client';
 export const metricsRegistry = new promClient.Registry();
 promClient.collectDefaultMetrics({ register: metricsRegistry, prefix: 'assurecode_' });
 
+/**
+ * A note on labels: `contract_id` is deliberately absent from every metric here.
+ *
+ * Prometheus creates one time series per distinct label combination and keeps
+ * it for the process's lifetime. A contract id is unbounded — one new series
+ * per contract, forever — so a long-running gateway leaks memory in the client
+ * registry and blows up cardinality on the scrape side. Which contract an event
+ * belongs to is a tracing and logging concern (both already carry it); metrics
+ * answer "how many, how slow", not "which one".
+ */
 export const ledgerAppendsTotal = new promClient.Counter({
   name: 'assurecode_ledger_appends_total',
   help: 'Total number of Merkle ledger appends',
-  labelNames: ['action_type', 'status', 'contract_id'],
+  labelNames: ['action_type', 'status'],
   registers: [metricsRegistry],
 });
 
@@ -46,9 +56,18 @@ export const settlementOperationsTotal = new promClient.Counter({
   registers: [metricsRegistry],
 });
 
-export const dlqDepth = new promClient.Gauge({
-  name: 'assurecode_dlq_depth',
-  help: 'Number of messages currently in Dead Letter Queue (DLQ) streams',
+/**
+ * Counter, not Gauge, and named for what it measures.
+ *
+ * This was a Gauge called `dlq_depth` that only ever had `.inc()` called on it
+ * and was never decremented when a DLQ was drained — so it reported a
+ * monotonically rising number under a name that promises a current depth. A
+ * dashboard reading it as depth would show a queue that never empties. What is
+ * actually being counted is messages forwarded to a DLQ, which is a counter.
+ */
+export const dlqMessagesTotal = new promClient.Counter({
+  name: 'assurecode_dlq_messages_total',
+  help: 'Total messages forwarded to a Dead Letter Queue stream after exhausting retries',
   labelNames: ['stream'],
   registers: [metricsRegistry],
 });
@@ -63,7 +82,8 @@ export const sandboxDurationHistogram = new promClient.Histogram({
 export const ciSandboxDurationSeconds = new promClient.Histogram({
   name: 'assurecode_ci_sandbox_duration_seconds',
   help: 'Duration of CI sandbox test runs in seconds',
-  labelNames: ['contract_id', 'passed'],
+  // `runner` is bounded (docker | node-permission | none); contract_id was not.
+  labelNames: ['runner', 'passed'],
   buckets: [0.5, 1, 2, 5, 10, 30, 60, 120],
   registers: [metricsRegistry],
 });
@@ -90,7 +110,7 @@ export const metrics = {
   settlementAmountTotal,
   settlementAmountDollarsTotal,
   settlementOperationsTotal,
-  dlqDepth,
+  dlqMessagesTotal,
   sandboxDurationHistogram,
   ciSandboxDurationSeconds,
   llmLatencyHistogram,

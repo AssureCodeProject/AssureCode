@@ -305,9 +305,24 @@ class PostgresGraphRepo:
         f.deliveries, f.avg_ast, f.hourly_rate_cents
     """
 
+    # Bounded, because libpq's default is to wait indefinitely. Every method
+    # here wraps its query in `except Exception -> self._fallback`, which reads
+    # as a safe degradation but is not one without this: against an unreachable
+    # host the connect never returns, so there is no exception to catch and the
+    # fallback is unreachable. The request simply hangs. This is the same bound
+    # PostgresScopeLog already applies, for the same reason — an unavailable
+    # database has to fail, and failing has to take a bounded amount of time or
+    # it is indistinguishable from working.
+    CONNECT_TIMEOUT_SECONDS = int(os.environ.get("GRAPH_REPO_CONNECT_TIMEOUT", "5"))
+
     def __init__(self, database_url: str) -> None:
         self._database_url = database_url
         self._fallback = InMemoryGraphRepo()
+
+    def _connect(self):
+        return _psycopg().connect(
+            self._database_url, connect_timeout=self.CONNECT_TIMEOUT_SECONDS
+        )
 
     @staticmethod
     def _profile_from_row(row: Sequence[Any]) -> FreelancerProfile:
@@ -324,7 +339,7 @@ class PostgresGraphRepo:
         )
 
     def _fetch_all(self, sql: str, params: tuple = ()) -> list[tuple]:
-        with closing(_psycopg().connect(self._database_url)) as conn:
+        with closing(self._connect()) as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, params)
                 return cur.fetchall()
@@ -345,7 +360,7 @@ class PostgresGraphRepo:
 
     def update_trust_score(self, freelancer_id: str, trust_score: float) -> bool:
         try:
-            with closing(_psycopg().connect(self._database_url)) as conn:
+            with closing(self._connect()) as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         "UPDATE freelancer_profiles SET trust_score = %s WHERE freelancer_id = %s",

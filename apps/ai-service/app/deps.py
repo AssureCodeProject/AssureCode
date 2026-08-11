@@ -35,9 +35,18 @@ def get_embedder() -> Embedder:
 
 @lru_cache(maxsize=1)
 def get_graph_repo() -> GraphRepo:
+    """The matchmaking graph, or the in-process fixture under test.
+
+    Both branches of this used to construct PostgresGraphRepo, so the `test`
+    check did nothing and InMemoryGraphRepo — which exists precisely as the
+    offline fixture — was never selected. Combined with the unbounded libpq
+    connect that adapter used, `pytest tests/test_xai.py` blocked forever
+    against a database that is not running in CI, which is why that suite could
+    not be executed at all.
+    """
     settings = get_settings()
-    if settings.environment == "test" or settings.embed_provider == "fake":
-        return PostgresGraphRepo(database_url=settings.database_url)
+    if settings.environment == "test" or not settings.database_url:
+        return InMemoryGraphRepo()
     return PostgresGraphRepo(database_url=settings.database_url)
 
 

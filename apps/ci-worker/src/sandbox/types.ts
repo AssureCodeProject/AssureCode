@@ -30,8 +30,19 @@ export interface SandboxOptions {
   workDir?: string;
   /** Hidden test bundle to mount read-only alongside the code. */
   hiddenTestsPath?: string;
-  /** Command the sandbox runs. Defaults to the project's test script. */
-  command?: string[];
+  /**
+   * Entry script the sandbox executes, relative to `workDir`. Defaults to the
+   * harness the workspace builder writes.
+   *
+   * This replaced a `command: string[]` shaped like an npm invocation
+   * (`['npm','test','--','--reporter=json']`). Nothing could run it as written:
+   * the runner is invoked directly as a Node entrypoint because child processes
+   * are denied, and the old code dropped `command[0]` and passed the remaining
+   * `['test', ...]` as arguments — so `test` was read as a filename filter.
+   */
+  entrypoint?: string;
+  /** Arguments passed to `entrypoint`. */
+  entryArgs?: string[];
   timeoutMs?: number;
   /** Memory ceiling in megabytes. */
   memoryLimitMb?: number;

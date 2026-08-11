@@ -43,7 +43,7 @@ import {
   type EventEnvelope,
 } from '@assurecode/shared';
 import { withIdempotency } from './middleware/idempotency.js';
-import { logSecurityAudit, type AuthUser } from './middleware/rbac.js';
+import { logSecurityAudit, requireRole, requireKycVerified, type AuthUser } from './middleware/rbac.js';
 import { registerAuth, verifyPassword } from './middleware/auth.js';
 import { extractPdfText, MAX_PDF_BYTES } from './middleware/pdf.js';
 
@@ -185,6 +185,35 @@ void server.register(fastifyCors, {
 // registers and runs correctly, cast at the boundary rather than fought.
 void server.register(fastifyMultipart as any, {
   limits: { fileSize: MAX_PDF_BYTES, files: 1 },
+});
+
+// Stripe signs the exact bytes it sent, so verification needs those bytes.
+//
+// The webhook route declared `config: { rawBody: true }`, which is the option
+// name `fastify-raw-body` reads — but that plugin is not a dependency of this
+// workspace and was never registered, so the flag did nothing. The handler fell
+// back to `JSON.stringify(request.body)`, re-serialising the parsed object; the
+// HMAC over that can never match the HMAC over the original payload, so every
+// genuine Stripe webhook was rejected with 401. It went unnoticed because the
+// fake adapter's `mock_` signature path is what runs in development.
+//
+// Captured the same way apps/webhook-ingest already does for GitHub: keep the
+// buffer alongside the parsed body, so routes that need to verify a signature
+// have the original and everything else is unaffected.
+server.addContentTypeParser('application/json', { parseAs: 'buffer' }, (req, body: Buffer, done) => {
+  (req as any).rawBody = body;
+  if (body.length === 0) {
+    done(null, undefined);
+    return;
+  }
+  try {
+    done(null, JSON.parse(body.toString('utf8')));
+  } catch (err) {
+    // Surfaced as 400 by the error handler below, not 500: malformed JSON is
+    // the caller's error.
+    (err as any).statusCode = 400;
+    done(err as Error, undefined);
+  }
 });
 
 // A rejected request body is the caller's error, not the server's.
@@ -406,6 +435,26 @@ server.post('/api/pdf/extract', async (request, reply) => {
   }
 });
 
+// ── Route guards ──────────────────────────────────────────────────────
+//
+// requireRole and requireKycVerified were written, exported, and never
+// attached to anything — dead code since the day they landed. The gap was not
+// theoretical: every contract route was reachable by any authenticated user
+// regardless of role, so a freelancer could lock a contract, fund its escrow,
+// and request its settlement.
+//
+// Roles: only a client owns the contract lifecycle. Settlement additionally
+// admits 'admin' for dispute resolution.
+const clientOnly = { preHandler: requireRole(['client']) };
+// Money movement additionally requires a verified identity. Both guards run in
+// order, so the role failure is reported before the compliance one.
+const clientVerified = {
+  preHandler: [requireRole(['client']), requireKycVerified(dbPool)],
+};
+const settlementGuards = {
+  preHandler: [requireRole(['client', 'admin']), requireKycVerified(dbPool)],
+};
+
 // ── Contract Endpoints ────────────────────────────────────────────────
 
 server.post<{
@@ -530,7 +579,7 @@ server.post<{
 server.post<{
   Params: { contractId: string };
   Body: { freelancerId: string };
-}>('/api/contracts/:contractId/assign', async (request, reply) => {
+}>('/api/contracts/:contractId/assign', clientOnly, async (request, reply) => {
   return withIdempotency(dbPool, request, reply, async () => {
     const { contractId } = request.params;
     const { freelancerId } = request.body || {};
@@ -570,6 +619,27 @@ server.post<{
   const { userId, idType } = request.body || {};
   if (!userId || !idType) {
     return reply.status(400).send({ error: 'userId and idType are required' });
+  }
+
+  // `userId` came straight from the body with nothing checking it against the
+  // caller, so any authenticated user could set kyc_status = 'VERIFIED' on any
+  // account — including one they do not own — and thereby clear the compliance
+  // gate on escrow and settlement. You may verify yourself; an admin may
+  // verify anyone; a service caller acts on behalf of the platform.
+  const caller = (request as any).user as AuthUser | undefined;
+  const isService = (request as any).isServiceCaller === true;
+  if (!isService && caller && caller.role !== 'admin' && caller.userId !== userId) {
+    await logSecurityAudit(dbPool, {
+      userId: caller.userId,
+      action: 'KYC_VERIFY_DENIED',
+      resource: `kyc:${userId}`,
+      ipAddress: request.ip,
+      status: 'DENIED',
+    });
+    return reply.status(403).send({
+      error: 'Forbidden',
+      message: 'You can only run identity verification for your own account.',
+    });
   }
 
   const session = await escrowAdapter.createVerificationSession({
@@ -794,7 +864,7 @@ server.post<{
   Params: { contractId: string };
   Body: InitializeContract;
   Reply: ContractLocked;
-}>('/api/contracts/:contractId/lock', async (request, reply) => {
+}>('/api/contracts/:contractId/lock', clientOnly, async (request, reply) => {
   return withIdempotency(dbPool, request, reply, async () => {
     const { contractId } = request.params;
     const body = InitializeContractSchema.parse(request.body);
@@ -872,7 +942,7 @@ server.post<{
     status: string;
     clientSecret: string;
   };
-}>('/api/contracts/:contractId/escrow', async (request, reply) => {
+}>('/api/contracts/:contractId/escrow', clientVerified, async (request, reply) => {
   return withIdempotency(dbPool, request, reply, async () => {
     const { contractId } = request.params;
     const { amountCents } = request.body;
@@ -933,14 +1003,19 @@ server.post<{
   Params: { contractId: string };
   Body: { freelancerId: string; amountCents: number };
   Reply: { contractId: string; status: string } | { error: string };
-}>('/api/contracts/:contractId/settle', async (request, reply) => {
+}>('/api/contracts/:contractId/settle', settlementGuards, async (request, reply) => {
   return withIdempotency(dbPool, request, reply, async () => {
     const { contractId } = request.params;
     const { freelancerId, amountCents } = request.body;
 
     // Idempotency check: has it already been settled?
+    //
+    // This looked for 'INVOICE', which nothing writes. commitSettlement in the
+    // settlement worker appends 'SETTLEMENT_COMPLETED', so the 409 below never
+    // fired and a repeat request got 202 "pending_oracle_verification" — only
+    // stopped later, and silently, by the worker's own claim guard.
     const chain = await ledgerClient.getChain(contractId);
-    const isSettled = chain.some(entry => entry.actionType === 'INVOICE');
+    const isSettled = chain.some((entry) => entry.actionType === 'SETTLEMENT_COMPLETED');
     if (isSettled) {
       return {
         statusCode: 409,
@@ -973,15 +1048,15 @@ server.post<{
 
 server.post<{
   Reply: { received: boolean } | { error: string };
-}>('/webhooks/stripe', {
-  config: {
-    rawBody: true,
-  },
-}, async (request, reply) => {
+}>('/webhooks/stripe', async (request, reply) => {
   const signature = request.headers['stripe-signature'] ?? '';
-  const rawBody = typeof request.body === 'string'
-    ? request.body
-    : JSON.stringify(request.body ?? '');
+
+  // The bytes as Stripe sent them, captured by the content-type parser above.
+  // Re-serialising the parsed body here is what made every real signature fail.
+  const rawBody = (request as any).rawBody as Buffer | undefined;
+  if (!rawBody) {
+    return reply.status(400).send({ error: 'Empty request body' });
+  }
 
   const verification = await escrowAdapter.verifyWebhook(rawBody, String(signature));
 
@@ -1135,7 +1210,8 @@ server.post<{
   Reply: { message: string; eventId: string } | { error: string };
 }>('/api/contracts/:contractId/simulate-push', async (request, reply) => {
   const { contractId } = request.params;
-  const code = request.body?.code?.trim() || SIMULATED_PUSH_DEMO_CODE;
+  const callerCode = request.body?.code?.trim();
+  const code = callerCode || SIMULATED_PUSH_DEMO_CODE;
 
   const eventId = randomUUID();
 
@@ -1144,13 +1220,18 @@ server.post<{
     return reply.status(404).send({ error: 'Contract not found' });
   }
 
+  // `demo` travels with the event so ci-worker knows to pair the snippet above
+  // with its matching suite rather than with the contract's generated tests —
+  // which describe the contract's product and would fail against a two-line
+  // adder for reasons that say nothing about the code or the pipeline. The
+  // flag is what keeps a demo run labelled as one all the way through.
   await eventBus.publish(
     EVENT_TOPICS.CODE_PUSH_RECEIVED,
-    { contractId, repository: 'test-repo', commitSha: 'abc123', eventId, code },
+    { contractId, repository: 'test-repo', commitSha: 'abc123', eventId, code, demo: !callerCode },
     eventId,
   );
 
-  logger.info({ contractId, eventId, codeSource: request.body?.code ? 'caller-supplied' : 'demo-fallback' }, 'Simulated GitHub push event');
+  logger.info({ contractId, eventId, codeSource: callerCode ? 'caller-supplied' : 'demo-fallback' }, 'Simulated GitHub push event');
 
   return reply.status(200).send({
     message: 'GitHub push event simulated',

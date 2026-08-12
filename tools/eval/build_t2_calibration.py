@@ -41,9 +41,9 @@ _AI_SERVICE = _ROOT / "apps" / "ai-service"
 if str(_AI_SERVICE) not in sys.path:
     sys.path.insert(0, str(_AI_SERVICE))
 
-from app.ports.embedder import SentenceTransformerEmbedder  # noqa: E402
-from app.ports.rag_store import InMemoryRagStore, StoredChunk  # noqa: E402
-from app.services.chunker import chunk_text  # noqa: E402
+from app.ports.embedder import SentenceTransformerEmbedder
+from app.ports.rag_store import InMemoryRagStore, StoredChunk
+from app.services.chunker import chunk_text
 
 RETRIEVAL_K_DEFAULT = 5  # matches SCOPE_RETRIEVAL_K's default in scope-guard/app/deps.py
 CHUNK_TARGET_CHARS = 512  # matches the gateway's /rag/ingest call (server.ts)
@@ -82,7 +82,7 @@ def cohens_kappa(labels_a: list[str], labels_b: list[str]) -> float:
     idx = {c: i for i, c in enumerate(categories)}
     k = len(categories)
     confusion = [[0] * k for _ in range(k)]
-    for a, b in zip(labels_a, labels_b):
+    for a, b in zip(labels_a, labels_b, strict=False):
         confusion[idx[a]][idx[b]] += 1
 
     po = sum(confusion[i][i] for i in range(k)) / n
@@ -310,7 +310,7 @@ def main() -> None:
     labels_b = [m["annotator_b_label"].strip() for m in dual]
     kappa = cohens_kappa(labels_a, labels_b)
 
-    agree_count = sum(1 for a, b in zip(labels_a, labels_b) if a == b)
+    agree_count = sum(1 for a, b in zip(labels_a, labels_b, strict=False) if a == b)
     print(f"\n  Annotator agreement: {agree_count}/{len(dual)} messages ({agree_count / len(dual):.1%})")
     print(f"  Cohen's kappa       : {kappa:.4f}  (gate: >= {min_pilot_kappa})")
 

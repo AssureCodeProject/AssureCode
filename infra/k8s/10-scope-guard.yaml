@@ -1,0 +1,108 @@
+# =============================================================================
+# Scope Guard — cosine-similarity scope checking and the drift detector.
+#
+# Loads the same Sentence-BERT model as ai-service, so it carries the same
+# memory floor and the same cold-start problem; see 09-ai-service.yaml for
+# why the startup probe exists and what it is standing in for.
+#
+# Note on the drift endpoint: the conformal detector is uncalibrated in this
+# repository and deliberately answers 503 rather than substituting a default
+# threshold (docs/FINAL_PROJECT_REPORT.md §6). That is a correct 503, not an
+# unhealthy pod — which is why the probes below target /healthz and nothing
+# here treats a failing /drift as a reason to restart the container.
+# =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: scope-guard
+  namespace: assurecode
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scope-guard
+  namespace: assurecode
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8001
+      targetPort: 8001
+  selector:
+    app: scope-guard
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scope-guard
+  namespace: assurecode
+  labels:
+    app: scope-guard
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: scope-guard
+  template:
+    metadata:
+      labels:
+        app: scope-guard
+    spec:
+      serviceAccountName: scope-guard
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: scope-guard
+          image: assurecode/scope-guard:latest
+          ports:
+            - containerPort: 8001
+          envFrom:
+            - configMapRef:
+                name: assurecode-config
+            - secretRef:
+                name: assurecode-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: false
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "1024Mi"
+            limits:
+              cpu: "1000m"
+              memory: "2Gi"
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8001
+            failureThreshold: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8001
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8001
+            periodSeconds: 20
+          volumeMounts:
+            - name: model-cache
+              mountPath: /home/appuser/.cache
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: model-cache
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 512Mi
+      terminationGracePeriodSeconds: 60

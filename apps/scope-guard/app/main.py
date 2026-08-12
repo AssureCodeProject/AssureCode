@@ -34,8 +34,7 @@ endpoint is not mistaken for something stronger than it is.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -79,7 +78,7 @@ class ScopeCheckResponse(BaseModel):
     allowed: bool
     similarity_score: float
     reason: str
-    suggested_mediation: Optional[str] = None
+    suggested_mediation: str | None = None
     checked_at: str
     # ── anchoring (Objective 3) ──────────────────────────────────
     contract_id: str
@@ -92,7 +91,7 @@ class ScopeCheckResponse(BaseModel):
 
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
-    return {"status": "ok", "service": "scope-guard", "time": datetime.now(timezone.utc).isoformat()}
+    return {"status": "ok", "service": "scope-guard", "time": datetime.now(UTC).isoformat()}
 
 
 @app.get("/")
@@ -114,7 +113,7 @@ class DriftAssessment(BaseModel):
     genesis_hash: str
     messages_observed: int
     alarmed: bool
-    alarmed_at: Optional[int]
+    alarmed_at: int | None
     alarm_reason: str
     delta: float
     epsilon: float
@@ -151,7 +150,7 @@ def assess_drift(
     try:
         contract_anchor = anchor.genesis(contract_id)
     except LedgerAnchorUnavailable as err:
-        raise HTTPException(status_code=409, detail=str(err))
+        raise HTTPException(status_code=409, detail=str(err)) from err
 
     calibration, synthetic = get_drift_calibration()
     if not calibration:
@@ -172,7 +171,7 @@ def assess_drift(
     try:
         residuals = scope_log.residuals(contract_id)
     except ScopeLogUnavailable as err:
-        raise HTTPException(status_code=503, detail=f"Scope decision log unavailable: {err}")
+        raise HTTPException(status_code=503, detail=f"Scope decision log unavailable: {err}") from err
 
     if not residuals:
         raise HTTPException(
@@ -196,7 +195,7 @@ def assess_drift(
             calibration_is_synthetic=synthetic,
         )
     except NotCalibrated as err:
-        raise HTTPException(status_code=503, detail=str(err))
+        raise HTTPException(status_code=503, detail=str(err)) from err
 
     for residual in residuals:
         detector.observe_residual(residual)
@@ -247,7 +246,7 @@ def check_scope(
     try:
         contract_anchor = anchor.genesis(req.contract_id)
     except LedgerAnchorUnavailable as err:
-        raise HTTPException(status_code=409, detail=str(err))
+        raise HTTPException(status_code=409, detail=str(err)) from err
 
     # 2. Embed the message.
     query_vector = embedder.embed(req.message)
@@ -260,7 +259,7 @@ def check_scope(
     except RagStoreUnavailable as err:
         # 503, never a permissive default. An unreachable corpus is not
         # evidence that a request is in scope.
-        raise HTTPException(status_code=503, detail=f"Scope corpus unavailable: {err}")
+        raise HTTPException(status_code=503, detail=f"Scope corpus unavailable: {err}") from err
 
     if not retrieved:
         raise HTTPException(
@@ -317,14 +316,14 @@ def check_scope(
                 f"Scope decision computed (allowed={allowed}, similarity={best:.4f}) but could "
                 f"not be recorded: {err}. Refusing to return an unrecorded decision."
             ),
-        )
+        ) from err
 
     return ScopeCheckResponse(
         allowed=allowed,
         similarity_score=round(best, 4),
         reason=reason,
         suggested_mediation=mediation,
-        checked_at=datetime.now(timezone.utc).isoformat(),
+        checked_at=datetime.now(UTC).isoformat(),
         contract_id=req.contract_id,
         genesis_hash=contract_anchor.genesis_hash,
         threshold=settings.scope_threshold,

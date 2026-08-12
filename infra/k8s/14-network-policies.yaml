@@ -1,0 +1,284 @@
+# =============================================================================
+# Network policy — default deny, then explicit allows.
+#
+# ── Requires a CNI that enforces NetworkPolicy ──────────────────────────
+# Calico, Cilium, Weave, or a managed equivalent. On a CNI that ignores them
+# (plain Flannel, kind's default) these objects apply cleanly and enforce
+# nothing — which is the dangerous failure mode, because the manifests look
+# like the traffic is restricted. Verify enforcement before relying on it.
+#
+# ── Why this matters most for ci-worker ─────────────────────────────────
+# NodePermissionSandbox blocks network egress from inside the process using
+# module hooks, but that is a language-level control on code we are already
+# assuming is hostile. The egress rule below is the second, independent layer:
+# even if submitted code escapes the module hooks, the pod itself has no route
+# to the database, to Redis, or off the cluster. Defence in depth, because the
+# in-process guard and the pod-level guard fail for different reasons.
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: assurecode
+spec:
+  # Empty selector = every pod in the namespace. Everything below re-opens
+  # only what a specific workload actually needs.
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Every workload needs cluster DNS, or it cannot resolve `postgres` or
+# `ai-service` and fails in ways that look like the dependency is down.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: assurecode
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# ── Datastores: accept only from inside the namespace ────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: datastore-ingress
+  namespace: assurecode
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: ["postgres", "redis", "neo4j"]
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # Named workloads only. ci-worker is absent from this list on
+        # purpose: it runs untrusted code and has no business reaching the
+        # ledger database or the event bus directly.
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values:
+                  - api-gateway
+                  - ai-service
+                  - scope-guard
+                  - webhook-ingest
+                  - settlement-worker
+                  - assurecode-migrate
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-gateway-policy
+  namespace: assurecode
+spec:
+  podSelector:
+    matchLabels:
+      app: api-gateway
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # From the ingress controller, wherever it runs.
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 4000
+  egress:
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values: ["postgres", "redis", "ai-service", "scope-guard"]
+    # Outbound to the internet: Stripe's API and the LLM providers. Port 443
+    # only — there is no reason for this service to speak plaintext HTTP
+    # outward. Narrow this to provider CIDRs if your environment can.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              # Keep cluster-internal and link-local ranges out of the
+              # "internet" allowance, so this rule cannot be used to reach
+              # another namespace or the node metadata endpoint.
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ai-service-policy
+  namespace: assurecode
+spec:
+  podSelector:
+    matchLabels:
+      app: ai-service
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: api-gateway
+      ports:
+        - protocol: TCP
+          port: 8000
+  egress:
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values: ["postgres", "neo4j", "redis"]
+    # LLM providers and the S3 endpoint.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: scope-guard-policy
+  namespace: assurecode
+spec:
+  podSelector:
+    matchLabels:
+      app: scope-guard
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: api-gateway
+      ports:
+        - protocol: TCP
+          port: 8001
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: webhook-ingest-policy
+  namespace: assurecode
+spec:
+  podSelector:
+    matchLabels:
+      app: webhook-ingest
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # From the ingress controller — GitHub is the real caller.
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 9000
+  egress:
+    # Publishes to the bus and nothing else. It does not touch Postgres.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: settlement-worker-policy
+  namespace: assurecode
+spec:
+  podSelector:
+    matchLabels:
+      app: settlement-worker
+  policyTypes:
+    - Ingress
+    - Egress
+  # No ingress rules at all: nothing should ever open a connection to the
+  # process that releases money. It only consumes from the bus.
+  ingress: []
+  egress:
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values: ["postgres", "redis"]
+    # Stripe's API, for the eventual payout leg.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ci-worker-policy
+  namespace: assurecode
+spec:
+  podSelector:
+    matchLabels:
+      app: ci-worker
+  policyTypes:
+    - Ingress
+    - Egress
+  # Nothing connects in.
+  ingress: []
+  egress:
+    # Redis only — it needs the event bus to receive audit jobs and publish
+    # results, and nothing else. In particular: no Postgres (results go over
+    # the bus), and no internet at all, so submitted code cannot exfiltrate
+    # the repository it was handed or pull down a second-stage payload.
+    #
+    # The DNS allowance above still applies; that is the one unavoidable
+    # channel, and it is why the in-process egress guard remains necessary
+    # rather than redundant.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379

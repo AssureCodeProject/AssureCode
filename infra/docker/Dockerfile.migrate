@@ -1,0 +1,62 @@
+# =============================================================================
+# Migration runner image.
+#
+# ── Why this is not just "reuse the gateway image" ───────────────────────
+# Two reasons, both of which would have produced a Job that fails at runtime
+# rather than at build time:
+#
+#   1. tools/ is not a workspace and tsconfig.tools.json sets `noEmit: true`,
+#      so tools/migrate.ts is never compiled. It runs under tsx — a
+#      devDependency. Any image that prunes dev dependencies cannot run it.
+#
+#   2. The gateway image copies only packages/ and apps/api-gateway/. It
+#      contains neither tools/migrate.ts nor infra/migrations/postgres/*.sql,
+#      so the migration would have nothing to read.
+#
+# Keeping this separate means the service images stay free of build tooling
+# and this one carries exactly what applying schema requires.
+#
+# Deliberately does NOT prune dev dependencies — tsx is the entrypoint.
+# =============================================================================
+
+FROM node:20-alpine AS builder
+WORKDIR /app
+
+COPY package*.json ./
+COPY packages/shared/package*.json ./packages/shared/
+COPY packages/config/package*.json ./packages/config/
+COPY packages/telemetry/package*.json ./packages/telemetry/
+
+RUN npm ci
+
+# Only the three packages migrate.ts actually pulls in. Copying all of
+# packages/ would drag in event-bus, whose `ioredis` import fails to compile
+# because this image never installs the event-bus manifest — and the
+# migration runner has no reason to carry the event bus in the first place.
+COPY packages/shared/ ./packages/shared/
+COPY packages/telemetry/ ./packages/telemetry/
+COPY packages/config/ ./packages/config/
+COPY tsconfig.base.json ./
+COPY scripts/ ./scripts/
+
+# @assurecode/config supplies buildDbConfig(), which migrate.ts imports for
+# its TLS-verified connection settings. Named explicitly so an added workspace
+# never silently joins this image's build.
+RUN node scripts/build-workspaces.mjs packages/shared packages/telemetry packages/config
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/packages ./packages
+
+# The two things the gateway image lacks: the runner itself (plus the
+# test-support/env.js helper it imports) and the SQL it applies.
+COPY tools/ ./tools/
+COPY infra/migrations/ ./infra/migrations/
+
+USER node
+
+CMD ["npx", "tsx", "tools/migrate.ts"]

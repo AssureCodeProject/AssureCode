@@ -18,13 +18,20 @@
     "eval:matchmaking": "apps\\ai-service\\.venv\\Scripts\\python.exe tools/eval/matchmaking_eval.py",
     "benchmark": "node tools/benchmark.js",
     "build": "node scripts/build-workspaces.mjs",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "validate:k8s": "python scripts/validate-k8s.py",
     "test": "npm run test --workspaces --if-present --include-workspace-root=false",
     "infra:up": "docker compose --env-file .env -f infra/docker-compose.yml up -d",
     "infra:down": "docker compose -f infra/docker-compose.yml down"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@types/pg": "^8.11.10",
-    "neo4j-driver": "^5.28.3"
+    "eslint": "^9.39.5",
+    "globals": "^15.15.0",
+    "neo4j-driver": "^5.28.3",
+    "typescript-eslint": "^8.67.0"
   },
   "engines": {
     "node": ">=20"
@@ -33,5 +40,9 @@
     "@fastify/multipart": "^8.3.1",
     "kafkajs": "^2.2.4",
     "pdf-parse": "^2.4.5"
+  },
+  "optionalDependencies": {
+    "@rollup/rollup-linux-x64-gnu": "^4.60.2",
+    "@rollup/rollup-linux-x64-musl": "^4.60.2"
   }
 }

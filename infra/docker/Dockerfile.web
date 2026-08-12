@@ -1,5 +1,10 @@
 # =============================================================================
 # Production Dockerfile — Web App Frontend (Vite + React + Nginx)
+#
+# Runtime is nginx-unprivileged rather than stock nginx: the stock image runs
+# its master process as root so it can bind port 80, which means the pod
+# cannot set runAsNonRoot. This variant runs as uid 101 and listens on 8080 —
+# see infra/docker/nginx.conf and the port in infra/k8s/06-frontend-ingress.yaml.
 # =============================================================================
 
 FROM node:20-alpine AS builder
@@ -12,23 +17,14 @@ RUN npm ci
 COPY apps/web/ ./apps/web/
 RUN npm -w @assurecode/web run build
 
-FROM nginx:1.27-alpine AS runner
+FROM nginxinc/nginx-unprivileged:1.27-alpine AS runner
+
+# Config first: a bad config should fail the build, not the first request.
+COPY infra/docker/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /app/apps/web/dist /usr/share/nginx/html
 
-# Custom Nginx config for single-page app routing & proxying
-RUN echo 'server { \
-    listen 80; \
-    location / { \
-        root /usr/share/nginx/html; \
-        try_files $uri $uri/ /index.html; \
-    } \
-    location /api/ { \
-        proxy_pass http://api-gateway:4000; \
-        proxy_http_version 1.1; \
-        proxy_set_header Upgrade $http_upgrade; \
-        proxy_set_header Connection "upgrade"; \
-    } \
-}' > /etc/nginx/conf.d/default.conf
+# Already the image default, stated so it survives a base-image change.
+USER 101
 
-EXPOSE 80
+EXPOSE 8080
 CMD ["nginx", "-g", "daemon off;"]

@@ -5,8 +5,8 @@ and determinism (same text → same vector).
 """
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
 import numpy as np
+from fastapi.testclient import TestClient
 
 from app.main import app
 

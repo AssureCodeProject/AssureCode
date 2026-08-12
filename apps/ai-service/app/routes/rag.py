@@ -66,7 +66,7 @@ def ingest(
         raise HTTPException(
             status_code=503,
             detail=f"Could not persist contract chunks for {req.contract_id}: {err}",
-        )
+        ) from err
     return IngestResponse(contract_id=req.contract_id, chunks_stored=n, dim=embedder.dim)
 
 

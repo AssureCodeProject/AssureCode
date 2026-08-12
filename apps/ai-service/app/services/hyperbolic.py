@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import numpy as np
 
-
 from app.utils.vector_ops import project_to_poincare_ball
 
 

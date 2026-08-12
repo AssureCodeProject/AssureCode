@@ -13,6 +13,7 @@ import { initTracing, metrics } from '@assurecode/telemetry';
 initTracing('api-gateway');
 
 import fastify from 'fastify';
+import type { FastifyRequest, FastifyReply } from 'fastify';
 import fastifyCors from '@fastify/cors';
 import fastifyWebsocket from '@fastify/websocket';
 import fastifyMultipart from '@fastify/multipart';
@@ -27,6 +28,7 @@ import {
   buildDbConfig,
   runWithCorrelationId,
   getCorrelationId,
+  assertProductionSecrets,
 } from '@assurecode/config';
 import { LedgerClient } from '@assurecode/ledger-client';
 import { OracleStore, TRUST_SCORE_THRESHOLD } from '@assurecode/oracle';
@@ -72,15 +74,13 @@ if (config.NODE_ENV === 'production' && !config.STRIPE_SECRET_KEY) {
 
 // A dev-default JWT secret or service token in production means every login
 // token and every "machine caller" bypass is forgeable by anyone who has
-// read this source file.
-if (
-  config.NODE_ENV === 'production' &&
-  (config.JWT_SECRET === 'dev_insecure_jwt_secret_change_me' ||
-    config.SERVICE_TOKEN === 'dev_insecure_service_token_change_me')
-) {
-  logger.error('JWT_SECRET and SERVICE_TOKEN must be set to non-default values in production.');
-  process.exit(1);
-}
+// read this source file. The rule now lives in @assurecode/config so the
+// other services get the same guard instead of only this one — it also
+// catches the REPLACE_ME placeholders shipped in infra/k8s/.
+assertProductionSecrets(config as unknown as Record<string, string | undefined>, [
+  'JWT_SECRET',
+  'SERVICE_TOKEN',
+], { onError: (message) => logger.error(message) });
 
 // BUG-009: Pre-parsed Redis URL used by the /readyz health check.
 const redisHealthUrl = (() => {
@@ -613,6 +613,47 @@ server.post<{
   });
 });
 
+/**
+ * Guard for routes that name a `userId` in the request rather than deriving it
+ * from the session.
+ *
+ * A `userId` taken from a body or a path parameter is caller-controlled, so
+ * without this every such route acts on whatever account it is handed. This
+ * was written inline for /api/kyc/verify — where the consequence was that any
+ * authenticated user could set kyc_status = 'VERIFIED' on any account and
+ * clear the compliance gate on escrow — and the two sibling KYC routes had no
+ * equivalent check at all. Sharing it means the next route that takes a
+ * `userId` gets the same answer instead of a fourth variation.
+ *
+ * You may act on yourself; an admin may act on anyone; a service caller acts
+ * on behalf of the platform and has no user identity to compare against.
+ *
+ * Returns true when the request was rejected, so callers `return` on true.
+ */
+async function denyIfNotSelfOrAdmin(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  targetUserId: string,
+  auditAction: string,
+  message: string,
+): Promise<boolean> {
+  if ((request as any).isServiceCaller === true) return false;
+
+  const caller = (request as any).user as AuthUser | undefined;
+  if (!caller) return false;
+  if (caller.role === 'admin' || caller.userId === targetUserId) return false;
+
+  await logSecurityAudit(dbPool, {
+    userId: caller.userId,
+    action: auditAction,
+    resource: `kyc:${targetUserId}`,
+    ipAddress: request.ip,
+    status: 'DENIED',
+  });
+  await reply.status(403).send({ error: 'Forbidden', message });
+  return true;
+}
+
 server.post<{
   Body: { userId: string; idType: 'PASSPORT' | 'DRIVERS_LICENSE' | 'NATIONAL_ID' };
 }>('/api/kyc/verify', async (request, reply) => {
@@ -621,25 +662,16 @@ server.post<{
     return reply.status(400).send({ error: 'userId and idType are required' });
   }
 
-  // `userId` came straight from the body with nothing checking it against the
-  // caller, so any authenticated user could set kyc_status = 'VERIFIED' on any
-  // account — including one they do not own — and thereby clear the compliance
-  // gate on escrow and settlement. You may verify yourself; an admin may
-  // verify anyone; a service caller acts on behalf of the platform.
-  const caller = (request as any).user as AuthUser | undefined;
-  const isService = (request as any).isServiceCaller === true;
-  if (!isService && caller && caller.role !== 'admin' && caller.userId !== userId) {
-    await logSecurityAudit(dbPool, {
-      userId: caller.userId,
-      action: 'KYC_VERIFY_DENIED',
-      resource: `kyc:${userId}`,
-      ipAddress: request.ip,
-      status: 'DENIED',
-    });
-    return reply.status(403).send({
-      error: 'Forbidden',
-      message: 'You can only run identity verification for your own account.',
-    });
+  if (
+    await denyIfNotSelfOrAdmin(
+      request,
+      reply,
+      userId,
+      'KYC_VERIFY_DENIED',
+      'You can only run identity verification for your own account.',
+    )
+  ) {
+    return;
   }
 
   const session = await escrowAdapter.createVerificationSession({
@@ -682,6 +714,23 @@ server.get<{
   Params: { userId: string };
 }>('/api/kyc/status/:userId', async (request, reply) => {
   const { userId } = request.params;
+
+  // This route had no ownership check at all, so any authenticated user could
+  // read any other account's email, role, KYC status and identity-document
+  // type by walking user IDs. Reading is less damaging than the write on
+  // /api/kyc/verify, but it is still someone else's compliance record.
+  if (
+    await denyIfNotSelfOrAdmin(
+      request,
+      reply,
+      userId,
+      'KYC_STATUS_READ_DENIED',
+      'You can only read the verification status of your own account.',
+    )
+  ) {
+    return;
+  }
+
   const res = await dbPool.query(
     `SELECT user_id, kyc_status, mfa_enabled, role, display_name FROM users WHERE user_id = $1`,
     [userId],
@@ -703,6 +752,25 @@ server.post<{
   Body: { userId: string; email: string };
 }>('/api/kyc/connect-onboarding', async (request, reply) => {
   const { userId, email } = request.body || {};
+  if (!userId) {
+    return reply.status(400).send({ error: 'userId is required' });
+  }
+
+  // Same caller-controlled `userId` problem the sibling routes had: without
+  // this, any authenticated user could open a payout-account onboarding flow
+  // in someone else's name.
+  if (
+    await denyIfNotSelfOrAdmin(
+      request,
+      reply,
+      userId,
+      'CONNECT_ONBOARDING_DENIED',
+      'You can only start payout onboarding for your own account.',
+    )
+  ) {
+    return;
+  }
+
   const account = await escrowAdapter.createConnectAccount({ userId, email: email || 'user@assurecode.io' });
   const link = await escrowAdapter.createAccountLink({
     accountId: account.accountId,

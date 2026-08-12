@@ -171,7 +171,7 @@ def security_scan(
                 status_code=503,
                 detail=err.message,
                 headers={"Retry-After": str(err.retry_after)},
-            )
+            ) from err
 
         try:
             items = _extract_json_array(raw)
@@ -179,7 +179,7 @@ def security_scan(
             raise HTTPException(
                 status_code=502,
                 detail=f"LLM returned an unparseable security report: {err}",
-            )
+            ) from err
 
         max_line = req.code.count("\n") + 1
         llm_findings = _normalize_llm_findings(items, max_line)

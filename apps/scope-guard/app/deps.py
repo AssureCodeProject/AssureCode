@@ -20,19 +20,19 @@ _AI_SERVICE = _REPO_ROOT / "apps" / "ai-service"
 if str(_AI_SERVICE) not in sys.path:
     sys.path.insert(0, str(_AI_SERVICE))
 
-from app.ports.embedder import Embedder, FakeEmbedder, SentenceTransformerEmbedder  # noqa: E402
-from app.ports.ledger_anchor import (  # noqa: E402
+from app.ports.embedder import Embedder, FakeEmbedder, SentenceTransformerEmbedder
+from app.ports.ledger_anchor import (
     InMemoryLedgerAnchor,
     LedgerAnchorUnavailable,
     PostgresLedgerAnchor,
 )
-from app.ports.rag_store import (  # noqa: E402
+from app.ports.rag_store import (
     InMemoryRagStore,
     PostgresRagStore,
     RagStore,
     RagStoreUnavailable,
 )
-from app.ports.scope_log import (  # noqa: E402
+from app.ports.scope_log import (
     InMemoryScopeLog,
     PostgresScopeLog,
     ScopeDecisionRecord,

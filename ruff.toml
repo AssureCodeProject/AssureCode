@@ -1,0 +1,79 @@
+# =============================================================================
+# Shared Ruff configuration.
+#
+# ── Why this exists ──────────────────────────────────────────────────────
+# Ruff was already a dev dependency of both Python services and both declared
+# a [tool.ruff] block — but each set only `line-length` and `target-version`,
+# with no `select`. That leaves the active rule set at whatever the installed
+# Ruff version happens to default to, which changes between releases. A lint
+# job pinned to no rule set fails on a version bump for reasons unrelated to
+# any code change, so the selection below is explicit.
+#
+# The services extend this file rather than redeclaring it, so `tools/` (which
+# has no pyproject.toml of its own) and both services are held to one standard.
+#
+# First run against the existing code produced 70 findings, none of which were
+# bugs: unused `noqa` directives, `Optional[X]` that could be `X | None`, and
+# 19 instances of the FastAPI `Depends()` pattern. The mechanical ones were
+# fixed; the FastAPI pattern is excluded below rather than "fixed" into
+# something less idiomatic.
+# =============================================================================
+
+line-length = 100
+target-version = "py311"
+
+exclude = [
+    ".venv",
+    "__pycache__",
+    "*.egg-info",
+    # Runtime output, not source: the artifact store writes here when S3 is
+    # unavailable, and it fills with LLM-generated test files.
+    "storage_fallback",
+]
+
+[lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # import sorting
+    "B",    # bugbear
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific
+]
+
+ignore = [
+    # `Depends(...)` / `Query(...)` in a parameter default is how FastAPI
+    # declares dependency injection. B008 exists to catch mutable defaults
+    # evaluated once at import; FastAPI's callables are precisely the
+    # intended exception, and rewriting them would break the framework
+    # contract. 19 of the first run's 70 findings were this.
+    "B008",
+
+    # Long lines are reported by the formatter, and `line-length` above is
+    # already the budget. E501 on top of that is duplicate noise.
+    "E501",
+]
+
+[lint.per-file-ignores]
+# These scripts insert apps/ai-service onto sys.path before importing from
+# it, so the imports genuinely cannot come first. Moving them would break the
+# script; E402 has no way to express "this ordering is the point".
+"tools/test-matchmaking.py" = ["E402"]
+# RUF001/RUF002: these scripts emit Markdown reports containing typographic
+# characters (en dashes in numeric ranges) that are correct in prose and only
+# look "ambiguous" to a linter scanning for homoglyph attacks in identifiers.
+"tools/eval/*.py" = ["E402", "RUF001", "RUF002"]
+
+# Both services import their settings module before other imports so that
+# environment loading happens first; the `# noqa: E402` markers that guarded
+# this are now unnecessary because E402 is not selected, but the import
+# ordering itself is still deliberate.
+"apps/*/app/deps.py" = ["E402"]
+
+# Test files legitimately redefine fixtures and use assert-heavy style.
+"**/tests/*.py" = ["B011"]
+
+[format]
+quote-style = "double"
+indent-style = "space"

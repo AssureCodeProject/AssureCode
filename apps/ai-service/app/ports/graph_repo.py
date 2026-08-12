@@ -8,9 +8,10 @@ abstracts where that data comes from:
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from contextlib import closing
 from dataclasses import dataclass, replace
-from typing import Any, Protocol, Sequence, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -339,10 +340,9 @@ class PostgresGraphRepo:
         )
 
     def _fetch_all(self, sql: str, params: tuple = ()) -> list[tuple]:
-        with closing(self._connect()) as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, params)
-                return cur.fetchall()
+        with closing(self._connect()) as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchall()
 
     def all_freelancers(self) -> Sequence[FreelancerProfile]:
         try:

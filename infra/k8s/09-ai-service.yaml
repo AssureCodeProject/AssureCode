@@ -1,0 +1,125 @@
+# =============================================================================
+# AI Service — embeddings, matchmaking, RAG, test generation.
+#
+# ── Why the memory request is so much larger than the gateway's ─────────
+# This process loads a sentence-transformers model (all-MiniLM-L6-v2) into
+# memory, per replica, and Matchmaker caches profile embeddings lazily on
+# first query. Sizing it like a stateless Node service — the gateway asks for
+# 256Mi — gets it OOMKilled during model load. 1.5Gi is the request; the
+# limit leaves headroom for the embedding cache to fill.
+#
+# ── Why there is a startup probe but no /readyz ─────────────────────────
+# apps/ai-service/app/main.py exposes /healthz only. That endpoint answers as
+# soon as FastAPI is up, which is *before* the model finishes loading, so a
+# readiness probe against it would send traffic to a replica that cannot yet
+# serve an embedding. The startup probe is what actually holds traffic back:
+# until it passes, neither of the other probes runs and the pod is not added
+# to the Service's endpoints.
+#
+# This is a workaround for a missing endpoint, not a substitute for one. A
+# real /readyz would assert the model is loaded and the database is
+# reachable; until it exists, readiness here is process-level only.
+# =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ai-service
+  namespace: assurecode
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-service
+  namespace: assurecode
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8000
+      targetPort: 8000
+  selector:
+    app: ai-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-service
+  namespace: assurecode
+  labels:
+    app: ai-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ai-service
+  template:
+    metadata:
+      labels:
+        app: ai-service
+    spec:
+      serviceAccountName: ai-service
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ai-service
+          image: assurecode/ai-service:latest
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: assurecode-config
+            - secretRef:
+                name: assurecode-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            # Not read-only: sentence-transformers writes the downloaded
+            # model into a HuggingFace cache directory at import time. The
+            # cache is mounted as an emptyDir below instead.
+            readOnlyRootFilesystem: false
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1536Mi"
+            limits:
+              cpu: "2000m"
+              memory: "3Gi"
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            # Up to 5 minutes: a cold replica may be downloading the model
+            # rather than reading it from the image layer.
+            failureThreshold: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            periodSeconds: 20
+          volumeMounts:
+            - name: model-cache
+              mountPath: /home/appuser/.cache
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # Per-pod, not shared: two replicas each hold their own copy. Baking
+        # the model into the image at build time would remove the cold-start
+        # download entirely and is the better long-term answer.
+        - name: model-cache
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
+      terminationGracePeriodSeconds: 60

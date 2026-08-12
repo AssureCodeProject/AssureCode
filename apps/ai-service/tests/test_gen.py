@@ -41,7 +41,7 @@ def test_generate_tests_artifact_is_downloadable() -> None:
         },
     )
     assert gen.status_code == 200
-    s3_key = gen.json()["s3_key"]
+    gen.json()["s3_key"]
 
     # Download from the in-memory store via a separate route or directly.
     # The fake store URL is "in-memory://key" — we can't fetch that via HTTP.

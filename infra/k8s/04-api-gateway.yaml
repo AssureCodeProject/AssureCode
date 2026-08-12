@@ -1,3 +1,13 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: api-gateway
+  namespace: assurecode
+# The gateway never calls the Kubernetes API. Giving it a dedicated identity
+# with no RoleBinding, and no mounted token, means a compromised request
+# handler cannot reach the control plane using the namespace default.
+automountServiceAccountToken: false
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -6,6 +16,8 @@ metadata:
   labels:
     app: api-gateway
 spec:
+  # Matches the HPA's minReplicas in 13-autoscaling.yaml. If you change one,
+  # change both — otherwise the first HPA reconcile silently overrides this.
   replicas: 3
   selector:
     matchLabels:
@@ -15,9 +27,24 @@ spec:
       labels:
         app: api-gateway
     spec:
+      serviceAccountName: api-gateway
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: api-gateway
           image: assurecode/api-gateway:latest
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            # PDF extraction writes scratch files, so the root filesystem
+            # cannot be read-only without a writable /tmp mount; left false
+            # rather than adding a volume the request path may not need.
+            readOnlyRootFilesystem: false
           ports:
             - containerPort: 4000
           envFrom:

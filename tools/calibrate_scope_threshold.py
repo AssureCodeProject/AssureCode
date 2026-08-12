@@ -28,6 +28,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import itertools
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -141,7 +142,7 @@ def main() -> int:
     # Sweep every midpoint between adjacent observed scores and keep the
     # threshold with the best accuracy, breaking ties toward the largest margin.
     candidates = sorted({s.best for s in scored})
-    midpoints = [(a + b) / 2 for a, b in zip(candidates, candidates[1:])]
+    midpoints = [(a + b) / 2 for a, b in itertools.pairwise(candidates)]
     best_threshold, best_acc, best_margin = 0.0, -1.0, 0.0
 
     for t in midpoints:

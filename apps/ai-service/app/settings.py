@@ -70,6 +70,24 @@ class Settings(BaseSettings):
     s3_fallback_dir: str = Field(default="./storage_fallback", alias="S3_FALLBACK_DIR")
     s3_max_retries: int = Field(default=3, alias="S3_MAX_RETRIES")
 
+    # Whether an unreachable S3 may fall back to local disk.
+    #
+    # Left unset, this resolves to False in production and True everywhere
+    # else (see `allow_local_artifact_fallback`). Across replicas the fallback
+    # writes an artifact to one pod's ephemeral filesystem and reports success,
+    # so a later read on a different pod finds nothing and no error is ever
+    # raised. Set explicitly to True only if you have a shared volume mounted
+    # at S3_FALLBACK_DIR and genuinely want that behaviour.
+    allow_local_artifact_fallback_override: bool | None = Field(
+        default=None, alias="ALLOW_LOCAL_ARTIFACT_FALLBACK"
+    )
+
+    @property
+    def allow_local_artifact_fallback(self) -> bool:
+        if self.allow_local_artifact_fallback_override is not None:
+            return self.allow_local_artifact_fallback_override
+        return self.environment != "production"
+
     # ── Matchmaker tuning ─────────────────────────────────────
     # Score = w_skill * skill_overlap + w_trust * trust + w_history * history
     match_weight_skill: float = Field(default=0.5, alias="MATCH_WEIGHT_SKILL")

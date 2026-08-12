@@ -15,11 +15,22 @@ spec:
       labels:
         app: frontend-web
     spec:
+      securityContext:
+        # uid 101 is the nginx user in nginxinc/nginx-unprivileged, which is
+        # why the container listens on 8080 rather than the privileged 80.
+        runAsNonRoot: true
+        runAsUser: 101
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: frontend-web
           image: assurecode/frontend-web:latest
           ports:
-            - containerPort: 80
+            - containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           resources:
             requests:
               cpu: "100m"
@@ -27,6 +38,21 @@ spec:
             limits:
               cpu: "500m"
               memory: "512Mi"
+          # /healthz is served by nginx itself (infra/docker/nginx.conf) and
+          # does not read from disk, so it reports whether the server is up
+          # rather than whether the SPA bundle happens to be present.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
 ---
 apiVersion: v1
 kind: Service
@@ -36,8 +62,9 @@ metadata:
 spec:
   type: ClusterIP
   ports:
+    # The Service still answers on 80; only the container port moved.
     - port: 80
-      targetPort: 80
+      targetPort: 8080
   selector:
     app: frontend-web
 ---
@@ -59,6 +86,30 @@ spec:
       http:
         paths:
           - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 4000
+          # /auth was missing. The gateway serves /auth/login, /auth/logout
+          # and /auth/me (server.ts:301-390) and the SPA calls all three via
+          # AuthContext — without this rule they fell through to the `/` rule
+          # and were answered by nginx with index.html, so signing in was
+          # impossible through the Ingress. Vite's dev proxy has always
+          # forwarded /auth, which is why this only broke in the cluster.
+          - path: /auth
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 4000
+          # Stripe posts to /webhooks/stripe on the gateway. Same failure
+          # mode: routed to the SPA, so signature verification never ran.
+          # (GitHub's webhook goes to the separate webhook-ingest Service,
+          # which needs its own host or path rule once a domain exists.)
+          - path: /webhooks
             pathType: Prefix
             backend:
               service:

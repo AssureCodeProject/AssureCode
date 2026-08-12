@@ -1,0 +1,97 @@
+# =============================================================================
+# Redis 7 — the event bus transport.
+#
+# Not a cache here. RedisStreamsBus (packages/event-bus/src/index.ts) uses
+# Redis Streams with consumer groups for every inter-service event, and the
+# gateway writes through a transactional outbox (V005__outbox.sql). Losing
+# this data loses in-flight settlement and audit events, so `appendonly yes`
+# below is deliberate — the default RDB snapshotting would drop the tail.
+#
+# ── Prefer a managed instance ────────────────────────────────────────────
+# Single replica, no Sentinel, no cluster mode. Fine for a demo or review
+# environment; for production point REDIS_URL at ElastiCache / Memorystore /
+# Upstash and delete this file.
+#
+# Note there is no AUTH here: the NetworkPolicy in 15-network-policies.yaml
+# is what restricts access, since the base compose setup has no password
+# either and REDIS_URL carries none. If you add `requirepass`, put the URL
+# with credentials in the secrets overlay — nothing else needs changing.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: assurecode
+  labels:
+    app: redis
+spec:
+  clusterIP: None
+  ports:
+    - port: 6379
+      targetPort: 6379
+      name: redis
+  selector:
+    app: redis
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: assurecode
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      securityContext:
+        fsGroup: 999
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          # Append-only so a restart does not lose events acknowledged but not
+          # yet snapshotted. everysec trades at most one second of writes for
+          # throughput, which is the right side of that trade for a bus whose
+          # producers are idempotent.
+          args:
+            - redis-server
+            - --appendonly
+            - "yes"
+            - --appendfsync
+            - everysec
+          ports:
+            - containerPort: 6379
+              name: redis
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 8Gi

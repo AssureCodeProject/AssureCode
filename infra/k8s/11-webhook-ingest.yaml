@@ -1,0 +1,97 @@
+# =============================================================================
+# Webhook Ingest — receives GitHub push events, publishes to the event bus.
+#
+# The only workload here that a third party calls directly, which makes two
+# things load-bearing:
+#
+#   1. It refuses to start in production without a real GITHUB_WEBHOOK_SECRET
+#      (src/server.ts). Until the secrets overlay is applied over the
+#      REPLACE_ME placeholders, this pod will CrashLoopBackOff — by design.
+#      A running webhook receiver with a publicly-known HMAC secret is worse
+#      than one that is down.
+#
+#   2. Reaching it from GitHub needs an Ingress with a real hostname and TLS.
+#      That is deliberately not in this file: it depends on DNS and a
+#      certificate issuer this repository cannot provision. The Service below
+#      is cluster-internal; add the Ingress alongside 06-frontend-ingress.yaml
+#      when a domain exists.
+# =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: webhook-ingest
+  namespace: assurecode
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: webhook-ingest
+  namespace: assurecode
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9000
+      targetPort: 9000
+  selector:
+    app: webhook-ingest
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webhook-ingest
+  namespace: assurecode
+  labels:
+    app: webhook-ingest
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: webhook-ingest
+  template:
+    metadata:
+      labels:
+        app: webhook-ingest
+    spec:
+      serviceAccountName: webhook-ingest
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: webhook-ingest
+          image: assurecode/webhook-ingest:latest
+          ports:
+            - containerPort: 9000
+          envFrom:
+            - configMapRef:
+                name: assurecode-config
+            - secretRef:
+                name: assurecode-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+      terminationGracePeriodSeconds: 30

@@ -3,7 +3,7 @@ initTracing('webhook-ingest');
 
 import crypto from 'node:crypto';
 import Fastify from 'fastify';
-import { loadConfig, runWithCorrelationId } from '@assurecode/config';
+import { loadConfig, runWithCorrelationId, assertProductionSecrets } from '@assurecode/config';
 import { createEventBus, eventBusOptionsFromConfig } from '@assurecode/event-bus';
 import { EVENT_TOPICS } from '@assurecode/shared';
 
@@ -12,8 +12,16 @@ const fastify = Fastify({
   logger: { level: config.LOG_LEVEL || 'info' },
 });
 
+// The signature check below is only as good as this secret. It used to fall
+// back to a literal published in this repository, so a production deploy that
+// forgot the env var would accept any push event an attacker cared to sign —
+// and would look completely healthy doing it. Refuse to boot instead.
+assertProductionSecrets(config as unknown as Record<string, string | undefined>, [
+  'GITHUB_WEBHOOK_SECRET',
+], { onError: (message) => fastify.log.error(message) });
+
 const eventBus = createEventBus(eventBusOptionsFromConfig(config));
-const GITHUB_WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET || 'assurecode_github_secret';
+const GITHUB_WEBHOOK_SECRET = config.GITHUB_WEBHOOK_SECRET;
 
 // Correlation ID hook
 fastify.addHook('onRequest', (request, reply, done) => {
@@ -101,7 +109,13 @@ fastify.post('/webhooks/github', async (request, reply) => {
 
 async function start(): Promise<void> {
   try {
-    const port = Number(process.env.PORT) || 3002;
+    // WEBHOOK_INGEST_PORT is what the config schema, .env.example and the
+    // Kubernetes ConfigMap all name — but this read `process.env.PORT` and
+    // otherwise fell back to 3002, a port nothing else in the repo mentions.
+    // Setting the documented variable had no effect, so the service listened
+    // somewhere its own manifests did not point at. PORT still wins when
+    // present, since some platforms inject it and nothing else.
+    const port = Number(process.env.PORT) || config.WEBHOOK_INGEST_PORT;
     await fastify.listen({ port, host: '0.0.0.0' });
     console.log(`[webhook-ingest] Listening on port ${port}`);
   } catch (err) {

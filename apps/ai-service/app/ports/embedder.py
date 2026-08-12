@@ -10,7 +10,8 @@ factory (app.deps) constructs based on EMBED_PROVIDER.
 from __future__ import annotations
 
 import hashlib
-from typing import Protocol, Sequence, runtime_checkable
+from collections.abc import Sequence
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 

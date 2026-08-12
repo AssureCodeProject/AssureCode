@@ -13,7 +13,7 @@ os.environ["EMBED_PROVIDER"] = "fake"
 os.environ["NODE_ENV"] = "test"
 os.environ["LLM_PROVIDER"] = "fake"
 
-import pytest  # noqa: E402
+import pytest
 
 
 @pytest.fixture(autouse=True)

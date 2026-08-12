@@ -95,6 +95,11 @@ export const AppConfigSchema = z.object({
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
 
+  // GitHub webhook HMAC secret. webhook-ingest read this straight off
+  // process.env with a hardcoded fallback; schema-declaring it means the
+  // default is in one place and assertProductionSecrets can see it.
+  GITHUB_WEBHOOK_SECRET: z.string().default('assurecode_github_secret'),
+
   // Auth — JWT signing secret and the shared token machine callers (CI
   // harnesses, benchmark/verify scripts) present instead of a user login.
   // Defaults are placeholders only; the gateway fails fast on these in
@@ -155,3 +160,12 @@ export * from '@assurecode/telemetry';
 // ── Database connection (TLS-verified) ─────────────────────────
 export { buildDbConfig } from './db.js';
 export type { DbConnectionConfig, DbSslConfig } from './db.js';
+
+// ── Production secret validation ───────────────────────────────
+export {
+  PLACEHOLDER_SECRET_VALUES,
+  isPlaceholderSecret,
+  findInsecureSecrets,
+  assertProductionSecrets,
+} from './secrets.js';
+export type { AssertSecretsOptions } from './secrets.js';

@@ -1,0 +1,84 @@
+# =============================================================================
+# Settlement Worker — the oracle that releases escrow.
+#
+# Event consumer, no HTTP surface, so there is no Service and the probe is an
+# exec rather than an httpGet.
+#
+# ── Why replicas: 1 ──────────────────────────────────────────────────────
+# Correctness does not depend on it: the `settlements` table has a UNIQUE
+# constraint on contract_id and the insert is the single-fire guard
+# (V004__settlements.sql, worker.ts:203), so a second replica cannot pay a
+# contract twice. One replica is here because settlement volume is low and a
+# single consumer makes the ordering trivial to reason about — raise it if
+# throughput ever needs it, the guard already covers the race.
+#
+# ── Why the long grace period ────────────────────────────────────────────
+# A settlement in flight is inside a transaction that updates `settlements`,
+# writes the ledger INVOICE entry, and updates the freelancer's trust score
+# together (worker.ts:225-271). SIGTERM during that window must let the
+# transaction finish or roll back cleanly; 180s is generous on purpose,
+# because the failure mode of cutting it short is a contract whose money
+# state and ledger state disagree.
+# =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: settlement-worker
+  namespace: assurecode
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: settlement-worker
+  namespace: assurecode
+  labels:
+    app: settlement-worker
+spec:
+  replicas: 1
+  # Never run two settlement workers at once during a rollout — the guard
+  # makes double-payment impossible, but a clean handover keeps the ledger
+  # history easy to read.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: settlement-worker
+  template:
+    metadata:
+      labels:
+        app: settlement-worker
+    spec:
+      serviceAccountName: settlement-worker
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: settlement-worker
+          image: assurecode/settlement-worker:latest
+          envFrom:
+            - configMapRef:
+                name: assurecode-config
+            - secretRef:
+                name: assurecode-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          livenessProbe:
+            exec:
+              command: ["node", "-e", "process.exit(0)"]
+            initialDelaySeconds: 20
+            periodSeconds: 30
+      terminationGracePeriodSeconds: 180

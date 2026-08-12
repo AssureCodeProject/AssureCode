@@ -62,7 +62,7 @@ class LocalFileArtifactStore:
         file_path = os.path.join(self._fallback_dir, key)
         if not os.path.exists(file_path):
             return None
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             return f.read()
 
     def exists(self, key: str) -> bool:
@@ -71,11 +71,30 @@ class LocalFileArtifactStore:
         return os.path.exists(file_path)
 
 
+class ArtifactStoreUnavailable(RuntimeError):
+    """S3 could not be reached and local fallback is not permitted."""
+
+
 class S3ArtifactStore:
     """Live adapter — uploads to S3 via boto3.
 
-    Connects lazily; falls back to LocalFileArtifactStore on missing boto3
-    or S3 unreachable after exponential backoff retries.
+    Connects lazily. On missing boto3 or an unreachable S3 after exponential
+    backoff, behaviour depends on ``allow_local_fallback``.
+
+    ── Why the fallback is not unconditional ────────────────────────────
+    Every failure path here used to silently divert to LocalFileArtifactStore.
+    On one developer machine that is a convenience. Across a Deployment with
+    two or more replicas it is data loss with no error attached: the artifact
+    lands on whichever pod happened to serve the request, on a filesystem that
+    is wiped when the pod restarts, and a later read routed to a different
+    replica reports the object simply does not exist. Nothing logs a problem,
+    because from the store's point of view nothing failed.
+
+    So the fallback is now opt-in. Development keeps it (that is what makes
+    the stack runnable without LocalStack); production must set
+    ALLOW_LOCAL_ARTIFACT_FALLBACK explicitly to get the old behaviour, and
+    otherwise gets a loud ArtifactStoreUnavailable instead of a quiet
+    write-to-nowhere.
     """
 
     def __init__(
@@ -87,6 +106,9 @@ class S3ArtifactStore:
         secret_key: str = "test",
         fallback_dir: str = "./storage_fallback",
         max_retries: int = 3,
+        allow_local_fallback: bool = True,
+        connect_timeout: float = 5.0,
+        read_timeout: float = 15.0,
     ) -> None:
         self._endpoint_url = endpoint_url
         self._bucket = bucket
@@ -94,21 +116,45 @@ class S3ArtifactStore:
         self._access_key = access_key
         self._secret_key = secret_key
         self._max_retries = max_retries
+        self._allow_local_fallback = allow_local_fallback
+        self._connect_timeout = connect_timeout
+        self._read_timeout = read_timeout
         self._client = None
         self._fallback = LocalFileArtifactStore(fallback_dir)
+
+    def _refuse_fallback(self, operation: str, key: str) -> ArtifactStoreUnavailable:
+        return ArtifactStoreUnavailable(
+            f"S3 {operation} failed for '{key}' against bucket "
+            f"'{self._bucket}' at {self._endpoint_url}, and local disk fallback "
+            "is disabled. Writing to a pod's ephemeral filesystem would lose the "
+            "artifact silently. Fix the S3 configuration, or set "
+            "ALLOW_LOCAL_ARTIFACT_FALLBACK=true to accept that risk."
+        )
 
     def _ensure_client(self) -> bool:
         if self._client is not None:
             return True
         try:  # pragma: no cover — boto3 + LocalStack only
             import boto3
+            from botocore.config import Config
 
+            # Explicit timeouts. boto3 defaults to a 60s connect and 60s read
+            # with its own internal retries on top, so an S3 endpoint that
+            # black-holes packets would stall a request-handling thread for
+            # minutes while the caller waits. This store already implements
+            # its own bounded retry loop in upload(), so botocore's is turned
+            # down to one attempt rather than compounding with it.
             self._client = boto3.client(
                 "s3",
                 endpoint_url=self._endpoint_url,
                 region_name=self._region,
                 aws_access_key_id=self._access_key,
                 aws_secret_access_key=self._secret_key,
+                config=Config(
+                    connect_timeout=self._connect_timeout,
+                    read_timeout=self._read_timeout,
+                    retries={"max_attempts": 1, "mode": "standard"},
+                ),
             )
             self._client.head_bucket(Bucket=self._bucket)
             return True
@@ -120,6 +166,8 @@ class S3ArtifactStore:
         import time
 
         if not self._ensure_client():
+            if not self._allow_local_fallback:
+                raise self._refuse_fallback("connect", key)
             return self._fallback.upload(key, body, content_type)
 
         base_delay = 0.1
@@ -134,19 +182,33 @@ class S3ArtifactStore:
                     break
                 time.sleep(base_delay * (2 ** (attempt - 1)))
 
+        # Upload is the operation where a silent fallback actually destroys
+        # data: the caller is told the artifact was stored and gets a URL back.
+        if not self._allow_local_fallback:
+            raise self._refuse_fallback("upload", key)
         return self._fallback.upload(key, body, content_type)
 
     def download(self, key: str) -> str | None:
         if not self._ensure_client():
+            if not self._allow_local_fallback:
+                raise self._refuse_fallback("connect", key)
             return self._fallback.download(key)
         try:  # pragma: no cover — live S3 only
             resp = self._client.get_object(Bucket=self._bucket, Key=key)
             return resp["Body"].read().decode("utf-8")
         except Exception:
+            if not self._allow_local_fallback:
+                # Distinct from "the object does not exist", which is a
+                # legitimate None. Reading through to local disk would answer
+                # None for an object that is present in S3 but temporarily
+                # unreachable, and the caller cannot tell those apart.
+                raise self._refuse_fallback("download", key) from None
             return self._fallback.download(key)
 
     def exists(self, key: str) -> bool:
         if not self._ensure_client():
+            if not self._allow_local_fallback:
+                raise self._refuse_fallback("connect", key)
             return self._fallback.exists(key)
         try:  # pragma: no cover — live S3 only
             self._client.head_object(Bucket=self._bucket, Key=key)

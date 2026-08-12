@@ -31,9 +31,40 @@ const ORDER = [
 // is involved and argument escaping stays the platform's problem, not ours.
 const tsc = path.join(repoRoot, 'node_modules', 'typescript', 'bin', 'tsc');
 
-for (const workspace of ORDER) {
+/**
+ * Which workspaces to build.
+ *
+ * A service container image copies only the workspaces it needs — the gateway
+ * image has no apps/ci-worker, the webhook-ingest image has no
+ * apps/api-gateway. Building the full hardcoded ORDER inside one of those
+ * images fails on the first absent tsconfig with TS5058, so every service
+ * Dockerfile that ran `npm run build` was unbuildable.
+ *
+ * Absent workspaces are therefore skipped rather than fatal. In a full
+ * checkout nothing is absent and the behaviour is unchanged; the skip only
+ * engages where the directory genuinely is not there. Pass explicit
+ * workspace paths as arguments to narrow the build further.
+ */
+const requested = process.argv.slice(2);
+const selected = requested.length > 0 ? ORDER.filter((w) => requested.includes(w)) : ORDER;
+
+for (const name of requested) {
+  if (!ORDER.includes(name)) {
+    console.error(`unknown workspace: ${name}\nknown: ${ORDER.join(', ')}`);
+    process.exit(1);
+  }
+}
+
+let built = 0;
+for (const workspace of selected) {
+  const tsconfig = path.join(repoRoot, workspace, 'tsconfig.json');
+  if (!existsSync(tsconfig)) {
+    console.log(`skipping ${workspace} ... not present in this checkout`);
+    continue;
+  }
+
   process.stdout.write(`building ${workspace} ... `);
-  const result = spawnSync(process.execPath, [tsc, '-p', path.join(repoRoot, workspace, 'tsconfig.json')], {
+  const result = spawnSync(process.execPath, [tsc, '-p', tsconfig], {
     cwd: repoRoot,
     encoding: 'utf8',
   });
@@ -43,6 +74,7 @@ for (const workspace of ORDER) {
     process.exit(1);
   }
   console.log('ok');
+  built += 1;
 }
 
 /**
@@ -65,16 +97,26 @@ const ASSETS = [
   ['apps/ci-worker/src/sandbox/test-harness.cjs', 'apps/ci-worker/dist/sandbox/test-harness.cjs'],
 ];
 
-for (const [from, to] of ASSETS) {
-  const src = path.join(repoRoot, from);
-  const dest = path.join(repoRoot, to);
-  if (!existsSync(src)) {
-    console.error(`missing build asset: ${from}`);
-    process.exit(1);
+// Only meaningful when ci-worker is part of this checkout and was built. An
+// image that does not ship the sandbox has no guard to copy — but if the
+// workspace IS here, a missing asset stays fatal, because the alternative is
+// a sandbox running untrusted code without its egress guard.
+const ciWorkerPresent =
+  selected.includes('apps/ci-worker') &&
+  existsSync(path.join(repoRoot, 'apps/ci-worker', 'tsconfig.json'));
+
+if (ciWorkerPresent) {
+  for (const [from, to] of ASSETS) {
+    const src = path.join(repoRoot, from);
+    const dest = path.join(repoRoot, to);
+    if (!existsSync(src)) {
+      console.error(`missing build asset: ${from}`);
+      process.exit(1);
+    }
+    mkdirSync(path.dirname(dest), { recursive: true });
+    copyFileSync(src, dest);
+    console.log(`copied ${from} -> ${to}`);
   }
-  mkdirSync(path.dirname(dest), { recursive: true });
-  copyFileSync(src, dest);
-  console.log(`copied ${from} -> ${to}`);
 }
 
-console.log(`\nBuilt ${ORDER.length} workspaces.`);
+console.log(`\nBuilt ${built} workspace${built === 1 ? '' : 's'}.`);

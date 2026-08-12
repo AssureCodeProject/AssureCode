@@ -1,0 +1,144 @@
+# =============================================================================
+# Horizontal autoscaling and disruption budgets.
+#
+# ── What is scaled, and what is not ──────────────────────────────────────
+# Only the two stateless request-serving workloads scale on load: the gateway
+# and ai-service. The rest are deliberately excluded.
+#
+#   • settlement-worker — pinned to one replica by design
+#     (08-settlement-worker.yaml). Scaling it would not be unsafe, since the
+#     UNIQUE constraint on settlements.contract_id is the real guard, but
+#     there is no throughput reason to and one consumer keeps event ordering
+#     trivial to reason about.
+#
+#   • ci-worker — its cost is a sandboxed test run, which is bursty and
+#     CPU-saturating by nature. CPU-target autoscaling reacts to exactly the
+#     signal a legitimate audit produces, so it would scale on every job.
+#     Queue depth is the right metric here and needs an external adapter
+#     (KEDA against the Redis stream); until then, fixed replicas.
+#
+# ── Why ai-service scales on CPU rather than requests ────────────────────
+# Embedding is CPU-bound and the model is already resident, so CPU tracks
+# real work closely. The window is long because a cold replica spends up to
+# five minutes loading the model before it serves anything — scaling out in
+# response to a brief spike would add capacity well after the spike ended.
+# =============================================================================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-gateway
+  namespace: assurecode
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api-gateway
+  minReplicas: 3
+  maxReplicas: 12
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      # Slow to give back capacity: the gateway fronts WebSocket streams
+      # (/chat/stream, /audits/stream) and every scale-down drops connections.
+      stabilizationWindowSeconds: 300
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ai-service
+  namespace: assurecode
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ai-service
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 75
+  behavior:
+    scaleUp:
+      # Add capacity in small steps — each new replica costs a multi-minute
+      # model load, so overshooting is expensive and slow to unwind.
+      stabilizationWindowSeconds: 120
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 120
+    scaleDown:
+      stabilizationWindowSeconds: 600
+---
+# ── Disruption budgets ───────────────────────────────────────────────────
+# These bind voluntary disruption only — node drains, cluster upgrades. They
+# do not protect against crashes, and they are what stops an upgrade from
+# taking every replica of a service down at once.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api-gateway
+  namespace: assurecode
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: api-gateway
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ai-service
+  namespace: assurecode
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: ai-service
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: scope-guard
+  namespace: assurecode
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: scope-guard
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: webhook-ingest
+  namespace: assurecode
+spec:
+  # GitHub retries a failed delivery, but a webhook receiver that is entirely
+  # absent during a node drain drops events that nothing replays.
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: webhook-ingest
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ci-worker
+  namespace: assurecode
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: ci-worker
+# No PDB for settlement-worker: at replicas: 1, minAvailable: 1 would block
+# node drains indefinitely. Its safety comes from the 180s grace period and
+# the single-fire database guard, not from staying up during a drain.

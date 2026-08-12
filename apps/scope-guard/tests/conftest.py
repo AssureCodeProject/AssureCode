@@ -17,7 +17,7 @@ os.environ["EMBED_PROVIDER"] = "fake"
 os.environ["NODE_ENV"] = "test"
 os.environ.pop("DATABASE_URL", None)
 
-import pytest  # noqa: E402
+import pytest
 
 
 @pytest.fixture(autouse=True)

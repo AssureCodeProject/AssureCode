@@ -1,0 +1,47 @@
+# =============================================================================
+# Production Dockerfile — Settlement Worker (Node.js)
+#
+# Event consumer, not an HTTP service: it subscribes to the Redis Streams bus
+# and evaluates the settlement oracle. No EXPOSE, and no HTTP health probe —
+# the Deployment uses an exec probe instead (see infra/k8s/08-settlement-worker.yaml).
+# =============================================================================
+
+FROM node:20-alpine AS builder
+WORKDIR /app
+
+COPY package*.json ./
+COPY packages/shared/package*.json ./packages/shared/
+COPY packages/config/package*.json ./packages/config/
+COPY packages/telemetry/package*.json ./packages/telemetry/
+COPY packages/event-bus/package*.json ./packages/event-bus/
+COPY packages/ledger-client/package*.json ./packages/ledger-client/
+COPY packages/oracle/package*.json ./packages/oracle/
+COPY packages/stripe-adapter/package*.json ./packages/stripe-adapter/
+COPY apps/settlement-worker/package*.json ./apps/settlement-worker/
+
+RUN npm ci
+
+COPY packages/ ./packages/
+COPY apps/settlement-worker/ ./apps/settlement-worker/
+COPY tsconfig.base.json ./
+COPY scripts/ ./scripts/
+
+RUN npm run build
+
+RUN npm prune --omit=dev
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/packages ./packages
+COPY --from=builder /app/apps/settlement-worker ./apps/settlement-worker
+
+USER node
+
+# This process moves money. A SIGTERM mid-settlement must not leave a
+# half-written settlements row, so the worker gets a generous grace period in
+# the Deployment; nothing here should shorten it.
+CMD ["node", "apps/settlement-worker/dist/worker.js"]

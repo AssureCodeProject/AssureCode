@@ -62,9 +62,9 @@ import numpy as np
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT / "apps" / "ai-service"))
 
-from app.ports.embedder import SentenceTransformerEmbedder  # noqa: E402
-from app.ports.graph_repo import FreelancerProfile, InMemoryGraphRepo  # noqa: E402
-from app.services.matchmaker import Matchmaker  # noqa: E402
+from app.ports.embedder import SentenceTransformerEmbedder
+from app.ports.graph_repo import FreelancerProfile, InMemoryGraphRepo
+from app.services.matchmaker import Matchmaker
 
 # The weights the service actually ships, from Matchmaker.__init__.
 PUBLISHED_WEIGHTS = (0.50, 0.35, 0.15)
@@ -237,7 +237,7 @@ def graph_with_embeddings(
     prof_vecs = embedder.embed_batch([profile_text(f) for f in profiles])
     graph = InMemoryGraphRepo()
     graph._freelancers = {
-        f.id: replace(f, embedding=tuple(v.tolist())) for f, v in zip(profiles, prof_vecs)
+        f.id: replace(f, embedding=tuple(v.tolist())) for f, v in zip(profiles, prof_vecs, strict=False)
     }
     return graph
 
@@ -491,7 +491,7 @@ def measure_latency(
 
 def weight_grid(step: float = 0.05) -> list[tuple[float, float, float]]:
     """All (w_skill, w_trust, w_history) on the simplex at the given step."""
-    n = int(round(1.0 / step))
+    n = round(1.0 / step)
     grid = []
     for a in range(n + 1):
         for b in range(n + 1 - a):
@@ -590,6 +590,8 @@ def _write_size_section(lines: list[str], n: str, s: dict, report: dict) -> None
     lines.append("")
     lines.append(f"## N = {n} freelancers")
     lines.append("")
+    # The en dash below is deliberate: this builds a numeric range in
+    # generated Markdown, where an en dash is the correct glyph, not a hyphen.
     lines.append(f"{min(s['relevant_per_domain'].values())}–"
                  f"{max(s['relevant_per_domain'].values())} relevant freelancers per "
                  f"query, so R@10 cannot exceed **{s['recall_at_10_ceiling']:.3f}**.")

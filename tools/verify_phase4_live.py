@@ -141,7 +141,7 @@ def main() -> int:
         onset = 25
         similarities: list[float] = []
 
-        for i in range(onset):
+        for _ in range(onset):
             # Comfortably in scope.
             sim = float(np.clip(rng.normal(0.72, 0.05), 0.0, 1.0))
             similarities.append(sim)
@@ -187,7 +187,7 @@ def main() -> int:
         )
         check(
             "they match the recorded similarities",
-            all(abs((1.0 - s) - r) < 1e-6 for s, r in zip(similarities, residuals)),
+            all(abs((1.0 - s) - r) < 1e-6 for s, r in zip(similarities, residuals, strict=False)),
         )
 
         detector = ConformalDriftDetector(

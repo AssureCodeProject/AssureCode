@@ -21,8 +21,13 @@ RUN npm ci
 COPY packages/ ./packages/
 COPY apps/api-gateway/ ./apps/api-gateway/
 COPY tsconfig.base.json ./
+# `npm run build` runs scripts/build-workspaces.mjs. This COPY was missing, so
+# the build died with MODULE_NOT_FOUND on its own build script and this image
+# had never been produced successfully.
+COPY scripts/ ./scripts/
 
-# Build packages and API gateway
+# Build packages and API gateway. The script skips workspaces absent from the
+# image (ci-worker, settlement-worker, webhook-ingest are not copied here).
 RUN npm run build
 
 FROM node:20-alpine AS runner

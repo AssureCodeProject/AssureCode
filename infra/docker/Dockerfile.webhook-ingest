@@ -1,0 +1,49 @@
+# =============================================================================
+# Production Dockerfile — Webhook Ingest (Node.js / Fastify)
+#
+# GitHub's HMAC-signed push events land here. The service refuses to start in
+# production without GITHUB_WEBHOOK_SECRET (see src/server.ts), so this image
+# will exit 1 rather than come up accepting forged events.
+# =============================================================================
+
+FROM node:20-alpine AS builder
+WORKDIR /app
+
+# Workspace manifests first, so `npm ci` caches independently of source edits.
+COPY package*.json ./
+COPY packages/shared/package*.json ./packages/shared/
+COPY packages/config/package*.json ./packages/config/
+COPY packages/telemetry/package*.json ./packages/telemetry/
+COPY packages/event-bus/package*.json ./packages/event-bus/
+COPY apps/webhook-ingest/package*.json ./apps/webhook-ingest/
+
+RUN npm ci
+
+COPY packages/ ./packages/
+COPY apps/webhook-ingest/ ./apps/webhook-ingest/
+COPY tsconfig.base.json ./
+COPY scripts/ ./scripts/
+
+RUN npm run build
+
+# Drop dev dependencies from the tree that gets copied forward. Without this
+# the runner ships typescript, tsx and vitest — build tooling with no business
+# being in a production image, and more surface for a scanner to flag.
+RUN npm prune --omit=dev
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/packages ./packages
+COPY --from=builder /app/apps/webhook-ingest ./apps/webhook-ingest
+
+# node:alpine ships an unprivileged `node` user (uid 1000). Running as root
+# inside the container buys nothing here and costs containment if the process
+# is ever compromised.
+USER node
+
+EXPOSE 9000
+CMD ["node", "apps/webhook-ingest/dist/server.js"]

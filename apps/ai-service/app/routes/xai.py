@@ -55,7 +55,7 @@ requires treating silence as evidence, which a per-message check cannot do.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -279,7 +279,7 @@ def calculate_xai_score(
         raise HTTPException(
             status_code=503,
             detail=f"Scope decision log unavailable, cannot compute the adherence term: {err}",
-        )
+        ) from err
 
     terms = _build_terms(req.telemetry, adherence)
     trust_score = round(sum(t.contribution for t in terms), 2)
@@ -316,6 +316,6 @@ def calculate_xai_score(
         trust_score_persisted=trust_score_persisted,
         terms=terms,
         justifications=justifications,
-        scored_at=datetime.now(timezone.utc).isoformat(),
+        scored_at=datetime.now(UTC).isoformat(),
         narrative=narrative,
     )

@@ -1,0 +1,108 @@
+# =============================================================================
+# PostgreSQL 16 + pgvector.
+#
+# ── Prefer a managed instance ────────────────────────────────────────────
+# This StatefulSet exists so the stack can be stood up end-to-end on a single
+# cluster with no external dependencies — a demo, a review environment, CI.
+# It is NOT a production database: one replica, no automated backup, no PITR,
+# no failover. The ledger it holds is the system's source of truth for money
+# movement, and `docs/FINAL_PROJECT_REPORT.md` lists backups as not done.
+#
+# For anything real, delete this file and point DATABASE_URL at RDS / Cloud
+# SQL / Neon. Nothing else in the manifests needs to change: every workload
+# reads the connection string from the `assurecode-secrets` Secret.
+#
+# pgvector is required, not optional — freelancer_profiles.profile_embedding
+# is a vector(384) column with an HNSW index (V007__vector_hnsw.sql).
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: assurecode
+  labels:
+    app: postgres
+spec:
+  # Headless: a StatefulSet member is addressed by its stable DNS name
+  # (postgres-0.postgres.assurecode.svc.cluster.local), not load-balanced.
+  clusterIP: None
+  ports:
+    - port: 5432
+      targetPort: 5432
+      name: postgres
+  selector:
+    app: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: assurecode
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      securityContext:
+        # The postgres image's own uid. Set at pod level so the mounted
+        # volume is group-owned correctly on first init.
+        fsGroup: 999
+      containers:
+        - name: postgres
+          image: pgvector/pgvector:pg16
+          ports:
+            - containerPort: 5432
+              name: postgres
+          env:
+            - name: POSTGRES_USER
+              value: assurecode
+            - name: POSTGRES_DB
+              value: assurecode
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: assurecode-secrets
+                  key: POSTGRES_PASSWORD
+                  # The base Secret ships REPLACE_ME; a real overlay supplies
+                  # this. Optional so `kubectl apply -f infra/k8s/` on a bare
+                  # cluster does not block pod creation on a key the operator
+                  # has not provided yet.
+                  optional: true
+            # Postgres refuses to initialise a data directory that already
+            # contains lost+found, which is what a fresh PVC mount looks like.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "assurecode", "-d", "assurecode"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "assurecode", "-d", "assurecode"]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 20Gi

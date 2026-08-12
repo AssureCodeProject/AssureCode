@@ -102,7 +102,7 @@ def generate_tests(
             status_code=503,
             detail=err.message,
             headers={"Retry-After": str(err.retry_after)},
-        )
+        ) from err
 
     # Store the code, not the model's presentation of it. See strip_code_fences.
     test_code = strip_code_fences(raw)

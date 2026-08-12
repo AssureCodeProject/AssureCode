@@ -136,7 +136,7 @@ def test_gradual_drift_alarms_after_onset() -> None:
     det = make_detector(rng)
 
     onset = 40
-    for i in range(onset):
+    for _i in range(onset):
         det.observe_residual(float(rng.beta(2.0, 8.0)))
     assert det.state.alarmed is False, "alarmed before drift began"
 

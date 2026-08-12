@@ -1,0 +1,111 @@
+# =============================================================================
+# CI Worker — executes freelancer-submitted code.
+#
+# This is the most security-sensitive workload in the system, so the pod spec
+# below is doing real work rather than boilerplate.
+#
+# ── Sandbox backend ──────────────────────────────────────────────────────
+# SANDBOX_RUNNER is pinned to `node` rather than left to the auto-detect in
+# apps/ci-worker/src/sandbox/index.ts:53. DockerSandbox is the stronger
+# boundary (--network=none, memory and CPU caps) but it shells out to the
+# Docker CLI, which in-cluster means mounting the host's Docker socket —
+# handing root-equivalent access on the node to the exact code being
+# sandboxed. That is not a trade worth making here.
+#
+# Pinned explicitly, not left to fall through, for two reasons: an operator
+# reading this manifest can see which isolation level is in force without
+# inferring it from what happens to be absent, and selectSandboxRunner()
+# treats an unavailable pinned runner as an error instead of a silent
+# downgrade. If Node in the image were ever older than 22.15 this pod would
+# fail loudly rather than quietly run with weaker isolation.
+#
+# NodePermissionSandbox is genuinely weaker than a container boundary: it is
+# process-level isolation using Node's permission model plus module hooks to
+# block network egress. Every audit result records which backend produced it
+# (`runner`), so a stored verdict always carries its isolation strength.
+# Moving to Sysbox or gVisor and flipping this to `docker` is the upgrade
+# path; see infra/docker/Dockerfile.ci-worker.
+# =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ci-worker
+  namespace: assurecode
+# No RoleBinding: this workload never talks to the Kubernetes API. Giving it
+# its own identity with nothing attached means the default ServiceAccount's
+# permissions are not inherited by the one pod running untrusted input.
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ci-worker
+  namespace: assurecode
+  labels:
+    app: ci-worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ci-worker
+  template:
+    metadata:
+      labels:
+        app: ci-worker
+    spec:
+      serviceAccountName: ci-worker
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ci-worker
+          image: assurecode/ci-worker:latest
+          env:
+            - name: SANDBOX_RUNNER
+              value: "node"
+          envFrom:
+            - configMapRef:
+                name: assurecode-config
+            - secretRef:
+                name: assurecode-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              # A submitted test suite can be an accidental — or deliberate —
+              # infinite loop. The limit is the backstop for the per-run
+              # timeout the sandbox already enforces.
+              cpu: "2000m"
+              memory: "2Gi"
+          # No HTTP server, so the probe asks the runtime whether the process
+          # is still responsive rather than hitting an endpoint.
+          livenessProbe:
+            exec:
+              command: ["node", "-e", "process.exit(0)"]
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          volumeMounts:
+            # readOnlyRootFilesystem is on, but both sandbox backends mkdtemp
+            # under os.tmpdir() (workspace-builder.ts:258). This is the only
+            # writable path the process gets, it is memory-backed, and it is
+            # wiped when the pod dies — so a run cannot leave anything behind
+            # for the next one to find.
+            - name: sandbox-scratch
+              mountPath: /tmp
+      volumes:
+        - name: sandbox-scratch
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi
+      # A run in flight is holding a workspace and a consumer-group entry.
+      # Give it room to finish rather than orphaning the message.
+      terminationGracePeriodSeconds: 120

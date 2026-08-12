@@ -88,8 +88,8 @@ detection is not new and this module does not pretend otherwise.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Sequence
 
 import numpy as np
 

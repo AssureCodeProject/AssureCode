@@ -50,6 +50,11 @@ pnpm-debug.log*
 *.env
 !.env.example
 
+# Locally-filled Kubernetes Secret overrides. The tracked base manifest holds
+# only REPLACE_ME placeholders; real values go in a .local.yaml applied on top
+# (see infra/k8s/overlays/local/01-secrets.example.yaml).
+infra/k8s/**/*.local.yaml
+
 # ── Editor / OS ────────────────────────────────────────────────
 .vscode/
 .idea/

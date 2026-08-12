@@ -1,0 +1,72 @@
+# =============================================================================
+# Production Dockerfile — CI Worker (Node.js)
+#
+# This is the service that executes freelancer-submitted code, so the base
+# image and the sandbox backend are security decisions, not packaging ones.
+#
+# ── Why node:22 and not node:20 like the other services ──────────────────
+# NodePermissionSandbox requires `module.registerHooks()`, which landed in
+# Node 22.15 — see apps/ci-worker/src/sandbox/node-permission-sandbox.ts:52.
+# Below that version `isAvailable()` returns false, and selectSandboxRunner()
+# with SANDBOX_RUNNER=node throws rather than silently downgrade isolation.
+# On node:20 this image would refuse to run any audit at all.
+#
+# ── Which sandbox this image uses in Kubernetes ──────────────────────────
+# DockerSandbox is the stronger boundary (`--network=none`, memory and CPU
+# caps) but it shells out to the Docker CLI, which in-cluster means mounting
+# the host's Docker socket — handing root-equivalent access on the node to
+# the very code we are sandboxing. That trade is not worth making for a
+# service whose entire purpose is running untrusted input.
+#
+# So the Deployment sets SANDBOX_RUNNER=node explicitly
+# (infra/k8s/07-ci-worker.yaml). Explicitly, not by letting the auto-detect
+# at sandbox/index.ts:53 fall through to it, because an operator reading the
+# manifest should see which isolation level is in force without inferring it
+# from what happens to be absent. The Docker CLI is still installed below so
+# the same image works with SANDBOX_RUNNER=docker on a VM or a node running
+# Sysbox/gVisor, where the socket mount is defensible.
+#
+# Every result records which backend produced it via `runner`, so a stored
+# audit always carries the isolation strength it was actually produced under.
+# =============================================================================
+
+FROM node:22-alpine AS builder
+WORKDIR /app
+
+COPY package*.json ./
+COPY packages/shared/package*.json ./packages/shared/
+COPY packages/config/package*.json ./packages/config/
+COPY packages/telemetry/package*.json ./packages/telemetry/
+COPY packages/event-bus/package*.json ./packages/event-bus/
+COPY apps/ci-worker/package*.json ./apps/ci-worker/
+
+RUN npm ci
+
+COPY packages/ ./packages/
+COPY apps/ci-worker/ ./apps/ci-worker/
+COPY tsconfig.base.json ./
+COPY scripts/ ./scripts/
+
+RUN npm run build
+
+RUN npm prune --omit=dev
+
+FROM node:22-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+
+# Docker CLI only — no daemon. Present so SANDBOX_RUNNER=docker remains usable
+# where a socket is safely available; unused under the Kubernetes default.
+RUN apk add --no-cache docker-cli
+
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/packages ./packages
+COPY --from=builder /app/apps/ci-worker ./apps/ci-worker
+
+# Both sandbox backends mkdtemp under os.tmpdir() (workspace-builder.ts:258,
+# node-permission-sandbox.ts:130), so /tmp is the only writable path the
+# process needs — no chowned scratch directory under /app is required.
+USER node
+
+CMD ["node", "apps/ci-worker/dist/worker.js"]

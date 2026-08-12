@@ -9,7 +9,7 @@ Later sprints add /security-scan (2.6), /score (4.2).
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import FastAPI
 
@@ -37,7 +37,7 @@ app.include_router(xai_routes.router)
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     """Liveness probe used by docker-compose healthchecks."""
-    return {"status": "ok", "service": "ai-service", "time": datetime.now(timezone.utc).isoformat()}
+    return {"status": "ok", "service": "ai-service", "time": datetime.now(UTC).isoformat()}
 
 
 @app.get("/")

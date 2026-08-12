@@ -9,7 +9,7 @@ from functools import lru_cache
 
 from app.ports.artifact_store import ArtifactStore, InMemoryArtifactStore, S3ArtifactStore
 from app.ports.embedder import Embedder, FakeEmbedder, SentenceTransformerEmbedder
-from app.ports.graph_repo import GraphRepo, InMemoryGraphRepo, Neo4jGraphRepo, PostgresGraphRepo
+from app.ports.graph_repo import GraphRepo, InMemoryGraphRepo, PostgresGraphRepo
 from app.ports.llm_client import (
     CloudflareWorkersAiClient,
     FakeLlmClient,
@@ -98,6 +98,10 @@ def get_artifact_store() -> ArtifactStore:
         secret_key=settings.aws_secret_access_key,
         fallback_dir=settings.s3_fallback_dir,
         max_retries=settings.s3_max_retries,
+        # False in production unless ALLOW_LOCAL_ARTIFACT_FALLBACK says
+        # otherwise, so an unreachable S3 raises rather than writing to a
+        # pod's ephemeral disk and reporting success.
+        allow_local_fallback=settings.allow_local_artifact_fallback,
     )
 
 

@@ -1,10 +1,33 @@
 # =============================================================================
 # Production Dockerfile — Scope Guard Service (FastAPI / Python)
+#
+# ── Why ai-service source is copied into this image ──────────────────────
+# scope-guard deliberately has no app/ports/ of its own. The pgvector query and
+# the genesis-hash lookup exist once, in apps/ai-service/app/ports/, and
+# apps/scope-guard/app/__init__.py reaches them by appending that directory to
+# this package's __path__ — see the module docstring there, which states the
+# arrangement rather than leaving it to import luck.
+#
+# That append is guarded by `os.path.isdir(...)`. In an image containing only
+# apps/scope-guard/ the guard is simply false, so `app.ports` is unresolvable
+# and every import in app/deps.py fails — silently as far as the Dockerfile is
+# concerned, fatally at container start. The image needs the source the code
+# says it depends on.
+#
+# As with Dockerfile.ai-service, the fix is to recreate the repo layout:
+# app/__init__.py computes the sibling path as
+# <this file>/../../.. + ai-service/app, and app/deps.py resolves parents[3] to
+# the root. Under /srv/apps/scope-guard/ both land where they do in a checkout.
+#
+# Only apps/ai-service/app/ is copied, not the whole service — the ports are
+# self-contained (none of them import ai-service's settings or routes), so
+# copying more would add surface without adding function.
 # =============================================================================
 
 FROM python:3.11-slim AS runner
 
-WORKDIR /app
+ENV APP_HOME=/srv/apps/scope-guard
+WORKDIR ${APP_HOME}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -16,6 +39,10 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir . uvicorn gunicorn
 
 COPY apps/scope-guard/ ./
+
+# The shared adapters. Resolved as <root>/apps/ai-service/app by
+# apps/scope-guard/app/__init__.py.
+COPY apps/ai-service/app/ /srv/apps/ai-service/app/
 
 EXPOSE 8001
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001", "--workers", "2"]

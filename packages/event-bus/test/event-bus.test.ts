@@ -61,7 +61,12 @@ describe('InMemoryBus', () => {
 describe.skipIf(!REDIS_UP)('RedisStreamsBus — Bounded Retries & DLQ', () => {
   it('retries failing handlers up to 3 times before sending to *.dlq and ACKing', async () => {
     const { RedisStreamsBus } = await import('../src/index.js');
-    const bus = new RedisStreamsBus('redis://localhost:6379');
+    // REDIS_URL, not a hardcoded localhost:6379. The skip guard above probes
+    // REDIS_URL; connecting somewhere else means the guard can pass while this
+    // line points at a dead port, and an unreachable ioredis emits the
+    // unhandled 'error' that kills the worker — the exact failure the guard
+    // exists to prevent. Under `npm run test:e2e` these are different ports.
+    const bus = new RedisStreamsBus(process.env.REDIS_URL ?? 'redis://localhost:6379');
     const mockClient = (bus as any).client;
 
     const xaddCalls: Array<{ stream: string; args: any[] }> = [];
@@ -76,7 +81,12 @@ describe.skipIf(!REDIS_UP)('RedisStreamsBus — Bounded Retries & DLQ', () => {
       xackCalls.push({ topic, group, id });
       return 1;
     };
-    mockClient.quit = async () => 'OK';
+    // `quit` is deliberately NOT stubbed. Stubbing it made bus.close() a no-op
+    // against the real ioredis socket this test opened, so the connection stayed
+    // alive, the event loop never drained, and the vitest worker hung until the
+    // pool force-killed it — reported as "Worker exited unexpectedly" with no
+    // failing assertion to point at. The stream commands above are stubbed
+    // because the test drives them; teardown is not something it needs to fake.
 
     const envelope = {
       id: 'evt-123',

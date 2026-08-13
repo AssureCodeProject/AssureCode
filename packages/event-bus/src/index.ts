@@ -222,7 +222,23 @@ export class RedisStreamsBus implements EventBus {
           '>',
         )) as Array<[string, Array<[string, string[]]>]> | null;
 
-        if (!res) continue;
+        if (!res) {
+          // Yield to the event loop before polling again.
+          //
+          // `continue` alone assumes xreadgroup always parks — true only while
+          // BLOCK 2000 is honoured. Whenever the call returns immediately the
+          // await resolves as a microtask, so this loop spins without ever
+          // reaching the timers phase: it pegs a core AND starves every
+          // setTimeout in the process, including this class's own retry
+          // backoff. A consumer that polls an empty stream would silently stop
+          // any timer-driven work elsewhere in the same worker.
+          //
+          // setImmediate costs nothing in the blocking case (one check-phase
+          // tick per two seconds) and bounds the non-blocking case to one
+          // iteration per event-loop turn.
+          await new Promise((r) => setImmediate(r));
+          continue;
+        }
         for (const [, messages] of res) {
           for (const [id, fields] of messages) {
             const idx = fields.indexOf('envelope');

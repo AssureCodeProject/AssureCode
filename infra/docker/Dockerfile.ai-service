@@ -1,10 +1,33 @@
 # =============================================================================
 # Production Dockerfile — AI Service (FastAPI / Python)
+#
+# ── Why the image mirrors the repo layout ────────────────────────────────
+# The service resolves two paths by walking up from __file__, on the
+# assumption that it sits inside a checkout:
+#
+#   app/settings.py            parents[3] -> <root>, for the .env anchor
+#   app/services/owasp_static.py
+#                              parents[4] -> <root>, then
+#                              packages/shared/src/owasp-2025-rules.json
+#
+# The previous layout copied the service to /app, leaving only three parents.
+# Both lookups raised IndexError at *import* time, so `uvicorn app.main:app`
+# died before binding a port — this image had never started, and the only
+# symptom at the orchestrator was an unhealthy container.
+#
+# Recreating <root>/apps/ai-service/ inside the image makes those walks resolve
+# to /srv exactly as they do in a checkout. The alternative — rewriting each
+# call site to take a path from the environment — spreads container-awareness
+# through application code to work around a packaging choice.
+#
+# The OWASP rules file is copied for the same reason: it is data the scanner
+# reads at runtime, and Layer 1 of the scan cannot run without it.
 # =============================================================================
 
 FROM python:3.11-slim AS runner
 
-WORKDIR /app
+ENV APP_HOME=/srv/apps/ai-service
+WORKDIR ${APP_HOME}
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -17,6 +40,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir .[full] uvicorn gunicorn
 
 COPY apps/ai-service/ ./
+
+# Read by app/services/owasp_static.py at import time, via parents[4].
+COPY packages/shared/src/owasp-2025-rules.json /srv/packages/shared/src/
 
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]

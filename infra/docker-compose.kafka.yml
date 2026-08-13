@@ -1,4 +1,24 @@
-version: '3.8'
+# =============================================================================
+# Kafka overlay. Compose it ON TOP of the base file — it is not standalone:
+#
+#   docker compose -f infra/docker-compose.yml -f infra/docker-compose.kafka.yml up -d
+#
+# The base file pins EVENT_BUS_TYPE=redis because it ships no broker. This
+# overlay adds one, so it also flips the app services over to it. Without the
+# service overrides at the bottom, bringing up the overlay would start a Kafka
+# nobody publishes to while the services carried on using Redis — which looks
+# exactly like a working Kafka deployment until you check where the events went.
+# =============================================================================
+
+# Broker address is the in-network listener (kafka:29092), not the host one
+# (localhost:9092) — see KAFKA_ADVERTISED_LISTENERS below.
+x-kafka-env: &kafka-env
+  EVENT_BUS_TYPE: kafka
+  KAFKA_BROKERS: kafka:29092
+
+x-kafka-deps: &kafka-deps
+  kafka:
+    condition: service_healthy
 
 services:
   zookeeper:
@@ -36,3 +56,24 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # ── Point the event-bus consumers and producers at Kafka ──────
+  # Compose merges these into the base file's definitions; only the keys named
+  # here change. Every service that publishes or subscribes needs both the
+  # override and the dependency, or it starts before the broker exists and its
+  # first publish is lost.
+  api-gateway:
+    environment: *kafka-env
+    depends_on: *kafka-deps
+
+  ci-worker:
+    environment: *kafka-env
+    depends_on: *kafka-deps
+
+  settlement-worker:
+    environment: *kafka-env
+    depends_on: *kafka-deps
+
+  webhook-ingest:
+    environment: *kafka-env
+    depends_on: *kafka-deps

@@ -74,6 +74,25 @@ export function buildDbConfig(
 ): DbConnectionConfig {
   const connectionTimeoutMillis = options.connectionTimeoutMillis ?? 15_000;
 
+  // An explicit `?sslmode=disable` wins over every inference below.
+  //
+  // The loopback exemption that follows covers `npm run dev`, but not a
+  // container network: in docker-compose the host is the service name
+  // (`postgres`), which is not loopback, so this function inferred a public
+  // network and demanded TLS from a container that serves none — every service
+  // died at startup with "The server does not support SSL connections".
+  //
+  // Honouring sslmode is the standard libpq contract and, unlike widening the
+  // host pattern, it is a *stated* intent rather than a guess about topology.
+  // That distinction is the one this module cares about: the docstring's
+  // objection is to a silent downgrade, and a connection string that says
+  // `sslmode=disable` is not silent. Only `disable` is honoured — libpq's
+  // `require` means "encrypt but do not verify", which is exactly the
+  // unauthenticated session the pinned-CA path below exists to refuse.
+  if (/[?&]sslmode=disable(&|$)/.test(connectionString)) {
+    return { connectionString, ssl: false, connectionTimeoutMillis };
+  }
+
   // Local development over a loopback socket has no meaningful MITM surface
   // and typically no TLS listener at all.
   if (/@(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(connectionString)) {

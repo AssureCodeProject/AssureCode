@@ -24,7 +24,15 @@ COPY apps/webhook-ingest/ ./apps/webhook-ingest/
 COPY tsconfig.base.json ./
 COPY scripts/ ./scripts/
 
-RUN npm run build
+# Explicit workspace list — see the same block in Dockerfile.ci-worker. A bare
+# `npm run build` here walks the full ORDER in scripts/build-workspaces.mjs and
+# fails compiling stripe-adapter, whose manifest this image never installs.
+RUN node scripts/build-workspaces.mjs \
+      packages/shared \
+      packages/telemetry \
+      packages/config \
+      packages/event-bus \
+      apps/webhook-ingest
 
 # Drop dev dependencies from the tree that gets copied forward. Without this
 # the runner ships typescript, tsx and vitest — build tooling with no business

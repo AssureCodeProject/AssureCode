@@ -21,7 +21,12 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "validate:k8s": "python scripts/validate-k8s.py",
+    "migrate": "tsx tools/migrate.ts",
+    "seed:neo4j": "tsx tools/seed-neo4j.ts",
     "test": "npm run test --workspaces --if-present --include-workspace-root=false",
+    "test:e2e": "node scripts/e2e.mjs",
+    "test:e2e:up": "node scripts/e2e.mjs up",
+    "test:e2e:down": "node scripts/e2e.mjs down",
     "infra:up": "docker compose --env-file .env -f infra/docker-compose.yml up -d",
     "infra:down": "docker compose -f infra/docker-compose.yml down"
   },
@@ -39,7 +44,8 @@
   "dependencies": {
     "@fastify/multipart": "^8.3.1",
     "kafkajs": "^2.2.4",
-    "pdf-parse": "^2.4.5"
+    "pdf-parse": "^2.4.5",
+    "pg": "^8.12.0"
   },
   "optionalDependencies": {
     "@rollup/rollup-linux-x64-gnu": "^4.60.2",

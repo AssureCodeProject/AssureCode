@@ -11,8 +11,34 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# app/settings.py -> apps/ai-service -> apps -> repo root.
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+def _find_repo_root() -> Path | None:
+    """The checkout root, or None when the service is not running from one.
+
+    `<root>/apps/ai-service/app/settings.py` -> parents[3]. This used to be a
+    bare `parents[3]`, which is correct in a checkout and raises IndexError
+    everywhere else: the container copies the app to /app, so there are only
+    three parents and the index does not exist. That fired at *import* time, so
+    `uvicorn app.main:app` died before binding a port — the published image had
+    never started, and the compose/k8s healthcheck reported it as unhealthy with
+    no clue why.
+
+    None is the honest answer there rather than a fallback path. Outside a
+    checkout there is no .env to anchor to and configuration comes from the
+    environment, which is what 12-factor asks for; the .env lookup below is a
+    developer convenience, not a requirement.
+    """
+    parents = Path(__file__).resolve().parents
+    if len(parents) > 3 and (parents[3] / "apps").is_dir():
+        return parents[3]
+    return None
+
+
+_REPO_ROOT = _find_repo_root()
+_ENV_FILES = (
+    (_REPO_ROOT / ".env", _REPO_ROOT / "apps" / "ai-service" / ".env")
+    if _REPO_ROOT is not None
+    else None
+)
 
 
 class Settings(BaseSettings):
@@ -26,7 +52,7 @@ class Settings(BaseSettings):
     #
     # A service-local .env still wins, for per-service overrides.
     model_config = SettingsConfigDict(
-        env_file=(_REPO_ROOT / ".env", _REPO_ROOT / "apps" / "ai-service" / ".env"),
+        env_file=_ENV_FILES,
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,

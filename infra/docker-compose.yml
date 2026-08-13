@@ -11,15 +11,72 @@
 #   redis         Event bus (Redis Streams) + caching
 #   localstack    S3-compatible artifact storage
 #
-# App services (run via `npm -w <pkg> run dev` outside Docker for fast DX;
-#                these service definitions are for production-like compose):
+#   web               React SPA behind nginx on :3000
 #   api-gateway       Node/Fastify on :4000
 #   ci-worker         Node worker (no exposed port)
 #   webhook-ingest    Node/Fastify on :9000
 #   ai-service        Python/FastAPI on :8000
 #   scope-guard       Python/FastAPI on :8001
 #   settlement-worker Node worker (no exposed port)
+#   migrate           One-shot schema migration, gates every app service
+#
+# For fast local DX you can still run any app service on the host with
+# `npm -w <pkg> run dev` — bring up only the data plane with:
+#   docker compose -f infra/docker-compose.yml up -d postgres neo4j redis localstack
 # =============================================================================
+
+# Shared app-service settings, defined once and merged into each service below.
+# Extension fields have to live at the top level — Compose validates the
+# `services:` mapping strictly, so an `x-` anchor placed in there is rejected as
+# a malformed service.
+#
+# Drift between services is the failure this prevents: a service pointed at a
+# different DATABASE_URL than the migration job produces a confusing "relation
+# does not exist" rather than an obvious misconfiguration.
+x-datastore-env: &datastore-env
+  # sslmode=disable is required, not incidental: the Postgres container serves
+  # no TLS, and buildDbConfig() only exempts loopback hosts — `postgres` is a
+  # service name, so without this it infers a public network and refuses to
+  # connect unencrypted. The traffic never leaves the compose bridge network.
+  DATABASE_URL: postgresql://${POSTGRES_USER:-assurecode}:${POSTGRES_PASSWORD:-assurecode_local_dev}@postgres:5432/${POSTGRES_DB:-assurecode}?sslmode=disable
+  REDIS_URL: redis://redis:6379
+  NEO4J_URI: bolt://neo4j:7687
+  NEO4J_USER: ${NEO4J_USER:-neo4j}
+  NEO4J_PASSWORD: ${NEO4J_PASSWORD:-assurecode_local_dev}
+  S3_ENDPOINT: http://localstack:4566
+  S3_BUCKET_NAME: ${S3_BUCKET_NAME:-assurecode-artifacts}
+  AWS_REGION: ${AWS_REGION:-us-east-1}
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+  AI_SERVICE_URL: http://ai-service:8000
+  SCOPE_GUARD_URL: http://scope-guard:8001
+  # Hardcoded, not ${EVENT_BUS_TYPE:-redis}. This file ships Redis and no
+  # broker, so honouring an EVENT_BUS_TYPE=kafka left in a developer's .env
+  # would point every service at a Kafka that is not in this stack — and the
+  # failure is silent, because a bus with no reachable broker drops events
+  # rather than refusing to start. Run the Kafka topology with the overlay,
+  # which sets this back to kafka for the services it provides a broker for:
+  #   docker compose -f infra/docker-compose.yml -f infra/docker-compose.kafka.yml up -d
+  EVENT_BUS_TYPE: redis
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  JWT_SECRET: ${JWT_SECRET:-dev_insecure_jwt_secret_change_me}
+  SERVICE_TOKEN: ${SERVICE_TOKEN:-dev_insecure_service_token_change_me}
+  GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-assurecode_github_secret}
+  STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-sk_test_mock}
+  STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
+  CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
+  LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
+
+# Data plane must be healthy before an app service starts. Compose's
+# `service_healthy` is what makes this a real gate rather than a start order.
+x-datastore-deps: &datastore-deps
+  postgres:
+    condition: service_healthy
+  redis:
+    condition: service_healthy
 
 services:
   # ── Infrastructure ────────────────────────────────────────────
@@ -76,7 +133,14 @@ services:
       retries: 10
 
   localstack:
-    image: localstack/localstack:latest
+    # Pinned. `:latest` now resolves to a 2026.x build that refuses to start
+    # without a LOCALSTACK_AUTH_TOKEN — it exits 55 with "License activation
+    # failed" and, because of `restart: unless-stopped`, crash-loops rather than
+    # staying down visibly. That is how S3 came to be quietly unavailable in the
+    # dev stack: `docker compose up -d` reported success and the container was
+    # restarting every few seconds. 3.8 is the last community line that runs
+    # unlicensed. Matches infra/docker-compose.test.yml.
+    image: localstack/localstack:3.8
     container_name: assurecode-localstack
     restart: unless-stopped
     ports:
@@ -94,8 +158,204 @@ services:
       timeout: 5s
       retries: 10
 
+  # ── Application services ──────────────────────────────────────
+  #
+  # Every one builds from the repo root as context (`context: ..`), because the
+  # Dockerfiles COPY workspace package.json files and packages/ — a context of
+  # infra/ cannot see them.
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: infra/docker/Dockerfile.migrate
+    image: assurecode/migrate:local
+    container_name: assurecode-migrate
+    environment:
+      <<: *datastore-env
+      NODE_ENV: ${NODE_ENV:-development}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # One-shot. `service_completed_successfully` on the app services below turns
+    # this into a real ordering constraint: nothing serves traffic against an
+    # unmigrated schema. The runner is idempotent (tracks _migrations), so a
+    # restart re-runs it harmlessly.
+    restart: "no"
+
+  api-gateway:
+    build:
+      context: ..
+      dockerfile: infra/docker/Dockerfile.gateway
+    image: assurecode/api-gateway:local
+    container_name: assurecode-api-gateway
+    restart: unless-stopped
+    ports:
+      - "${GATEWAY_PORT:-4000}:4000"
+    environment:
+      <<: *datastore-env
+      NODE_ENV: ${NODE_ENV:-development}
+      GATEWAY_PORT: 4000
+    depends_on:
+      <<: *datastore-deps
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # busybox wget, not curl — node:20-alpine ships neither curl nor a shell
+      # with a /dev/tcp fallback, but wget is part of busybox and always present.
+      # /healthz is liveness only; /readyz is the one that probes Postgres and
+      # Redis, and using it here would make the container unhealthy (and so
+      # restart-looped) during an ordinary database blip.
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:4000/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  ci-worker:
+    build:
+      context: ..
+      dockerfile: infra/docker/Dockerfile.ci-worker
+    image: assurecode/ci-worker:local
+    container_name: assurecode-ci-worker
+    restart: unless-stopped
+    environment:
+      <<: *datastore-env
+      NODE_ENV: ${NODE_ENV:-development}
+      # Explicit, matching infra/k8s/07-ci-worker.yaml. DockerSandbox is the
+      # stronger boundary but needs the host Docker socket mounted — root-
+      # equivalent access on the host, handed to the service whose whole job is
+      # executing untrusted freelancer code. Not a trade worth making to run a
+      # local demo. See the header of infra/docker/Dockerfile.ci-worker.
+      SANDBOX_RUNNER: ${SANDBOX_RUNNER:-node}
+    depends_on:
+      <<: *datastore-deps
+      migrate:
+        condition: service_completed_successfully
+
+  settlement-worker:
+    build:
+      context: ..
+      dockerfile: infra/docker/Dockerfile.settlement-worker
+    image: assurecode/settlement-worker:local
+    container_name: assurecode-settlement-worker
+    restart: unless-stopped
+    environment:
+      <<: *datastore-env
+      NODE_ENV: ${NODE_ENV:-development}
+    depends_on:
+      <<: *datastore-deps
+      migrate:
+        condition: service_completed_successfully
+
+  webhook-ingest:
+    build:
+      context: ..
+      dockerfile: infra/docker/Dockerfile.webhook-ingest
+    image: assurecode/webhook-ingest:local
+    container_name: assurecode-webhook-ingest
+    restart: unless-stopped
+    ports:
+      - "${WEBHOOK_INGEST_PORT:-9000}:9000"
+    environment:
+      <<: *datastore-env
+      NODE_ENV: ${NODE_ENV:-development}
+      WEBHOOK_INGEST_PORT: 9000
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:9000/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  ai-service:
+    build:
+      context: ..
+      dockerfile: infra/docker/Dockerfile.ai-service
+    image: assurecode/ai-service:local
+    container_name: assurecode-ai-service
+    restart: unless-stopped
+    ports:
+      - "${AI_SERVICE_PORT:-8000}:8000"
+    environment:
+      <<: *datastore-env
+      NODE_ENV: ${NODE_ENV:-development}
+      EMBED_PROVIDER: ${EMBED_PROVIDER:-sentence-transformers}
+      # The image has no baked model. On first boot sentence-transformers pulls
+      # all-MiniLM-L6-v2 (~90MB) from HuggingFace; the volume keeps that out of
+      # every subsequent start, which is the difference between a 5s and a
+      # 90s restart.
+      HF_HOME: /home/appuser/.cache/huggingface
+    volumes:
+      - hf-cache:/home/appuser/.cache/huggingface
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+
+  scope-guard:
+    build:
+      context: ..
+      dockerfile: infra/docker/Dockerfile.scope-guard
+    image: assurecode/scope-guard:local
+    container_name: assurecode-scope-guard
+    restart: unless-stopped
+    ports:
+      - "${SCOPE_GUARD_PORT:-8001}:8001"
+    environment:
+      <<: *datastore-env
+      NODE_ENV: ${NODE_ENV:-development}
+      HF_HOME: /home/appuser/.cache/huggingface
+    volumes:
+      - hf-cache:/home/appuser/.cache/huggingface
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8001/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+
+  web:
+    build:
+      context: ..
+      dockerfile: infra/docker/Dockerfile.web
+    image: assurecode/web:local
+    container_name: assurecode-web
+    restart: unless-stopped
+    ports:
+      # 3000 on the host, 8080 in the container — the image is
+      # nginx-unprivileged and cannot bind a privileged port.
+      - "${WEB_PORT:-3000}:8080"
+    volumes:
+      # Compose has no Ingress, and the SPA calls relative paths, so the
+      # frontend origin has to forward /api. The published image deliberately
+      # does not (see infra/docker/nginx.conf); mounting the config here adds
+      # the proxy for compose only, leaving the image byte-identical to the one
+      # Kubernetes runs.
+      - ./docker/nginx.compose.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./docker/proxy_params.conf:/etc/nginx/proxy_params.conf:ro
+    depends_on:
+      - api-gateway
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
 volumes:
   postgres-data:
   neo4j-data:
   redis-data:
   localstack-data:
+  hf-cache:

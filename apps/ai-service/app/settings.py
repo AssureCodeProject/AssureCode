@@ -81,11 +81,15 @@ class Settings(BaseSettings):
     )
 
     # ── LLM provider (test-gen, security, XAI judge) ──────────
-    gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
-    openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
+    #
+    # Cloudflare Workers AI is the only provider. The Gemini and OpenAI keys
+    # that used to sit here were removed along with their adapters.
     cloudflare_account_id: str = Field(default="", alias="CLOUDFLARE_ACCOUNT_ID")
     cloudflare_api_token: str = Field(default="", alias="CLOUDFLARE_API_TOKEN")
-    llm_provider: str = Field(default="gemini", alias="LLM_PROVIDER")  # gemini | openai | cloudflare
+    # 'cloudflare' | 'fake'. The default used to be 'gemini', which meant an
+    # unconfigured service silently selected a provider it had no key for and
+    # failed on first use rather than at boot.
+    llm_provider: str = Field(default="cloudflare", alias="LLM_PROVIDER")
 
     # ── S3 / LocalStack (artifact storage) ────────────────────
     s3_endpoint: str = Field(default="http://localhost:4566", alias="S3_ENDPOINT")

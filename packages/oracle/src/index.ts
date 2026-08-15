@@ -137,20 +137,37 @@ export class OracleStore {
     return { approved: blockers.length === 0, signals, blockers };
   }
 
-  /** The PaymentIntent held in escrow for this contract, if one was created. */
-  async findEscrowPaymentIntent(
+  /**
+   * The held payment for this contract — what the settlement worker captures.
+   *
+   * Selects on 'AUTHORIZED', not 'PENDING'. Under Razorpay's two-phase flow the
+   * order is created before anyone pays it, and that order sits at 'PENDING'
+   * with a NULL payment_id. Matching 'PENDING' — which is what this did — meant
+   * the oracle would hand the worker an escrow no customer had funded, and the
+   * worker would attempt to capture money that was never authorised. Only
+   * 'AUTHORIZED' means the funds are actually held.
+   *
+   * The NOT NULL guard on payment_id is belt-and-braces: nothing should reach
+   * 'AUTHORIZED' without one, and a capture call with a null id would fail
+   * anyway, but failing to *find* a payment is a far clearer outcome than
+   * calling Razorpay with garbage.
+   */
+  async findEscrowPayment(
     contractId: string,
-  ): Promise<{ paymentIntentId: string; amountCents: number } | null> {
+  ): Promise<{ paymentId: string; amountMinor: number; currency: string } | null> {
     const res = await this.pool.query(
-      `SELECT payment_intent_id, amount_cents FROM escrow
-        WHERE contract_id = $1 AND status = 'PENDING'
+      `SELECT payment_id, amount_cents, currency FROM escrow
+        WHERE contract_id = $1 AND status = 'AUTHORIZED' AND payment_id IS NOT NULL
         ORDER BY created_at DESC LIMIT 1`,
       [contractId],
     );
     if (res.rowCount === 0) return null;
     return {
-      paymentIntentId: res.rows[0].payment_intent_id,
-      amountCents: Number(res.rows[0].amount_cents),
+      paymentId: res.rows[0].payment_id,
+      // `amount_cents` holds minor units — paise for INR. The column name
+      // predates the provider change; see V014__razorpay_escrow.sql.
+      amountMinor: Number(res.rows[0].amount_cents),
+      currency: res.rows[0].currency ?? 'INR',
     };
   }
 }

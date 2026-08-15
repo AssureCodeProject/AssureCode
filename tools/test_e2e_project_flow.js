@@ -26,7 +26,29 @@
  */
 import pg from 'pg';
 import fs from 'node:fs';
-import { buildDbConfig } from '@assurecode/config';
+import crypto from 'node:crypto';
+import { buildDbConfig, loadConfig } from '@assurecode/config';
+import { FAKE_KEY_SECRET, isLiveRazorpayConfig } from '@assurecode/razorpay-adapter';
+
+/**
+ * Whether the gateway this script talks to is using real Razorpay credentials.
+ *
+ * loadConfig() rather than bare process.env, because it reads .env — which is
+ * where the credentials actually live when this script is run by hand, and the
+ * only place the gateway itself got them from.
+ *
+ * It asks the same factory the gateway asks rather than re-deriving the rules:
+ * two implementations of "is this key real" would eventually disagree, and the
+ * disagreement would surface as a confusing 401 halfway through a demo.
+ */
+const LIVE_RAZORPAY = (() => {
+  const cfg = loadConfig();
+  return isLiveRazorpayConfig({
+    keyId: cfg.RAZORPAY_KEY_ID ?? '',
+    keySecret: cfg.RAZORPAY_KEY_SECRET ?? '',
+    webhookSecret: cfg.RAZORPAY_WEBHOOK_SECRET ?? '',
+  });
+})();
 
 const API_BASE = process.env.API_BASE || 'http://localhost:4000';
 const AUDIT_POLL_TIMEOUT_MS = 15_000;
@@ -101,7 +123,27 @@ async function runE2EFlow() {
   if (!login.ok) fail('login', login);
   const token = login.json.token;
   const auth = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
-  console.log('  ✓ Authenticated as client@acme.com');
+  const clientUserId = login.json.user?.userId ?? login.json.userId;
+  console.log(`  ✓ Authenticated as client@acme.com (${clientUserId})`);
+
+  // 0.5 KYC
+  //
+  // The escrow routes sit behind `clientVerified`, which reads users.kyc_status
+  // from the database and fails closed. Seeded users start UNVERIFIED, so this
+  // script used to die at Phase 4 with a 403 KYC_REQUIRED — it had no step that
+  // cleared the gate, because escrow was previously reached only by callers
+  // authenticating with SERVICE_TOKEN, which bypasses the guard entirely.
+  //
+  // This is the real flow a client goes through, and it is backed by
+  // FakeKycAdapter: verification is terminal on the first call, so there is no
+  // pending state to poll.
+  console.log('\n[Phase 0.5] Clearing the KYC gate...');
+  const kyc = await call('POST', '/api/kyc/verify', auth, {
+    userId: clientUserId,
+    idType: 'PASSPORT',
+  });
+  if (!kyc.ok) fail('kyc/verify', kyc);
+  console.log(`  ✓ KYC ${kyc.json.kycStatus}, session ${kyc.json.sessionId}`);
 
   // 1. Initialize
   console.log('\n[Phase 1] Initializing contract...');
@@ -154,13 +196,56 @@ async function runE2EFlow() {
   if (!lock.ok) fail('lock', lock);
   console.log(`  ✓ Locked, hash ${lock.json.hash?.slice(0, 16)}...`);
 
-  // 4. Escrow
-  console.log('\n[Phase 4] Creating escrow PaymentIntent...');
+  // 4. Escrow — two steps under Razorpay, not one.
+  //
+  // Creating the order does not fund anything: the order is payable, and until
+  // someone pays it the escrow row sits at PENDING with no payment id. The
+  // settlement oracle selects on AUTHORIZED, so a run that stopped here would
+  // reach Phase 8 and correctly refuse to settle an escrow nobody funded.
+  console.log('\n[Phase 4] Creating escrow order...');
   const escrow = await call('POST', `/api/contracts/${contractId}/escrow`, auth, {
-    amountCents: initReq.budgetCents,
+    amountMinor: initReq.budgetCents,
+    currency: 'INR',
   });
   if (!escrow.ok) fail('escrow', escrow);
-  console.log(`  ✓ PaymentIntent ${escrow.json.paymentIntentId}, status ${escrow.json.status}`);
+  console.log(`  ✓ Order ${escrow.json.orderId}, status ${escrow.json.status}`);
+
+  // Stand in for the customer completing Razorpay Checkout.
+  //
+  // In a browser this signature comes back from Checkout; here we construct it
+  // the same way Razorpay does — HMAC-SHA256 over `orderId|paymentId` — using
+  // FakeRazorpayAdapter's key secret. That exercises the real /escrow/verify
+  // path including its signature check, rather than reaching into the database
+  // to flip a status.
+  //
+  // It only works against the fake adapter, and cannot be made to work against
+  // real credentials: the signature would need the live key secret, and even
+  // with it, /escrow/verify re-reads the payment from Razorpay's API — where a
+  // synthetic `pay_fake_*` id does not exist. Simulating a payment against a
+  // real payment processor is not a thing. So detect it and stop cleanly rather
+  // than failing at a 401 that looks like a signature bug.
+  if (LIVE_RAZORPAY) {
+    console.log('\n[Phase 4b] SKIPPED — live Razorpay credentials are configured.');
+    console.log('  A payment cannot be simulated against the real API. Fund this contract in the');
+    console.log(`  web UI (Escrow tab, contract ${contractId}) with test card 4111 1111 1111 1111,`);
+    console.log('  then re-run with RAZORPAY_KEY_ID=rzp_test_mock to exercise the automated path.');
+    console.log('  Settlement below will correctly refuse: the escrow is not AUTHORIZED yet.');
+  } else {
+    console.log('\n[Phase 4b] Simulating Checkout payment (fake adapter)...');
+    const fakePaymentId = `pay_fake_e2e_${Date.now()}`;
+    const checkoutSignature = crypto
+      .createHmac('sha256', FAKE_KEY_SECRET)
+      .update(`${escrow.json.orderId}|${fakePaymentId}`)
+      .digest('hex');
+
+    const funded = await call('POST', `/api/contracts/${contractId}/escrow/verify`, auth, {
+      razorpayOrderId: escrow.json.orderId,
+      razorpayPaymentId: fakePaymentId,
+      razorpaySignature: checkoutSignature,
+    });
+    if (!funded.ok) fail('escrow/verify', funded);
+    console.log(`  ✓ Payment ${funded.json.paymentId} AUTHORIZED — funds held, not captured`);
+  }
 
   // 5. Push + poll for audit
   console.log('\n[Phase 5] Simulating a code push and waiting for the audit pipeline...');

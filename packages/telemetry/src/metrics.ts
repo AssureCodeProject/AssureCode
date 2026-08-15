@@ -37,14 +37,20 @@ export const eventBusLagSeconds = new promClient.Histogram({
 
 export const settlementAmountTotal = new promClient.Counter({
   name: 'assurecode_settlement_amount_cents_total',
-  help: 'Total settled amount in cents',
+  // Minor units — paise under Razorpay/INR, as `escrow.amount_cents` has always
+  // stored. The metric name keeps 'cents' so existing series stay continuous.
+  help: 'Total settled amount in the currency minor unit (paise for INR)',
   labelNames: ['status'],
   registers: [metricsRegistry],
 });
 
 export const settlementAmountDollarsTotal = new promClient.Counter({
   name: 'assurecode_settlement_amount_dollars_total',
-  help: 'Total dollars settled via Stripe transfer',
+  // Deprecated. Settlement is INR under Razorpay, so this counter's name is a
+  // lie no help text can fix — divide the cents counter above by 100 instead.
+  // Kept registered so a scrape does not suddenly lose a series it has history
+  // for; nothing new should increment it.
+  help: 'DEPRECATED — settlement is INR; use assurecode_settlement_amount_cents_total / 100',
   labelNames: ['status'],
   registers: [metricsRegistry],
 });

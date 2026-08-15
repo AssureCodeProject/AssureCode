@@ -1,11 +1,22 @@
 """LLM client port: call a generative model and return structured text.
 
 Two adapters:
-  - GeminiClient: calls Google's Gemini API via httpx
-  - OpenAIClient: calls OpenAI ChatCompletions API via httpx
+  - CloudflareWorkersAiClient: calls Cloudflare Workers AI via httpx
   - FakeLlmClient: returns a deterministic fixture for tests/offline
 
-All adapters implement the same simple protocol: `generate(prompt, max_tokens) -> str`.
+Both implement the same simple protocol: `generate(prompt, max_tokens) -> str`.
+
+Cloudflare Workers AI is the only provider. Gemini and OpenAI adapters used to
+live here as well, selected by LLM_PROVIDER, and were removed: three code paths
+for one capability meant three sets of credentials to hold, three response
+shapes to keep parsing, and two providers that nothing in any environment was
+configured to use. A provider seam that is never exercised is not portability,
+it is untested code on the critical path of test generation and the security
+scan's second layer.
+
+Adding a provider back means writing one class with a `generate` method and
+returning it from `get_llm_client()` in app/deps.py — the port is the seam, and
+it is unchanged.
 """
 from __future__ import annotations
 
@@ -76,104 +87,6 @@ describe("{contract_id}", () => {{
                         contract_id = token.strip().rstrip(".,;")
                         break
         return self._FIXTURE_TEST.format(contract_id=contract_id)
-
-
-class GeminiClient:
-    """Real adapter for Google Gemini API (generative language).
-
-    Requires GEMINI_API_KEY env var. Falls back to FakeLlmClient on missing
-    key or network error so the service still boots.
-    """
-
-    def __init__(self, api_key: str, model: str = "gemini-2.0-flash") -> None:
-        self._api_key = api_key
-        self._model = model
-
-    def generate(self, prompt: str, max_tokens: int = 2048) -> str:
-        """Call Gemini, or raise. See CloudflareWorkersAiClient.generate on why
-        there is no FakeLlmClient fallback here."""
-        import httpx
-
-        if not self._api_key:
-            raise LlmUnavailableError(
-                "Gemini is not configured: set GEMINI_API_KEY, or set "
-                "LLM_PROVIDER=fake for offline runs."
-            )
-
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{self._model}:generateContent?key={self._api_key}"
-        )
-        try:  # pragma: no cover — live API only
-            resp = httpx.post(
-                url,
-                json={
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {"maxOutputTokens": max_tokens},
-                },
-                timeout=30.0,
-            )
-        except httpx.HTTPError as err:
-            raise LlmUnavailableError(f"Gemini request failed: {err}") from err
-
-        if resp.status_code != 200:
-            raise LlmUnavailableError(f"Gemini returned HTTP {resp.status_code}: {resp.text[:300]}")
-
-        try:
-            return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-        except (ValueError, KeyError, IndexError) as err:
-            raise LlmUnavailableError(f"Gemini returned an unexpected body: {resp.text[:300]}") from err
-
-
-class OpenAIClient:
-    """Real adapter for OpenAI ChatCompletions API.
-
-    Requires OPENAI_API_KEY env var.
-    """
-
-    def __init__(self, api_key: str, model: str = "gpt-4o-mini") -> None:
-        self._api_key = api_key
-        self._model = model
-
-    def generate(self, prompt: str, max_tokens: int = 2048) -> str:
-        """Call OpenAI, or raise. See CloudflareWorkersAiClient.generate on why
-        there is no FakeLlmClient fallback here."""
-        import httpx
-
-        if not self._api_key:
-            raise LlmUnavailableError(
-                "OpenAI is not configured: set OPENAI_API_KEY, or set "
-                "LLM_PROVIDER=fake for offline runs."
-            )
-
-        try:  # pragma: no cover — live API only
-            resp = httpx.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {self._api_key}"},
-                json={
-                    "model": self._model,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": "You are a test generation assistant. Output only valid JavaScript/TypeScript test code.",
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
-                    "max_tokens": max_tokens,
-                    "temperature": 0.3,
-                },
-                timeout=30.0,
-            )
-        except httpx.HTTPError as err:
-            raise LlmUnavailableError(f"OpenAI request failed: {err}") from err
-
-        if resp.status_code != 200:
-            raise LlmUnavailableError(f"OpenAI returned HTTP {resp.status_code}: {resp.text[:300]}")
-
-        try:
-            return resp.json()["choices"][0]["message"]["content"]
-        except (ValueError, KeyError, IndexError) as err:
-            raise LlmUnavailableError(f"OpenAI returned an unexpected body: {resp.text[:300]}") from err
 
 
 class CloudflareWorkersAiClient:

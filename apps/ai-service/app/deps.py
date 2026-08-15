@@ -13,9 +13,7 @@ from app.ports.graph_repo import GraphRepo, InMemoryGraphRepo, PostgresGraphRepo
 from app.ports.llm_client import (
     CloudflareWorkersAiClient,
     FakeLlmClient,
-    GeminiClient,
     LlmClient,
-    OpenAIClient,
 )
 from app.ports.rag_store import InMemoryRagStore, PostgresRagStore, RagStore
 from app.ports.scope_log import InMemoryScopeLog, PostgresScopeLog
@@ -72,17 +70,25 @@ def get_rag_store() -> RagStore:
 
 @lru_cache(maxsize=1)
 def get_llm_client() -> LlmClient:
+    """Cloudflare Workers AI, or the deterministic fake for tests and offline runs.
+
+    The provider fan-out this replaced ended in `return GeminiClient(...)` as its
+    default, so any value of LLM_PROVIDER other than the three it recognised —
+    including a typo — silently selected Gemini. Two branches and an explicit
+    error is the whole decision now.
+    """
     settings = get_settings()
     if settings.environment == "test" or settings.llm_provider == "fake":
         return FakeLlmClient()
-    if settings.llm_provider == "cloudflare" or (settings.cloudflare_account_id and settings.cloudflare_api_token):
-        return CloudflareWorkersAiClient(
-            account_id=settings.cloudflare_account_id,
-            api_token=settings.cloudflare_api_token,
+    if settings.llm_provider != "cloudflare":
+        raise ValueError(
+            f"Unknown LLM_PROVIDER {settings.llm_provider!r}. "
+            "Supported values are 'cloudflare' and 'fake'."
         )
-    if settings.llm_provider == "openai":
-        return OpenAIClient(api_key=settings.openai_api_key)
-    return GeminiClient(api_key=settings.gemini_api_key)
+    return CloudflareWorkersAiClient(
+        account_id=settings.cloudflare_account_id,
+        api_token=settings.cloudflare_api_token,
+    )
 
 
 @lru_cache(maxsize=1)

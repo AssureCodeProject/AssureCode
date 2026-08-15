@@ -32,7 +32,14 @@ import {
 } from '@assurecode/config';
 import { LedgerClient } from '@assurecode/ledger-client';
 import { OracleStore, TRUST_SCORE_THRESHOLD } from '@assurecode/oracle';
-import { createEscrowAdapter, type EscrowPort } from '@assurecode/stripe-adapter';
+import {
+  createRazorpayAdapter,
+  isLiveRazorpayConfig,
+  paymentEntityOf,
+  orderEntityOf,
+  type PaymentPort,
+} from '@assurecode/razorpay-adapter';
+import { createKycAdapter, type KycPort } from '@assurecode/kyc-adapter';
 import { createEventBus, OutboxRelay, eventBusOptionsFromConfig, type EventBus } from '@assurecode/event-bus';
 import {
   InitializeContractSchema,
@@ -61,14 +68,34 @@ const ledgerClient = new LedgerClient(databaseUrl);
 // the verdict; the gateway shares the same `evaluate()` so what the UI shows and
 // what releases the money cannot disagree.
 const oracleStore = new OracleStore(dbPool);
-const escrowAdapter: EscrowPort = createEscrowAdapter({
-  secretKey: config.STRIPE_SECRET_KEY || 'sk_test_mock',
-  webhookSecret: config.STRIPE_WEBHOOK_SECRET || 'whsec_mock',
-});
+const razorpayConfig = {
+  keyId: config.RAZORPAY_KEY_ID ?? '',
+  keySecret: config.RAZORPAY_KEY_SECRET ?? '',
+  webhookSecret: config.RAZORPAY_WEBHOOK_SECRET ?? '',
+};
+const payments: PaymentPort = createRazorpayAdapter(razorpayConfig);
 
-// BUG-013: Fail fast in production when Stripe keys are absent.
-if (config.NODE_ENV === 'production' && !config.STRIPE_SECRET_KEY) {
-  logger.error('STRIPE_SECRET_KEY is required in production. Set the env var and restart.');
+// Identity verification is its own seam. It used to hang off the payment
+// adapter because Stripe happened to sell Identity and Connect alongside
+// payments; Razorpay sells no equivalent, and KYC was never a payment concern.
+const kycAdapter: KycPort = createKycAdapter();
+
+// BUG-013: fail fast in production when the payment provider is not really
+// configured.
+//
+// This asks whether the adapter came out *live*, not whether the env var is
+// non-empty. The Kubernetes Secret ships `RAZORPAY_KEY_SECRET: "REPLACE_ME"`,
+// which is non-empty and passes a truthiness check — under the previous
+// `!config.STRIPE_SECRET_KEY` form, an unconfigured production gateway started
+// happily and then silently served the *fake* adapter, because the placeholder
+// also failed the `sk_` prefix test inside the factory. A deployment that
+// believes it is holding real money while every payment id is synthetic is a
+// worse outcome than refusing to boot.
+if (config.NODE_ENV === 'production' && !isLiveRazorpayConfig(razorpayConfig)) {
+  logger.error(
+    'RAZORPAY_KEY_ID (rzp_...) and RAZORPAY_KEY_SECRET are required in production. ' +
+      'Refusing to start on the fake payment adapter.',
+  );
   process.exit(1);
 }
 
@@ -117,11 +144,18 @@ outboxRelay.start();
 
 // ── Downstream Service Clients ─────────────────────────────────────────
 
-const aiServiceUrl = `http://localhost:${config.AI_SERVICE_PORT}`;
-// The XAI scorer and the scope guard are addressed by env var rather than by
-// config port, because both are routinely run out-of-cluster during a demo.
-const scorerUrl = process.env.AI_SERVICE_URL || 'http://localhost:8000';
-const scopeGuardUrl = process.env.SCOPE_GUARD_URL || 'http://localhost:8001';
+// Both come from @assurecode/config, which defaults them to localhost for
+// host-based development and lets compose/k8s override them with service names.
+//
+// This used to be three variables built two different ways: `aiServiceUrl` was
+// `http://localhost:${AI_SERVICE_PORT}` while `scorerUrl` read AI_SERVICE_URL,
+// so /match, /generate-tests and /rag/ingest addressed the gateway's own
+// loopback in any deployment where ai-service is a separate host — which is
+// every deployment except a developer's laptop. The two names also let the same
+// service be configured to two different addresses, so a correct AI_SERVICE_URL
+// fixed the XAI scorer and left the other three broken. One name, one source.
+const aiServiceUrl = config.AI_SERVICE_URL;
+const scopeGuardUrl = config.SCOPE_GUARD_URL;
 
 /** Fire-and-forget call to ai-service — logs errors but doesn't block. */
 async function callAiService(path: string, body: unknown): Promise<void> {
@@ -187,15 +221,16 @@ void server.register(fastifyMultipart as any, {
   limits: { fileSize: MAX_PDF_BYTES, files: 1 },
 });
 
-// Stripe signs the exact bytes it sent, so verification needs those bytes.
+// A webhook is signed over the exact bytes the provider sent, so verification
+// needs those bytes — this is true of Razorpay's HMAC as it was of Stripe's.
 //
-// The webhook route declared `config: { rawBody: true }`, which is the option
-// name `fastify-raw-body` reads — but that plugin is not a dependency of this
-// workspace and was never registered, so the flag did nothing. The handler fell
-// back to `JSON.stringify(request.body)`, re-serialising the parsed object; the
-// HMAC over that can never match the HMAC over the original payload, so every
-// genuine Stripe webhook was rejected with 401. It went unnoticed because the
-// fake adapter's `mock_` signature path is what runs in development.
+// The webhook route once declared `config: { rawBody: true }`, which is the
+// option name `fastify-raw-body` reads — but that plugin is not a dependency of
+// this workspace and was never registered, so the flag did nothing. The handler
+// fell back to `JSON.stringify(request.body)`, re-serialising the parsed object;
+// the HMAC over that can never match the HMAC over the original payload, so
+// every genuine webhook was rejected with 401. It went unnoticed because the
+// fake adapter is what runs in development.
 //
 // Captured the same way apps/webhook-ingest already does for GitHub: keep the
 // buffer alongside the parsed body, so routes that need to verify a signature
@@ -674,9 +709,21 @@ server.post<{
     return;
   }
 
-  const session = await escrowAdapter.createVerificationSession({
+  // kyc_verifications.user_id is a foreign key onto users(user_id), and
+  // `ON CONFLICT DO NOTHING` does not absorb a foreign-key violation — only a
+  // uniqueness one. A userId with no users row therefore raised 23503 out of
+  // the INSERT below, escaped the handler, and answered 500. Checking first
+  // turns an unhandled crash into the 404 it always was, which matters most
+  // for freelancers: this route is how they clear the KYC gate, and a 500 gave
+  // them nothing to act on.
+  const userExists = await dbPool.query(`SELECT 1 FROM users WHERE user_id = $1`, [userId]);
+  if (userExists.rowCount === 0) {
+    return reply.status(404).send({ error: 'User not found' });
+  }
+
+  const session = await kycAdapter.createVerificationSession({
     userId,
-    returnUrl: 'http://localhost:3000/kyc-callback',
+    returnUrl: `${config.WEB_APP_URL}/kyc-callback`,
   });
 
   const docHash = `hash_${randomUUID().slice(0, 8)}`;
@@ -771,11 +818,24 @@ server.post<{
     return;
   }
 
-  const account = await escrowAdapter.createConnectAccount({ userId, email: email || 'user@assurecode.io' });
-  const link = await escrowAdapter.createAccountLink({
+  // Same 404-before-500 reasoning as /api/kyc/verify: this is the freelancer's
+  // payout-onboarding entry point, and it should not answer 500 for an unknown
+  // account.
+  const userExists = await dbPool.query(`SELECT 1 FROM users WHERE user_id = $1`, [userId]);
+  if (userExists.rowCount === 0) {
+    return reply.status(404).send({ error: 'User not found' });
+  }
+
+  const account = await kycAdapter.createPayoutAccount({
+    userId,
+    email: email || 'user@assurecode.io',
+  });
+  const link = await kycAdapter.createPayoutOnboardingLink({
     accountId: account.accountId,
-    refreshUrl: 'http://localhost:3000/connect/refresh',
-    returnUrl: 'http://localhost:3000/connect/return',
+    // Hardcoded to localhost:3000 before, so every deployed environment sent
+    // the user to their own machine.
+    refreshUrl: `${config.WEB_APP_URL}/connect/refresh`,
+    returnUrl: `${config.WEB_APP_URL}/connect/return`,
   });
   return reply.send({
     accountId: account.accountId,
@@ -1000,57 +1060,331 @@ server.post<{
   });
 });
 
+/**
+ * Record a money-movement event in the audit log.
+ *
+ * This table has never contained a row. The insert it replaces named a
+ * `correlation_id` column the table did not have and omitted `payment_intent_id`,
+ * which was NOT NULL with no default, so every call raised 42703 straight into
+ * a catch block that logged and continued. V014 adds the missing columns and
+ * relaxes the constraint; this helper is the single writer.
+ *
+ * Failures are still swallowed — an audit write must not fail a payment that
+ * already happened — but they are logged loudly enough to notice.
+ *
+ * Returns whether a row was actually inserted, which doubles as the webhook
+ * dedupe gate. The unique index on `provider_event_id` means a redelivery
+ * conflicts and inserts nothing, so `false` says "this exact provider event has
+ * been seen before" atomically, with no read-then-write race. A `false` for an
+ * event with no provider id (our own routes, or a failed insert) is treated as
+ * "do not skip" by the only caller that checks.
+ */
+async function recordPaymentEvent(params: {
+  contractId: string;
+  eventType: string;
+  amountMinor: number;
+  orderId?: string | null;
+  paymentId?: string | null;
+  providerEventId?: string | null;
+  payload: Record<string, unknown>;
+}): Promise<{ inserted: boolean }> {
+  try {
+    const res = await dbPool.query(
+      `INSERT INTO payment_events
+         (order_id, payment_id, contract_id, event_type, amount_cents, payload,
+          correlation_id, provider_event_id, provider, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'razorpay', NOW())
+       -- The WHERE clause is not optional. idx_payment_events_provider_event is
+       -- a *partial* unique index, and Postgres will only infer a partial index
+       -- as the conflict arbiter when the statement repeats its predicate.
+       -- Without it every insert raised 42P10 (infer_arbiter_indexes) straight
+       -- into the catch below — which is the precise failure mode this function
+       -- was written to fix, so it is worth naming: a swallowed audit write
+       -- leaves no trace except an empty table.
+       ON CONFLICT (provider_event_id) WHERE provider_event_id IS NOT NULL DO NOTHING
+       RETURNING event_id`,
+      [
+        params.orderId ?? null,
+        params.paymentId ?? null,
+        params.contractId,
+        params.eventType,
+        params.amountMinor,
+        JSON.stringify(params.payload),
+        getCorrelationId() || null,
+        params.providerEventId ?? null,
+      ],
+    );
+    return { inserted: res.rowCount === 1 };
+  } catch (auditErr) {
+    logger.error(
+      { contractId: params.contractId, eventType: params.eventType, auditErr },
+      'Failed to record payment event',
+    );
+    return { inserted: false };
+  }
+}
+
+/**
+ * Fund a contract's escrow.
+ *
+ * Creates a Razorpay *order*, which is what Checkout opens against. No money is
+ * involved yet and no payment exists — the customer creates that by paying. The
+ * order is created with `payment_capture: 0` inside the adapter, so when they
+ * do, the payment settles at `authorized`: held, not taken. That is the escrow.
+ *
+ * Amounts are in the currency's minor unit (paise for INR), which is what
+ * Razorpay expects and what `escrow.amount_cents` has always stored.
+ */
 server.post<{
   Params: { contractId: string };
-  Body: { amountCents: number };
+  Body: { amountCents?: number; amountMinor?: number; currency?: string };
   Reply: {
     contractId: string;
-    paymentIntentId: string;
-    amountCents: number;
+    orderId: string;
+    amountMinor: number;
+    currency: string;
     status: string;
-    clientSecret: string;
+    keyId: string;
   };
 }>('/api/contracts/:contractId/escrow', clientVerified, async (request, reply) => {
   return withIdempotency(dbPool, request, reply, async () => {
     const { contractId } = request.params;
-    const { amountCents } = request.body;
+    // `amountCents` is accepted alongside `amountMinor` because tools/benchmark.js
+    // and tools/test_e2e_project_flow.js post it, and both meant minor units all
+    // along. Same number, clearer name.
+    const amountMinor = request.body.amountMinor ?? request.body.amountCents ?? 0;
+    const currency = request.body.currency ?? 'INR';
 
-    // Real Stripe PaymentIntent via adapter (or fake in test/offline).
-    const pi = await escrowAdapter.createPaymentIntent({
-      amountCents,
-      contractId,
-    });
+    if (!Number.isInteger(amountMinor) || amountMinor <= 0) {
+      return {
+        statusCode: 400,
+        contractId,
+        body: { error: 'amountMinor must be a positive integer in the minor unit (paise)' } as any,
+      };
+    }
+
+    // Reuse an unpaid order rather than minting another one.
+    //
+    // Without this, every click of "Fund escrow" creates a fresh Razorpay order
+    // — the idempotency middleware only dedupes when the caller sends an
+    // Idempotency-Key header, and a user retrying after dismissing Checkout
+    // sends nothing of the sort. The result would be a pile of orphan orders
+    // per contract and a `SELECT ... LIMIT 1` in the oracle picking arbitrarily
+    // between them. Matching on amount and currency means a genuine change of
+    // intent still gets a new order; the stale one simply lapses unpaid.
+    const reusable = await dbPool.query(
+      `SELECT order_id, amount_cents, currency, status FROM escrow
+        WHERE contract_id = $1 AND status = 'PENDING'
+          AND amount_cents = $2 AND currency = $3
+        ORDER BY created_at DESC LIMIT 1`,
+      [contractId, amountMinor, currency],
+    );
+
+    if (reusable.rowCount === 1) {
+      const existing = reusable.rows[0];
+      logger.info(
+        { contractId, orderId: existing.order_id },
+        'Reusing the existing unpaid escrow order',
+      );
+      return {
+        statusCode: 200,
+        contractId,
+        body: {
+          contractId,
+          orderId: existing.order_id,
+          amountMinor: Number(existing.amount_cents),
+          currency: existing.currency,
+          status: 'created',
+          keyId: config.RAZORPAY_KEY_ID ?? '',
+        },
+      };
+    }
+
+    const order = await payments.createOrder({ amountMinor, currency, contractId });
 
     logger.info(
-      { contractId, paymentIntentId: pi.paymentIntentId, status: pi.status },
-      'Escrow PaymentIntent created',
+      { contractId, orderId: order.orderId, amountMinor, currency, status: order.status },
+      'Escrow order created',
     );
 
-    await ledgerClient.append(
-      contractId,
-      'ESCROW_CREATED',
-      { paymentIntentId: pi.paymentIntentId, amountCents, status: pi.status },
-    );
+    await ledgerClient.append(contractId, 'ESCROW_CREATED', {
+      orderId: order.orderId,
+      amountMinor,
+      currency,
+      status: order.status,
+    });
 
-    // The escrow table has existed since V001 and was never written to, so the
-    // settlement worker had no way to look up which PaymentIntent to capture —
-    // which is why it only ever called transferToFreelancer with a placeholder
-    // destination account. Record it here; capture needs it.
+    // `order_id` is the primary key and is known now; `payment_id` stays NULL
+    // until the customer actually pays. That gap is exactly what distinguishes
+    // 'PENDING' from 'AUTHORIZED', and why the oracle must not capture on
+    // 'PENDING'.
     await dbPool.query(
-      `INSERT INTO escrow (payment_intent_id, contract_id, amount_cents, status)
-       VALUES ($1, $2, $3, 'PENDING')
-       ON CONFLICT (payment_intent_id) DO NOTHING`,
-      [pi.paymentIntentId, contractId, amountCents],
+      `INSERT INTO escrow (order_id, contract_id, amount_cents, currency, status)
+       VALUES ($1, $2, $3, $4, 'PENDING')
+       ON CONFLICT (order_id) DO NOTHING`,
+      [order.orderId, contractId, amountMinor, currency],
     );
 
-    try {
-      await dbPool.query(
-        `INSERT INTO payment_events (contract_id, event_type, amount_cents, payload, correlation_id, created_at)
-         VALUES ($1, 'escrow.created', $2, $3, $4, NOW())`,
-        [contractId, amountCents, JSON.stringify({ paymentIntentId: pi.paymentIntentId, status: pi.status }), (request.headers['x-correlation-id'] as string) || null]
+    await recordPaymentEvent({
+      contractId,
+      eventType: 'escrow.created',
+      amountMinor,
+      orderId: order.orderId,
+      payload: { orderId: order.orderId, currency, status: order.status },
+    });
+
+    return {
+      statusCode: 200,
+      contractId,
+      body: {
+        contractId,
+        orderId: order.orderId,
+        amountMinor: order.amountMinor,
+        currency: order.currency,
+        status: order.status,
+        // Public key, returned so the browser can open Checkout. Serving it
+        // from here rather than baking it into the web bundle keeps one source
+        // of truth and makes rotation a restart rather than a rebuild.
+        keyId: config.RAZORPAY_KEY_ID ?? '',
+      },
+    };
+  });
+});
+
+/**
+ * Confirm escrow funding from the Checkout callback.
+ *
+ * When a payment succeeds, Razorpay hands the browser `razorpay_payment_id`,
+ * `razorpay_order_id` and `razorpay_signature` — an HMAC over `orderId|paymentId`
+ * keyed by the API key secret. Verifying it here is what lets funding be
+ * confirmed without a publicly reachable webhook URL, which matters because
+ * Razorpay cannot deliver webhooks to a developer's localhost.
+ *
+ * The client is not trusted beyond the signature: the order must belong to this
+ * contract, and the payment's status is re-read from Razorpay rather than taken
+ * from the browser's word. The webhook remains the authoritative confirmation;
+ * this is the fast path, and the two converge on the same row.
+ */
+server.post<{
+  Params: { contractId: string };
+  Body: { razorpayOrderId: string; razorpayPaymentId: string; razorpaySignature: string };
+  Reply:
+    | { contractId: string; orderId: string; paymentId: string; status: string; amountMinor: number }
+    | { error: string; message?: string };
+}>('/api/contracts/:contractId/escrow/verify', clientVerified, async (request, reply) => {
+  return withIdempotency(dbPool, request, reply, async () => {
+    const { contractId } = request.params;
+    const { razorpayOrderId, razorpayPaymentId, razorpaySignature } = request.body || {};
+
+    if (!razorpayOrderId || !razorpayPaymentId || !razorpaySignature) {
+      return {
+        statusCode: 400,
+        contractId,
+        body: {
+          error: 'razorpayOrderId, razorpayPaymentId and razorpaySignature are required',
+        } as any,
+      };
+    }
+
+    if (
+      !payments.verifyCheckoutSignature({
+        orderId: razorpayOrderId,
+        paymentId: razorpayPaymentId,
+        signature: razorpaySignature,
+      })
+    ) {
+      logger.warn(
+        { contractId, orderId: razorpayOrderId },
+        'Razorpay checkout signature verification failed',
       );
-    } catch (auditErr) {
-      logger.error({ contractId, auditErr }, 'Failed to record escrow.created in payment_events');
+      return { statusCode: 401, contractId, body: { error: 'Invalid signature' } as any };
+    }
+
+    // A valid signature proves Razorpay issued this order/payment pair. It does
+    // not prove the order belongs to *this* contract — without this check, a
+    // client could confirm one contract's escrow using another's genuine
+    // payment.
+    const escrowRow = await dbPool.query(
+      `SELECT contract_id, amount_cents, currency, status FROM escrow WHERE order_id = $1`,
+      [razorpayOrderId],
+    );
+    if (escrowRow.rowCount === 0) {
+      return { statusCode: 404, contractId, body: { error: 'Escrow order not found' } as any };
+    }
+    if (escrowRow.rows[0].contract_id !== contractId) {
+      logger.warn(
+        { contractId, orderId: razorpayOrderId, actual: escrowRow.rows[0].contract_id },
+        'Checkout callback presented an order belonging to a different contract',
+      );
+      return {
+        statusCode: 403,
+        contractId,
+        body: { error: 'Order does not belong to this contract' } as any,
+      };
+    }
+
+    // Re-read from Razorpay rather than trusting the browser about state.
+    const payment = await payments.fetchPayment(razorpayPaymentId);
+    if (payment.status !== 'authorized' && payment.status !== 'captured') {
+      return {
+        statusCode: 409,
+        contractId,
+        body: {
+          error: 'Payment is not authorized',
+          message: `Razorpay reports status '${payment.status}'`,
+        } as any,
+      };
+    }
+
+    // Guarded on 'PENDING' so a repeat call — or a webhook that already landed
+    // — cannot move a RELEASED or FAILED escrow backwards.
+    const updated = await dbPool.query(
+      `UPDATE escrow
+          SET status = 'AUTHORIZED', payment_id = $1, authorized_at = COALESCE(authorized_at, NOW())
+        WHERE order_id = $2 AND status = 'PENDING'
+        RETURNING amount_cents, currency`,
+      [razorpayPaymentId, razorpayOrderId],
+    );
+
+    if (updated.rowCount === 1) {
+      await ledgerClient.append(contractId, 'ESCROW_AUTHORIZED', {
+        orderId: razorpayOrderId,
+        paymentId: razorpayPaymentId,
+        amountMinor: Number(updated.rows[0].amount_cents),
+        currency: updated.rows[0].currency,
+      });
+
+      await recordPaymentEvent({
+        contractId,
+        eventType: 'escrow.authorized',
+        amountMinor: Number(updated.rows[0].amount_cents),
+        orderId: razorpayOrderId,
+        paymentId: razorpayPaymentId,
+        payload: { source: 'checkout_callback', status: payment.status },
+      });
+
+      await eventBus.publish(
+        EVENT_TOPICS.ESCROW_LOCKED,
+        {
+          contractId,
+          orderId: razorpayOrderId,
+          paymentId: razorpayPaymentId,
+          type: 'payment.authorized',
+        },
+        getCorrelationId() || randomUUID(),
+      );
+
+      logger.info(
+        { contractId, orderId: razorpayOrderId, paymentId: razorpayPaymentId },
+        'Escrow funded; funds authorized and held',
+      );
+    } else {
+      // Already advanced past PENDING — the webhook won the race. Idempotent
+      // by design, so this is a 200, not a conflict.
+      logger.info(
+        { contractId, orderId: razorpayOrderId, status: escrowRow.rows[0].status },
+        'Escrow already confirmed; checkout callback was a no-op',
+      );
     }
 
     return {
@@ -1058,10 +1392,10 @@ server.post<{
       contractId,
       body: {
         contractId,
-        paymentIntentId: pi.paymentIntentId,
-        amountCents: pi.amountCents,
-        status: pi.status,
-        clientSecret: pi.clientSecret,
+        orderId: razorpayOrderId,
+        paymentId: razorpayPaymentId,
+        status: 'AUTHORIZED',
+        amountMinor: Number(escrowRow.rows[0].amount_cents),
       },
     };
   });
@@ -1112,49 +1446,166 @@ server.post<{
   });
 });
 
-// ── Stripe Webhook ──────────────────────────────────────────────────────
+// ── Razorpay Webhook ────────────────────────────────────────────────────
 
+/**
+ * Razorpay's authoritative confirmation of a payment's state.
+ *
+ * Public by virtue of the `/webhooks/` prefix in the auth plugin's allow-list —
+ * the HMAC *is* the authentication here, so a JWT check would only reject a
+ * caller that has no way to hold one.
+ *
+ * Two Razorpay-specific facts shape this handler:
+ *
+ *   1. The event id is not in the body. Unlike Stripe, Razorpay carries it in
+ *      the `x-razorpay-event-id` header, and it is the only stable dedupe key.
+ *   2. Deliveries are retried until Razorpay gets a 2xx, so the same event
+ *      arrives more than once as a matter of course — not as an anomaly. Every
+ *      write below is therefore either guarded on current status or protected
+ *      by the unique index on payment_events.provider_event_id.
+ *
+ * The route answers 200 for anything it has authenticated, including events it
+ * does not act on. Answering non-2xx would make Razorpay retry an event we have
+ * already handled correctly.
+ */
 server.post<{
   Reply: { received: boolean } | { error: string };
-}>('/webhooks/stripe', async (request, reply) => {
-  const signature = request.headers['stripe-signature'] ?? '';
+}>('/webhooks/razorpay', async (request, reply) => {
+  const signature = request.headers['x-razorpay-signature'] ?? '';
+  const providerEventId = (request.headers['x-razorpay-event-id'] as string) || null;
 
-  // The bytes as Stripe sent them, captured by the content-type parser above.
-  // Re-serialising the parsed body here is what made every real signature fail.
+  // The bytes as Razorpay sent them, captured by the content-type parser above.
+  // Re-serialising the parsed body here is what made every real signature fail
+  // under the previous provider.
   const rawBody = (request as any).rawBody as Buffer | undefined;
-  if (!rawBody) {
+  // `rawBody.length === 0`, not just `!rawBody`: an empty Buffer is truthy, so
+  // the bare guard let a zero-byte request through to signature verification
+  // and answered 401 "Invalid signature" for what is really a malformed
+  // request. Both reject, but only one of them tells the truth about why.
+  if (!rawBody || rawBody.length === 0) {
     return reply.status(400).send({ error: 'Empty request body' });
   }
 
-  const verification = await escrowAdapter.verifyWebhook(rawBody, String(signature));
+  const verification = await payments.verifyWebhook(rawBody, String(signature));
 
   if (!verification.valid) {
-    logger.warn({ error: verification.error }, 'Stripe webhook signature verification failed');
+    logger.warn({ error: verification.error }, 'Razorpay webhook signature verification failed');
     return reply.status(401).send({ error: 'Invalid signature' });
   }
 
   const event = verification.event!;
-  logger.info({ type: event.type, id: event.id }, 'Stripe webhook verified');
+  const paymentEntity = paymentEntityOf(event);
+  const orderEntity = orderEntityOf(event);
 
-  // Handle escrow capture / payment_intent.succeeded events.
-  if (event.type === 'payment_intent.succeeded' || event.type === 'payment_intent.payment_failed') {
-    const piId = event.data.object.id;
-    const metadata = event.data.object as { metadata?: { contractId?: string } };
-    const contractId = metadata.metadata?.contractId ?? '';
-    if (contractId) {
-      const correlationId = randomUUID();
-      await ledgerClient.append(contractId, 'ESCROW_EVENT', {
-        paymentIntentId: piId,
-        type: event.type,
+  const paymentId = paymentEntity?.id ? String(paymentEntity.id) : null;
+  const orderId = paymentEntity?.order_id
+    ? String(paymentEntity.order_id)
+    : orderEntity?.id
+      ? String(orderEntity.id)
+      : null;
+
+  logger.info({ type: event.event, paymentId, orderId, providerEventId }, 'Razorpay webhook verified');
+
+  if (!orderId && !paymentId) {
+    return reply.status(200).send({ received: true });
+  }
+
+  // Resolve the contract from our own escrow row rather than from the event's
+  // notes. Razorpay copies order notes onto a payment inconsistently, and the
+  // escrow table is the record we actually wrote.
+  const escrowRow = await dbPool.query(
+    `SELECT contract_id, order_id, amount_cents, currency, status FROM escrow
+      WHERE order_id = $1 OR payment_id = $2
+      LIMIT 1`,
+    [orderId, paymentId],
+  );
+
+  if (escrowRow.rowCount === 0) {
+    logger.warn({ orderId, paymentId }, 'Razorpay webhook for an unknown escrow; ignoring');
+    return reply.status(200).send({ received: true });
+  }
+
+  const contractId: string = escrowRow.rows[0].contract_id;
+  const amountMinor = Number(escrowRow.rows[0].amount_cents);
+  const correlationId = getCorrelationId() || randomUUID();
+
+  // The dedupe gate, and the reason it comes before any other write: the unique
+  // index on provider_event_id means a redelivery conflicts and inserts nothing,
+  // so `inserted === false` identifies a repeat atomically. Checking by reading
+  // first would race two concurrent deliveries of the same event straight past
+  // each other and append the ledger entry twice.
+  const audit = await recordPaymentEvent({
+    contractId,
+    eventType: event.event,
+    amountMinor,
+    orderId: escrowRow.rows[0].order_id,
+    paymentId,
+    providerEventId,
+    payload: { source: 'webhook', status: paymentEntity?.status ?? null },
+  });
+
+  if (providerEventId && !audit.inserted) {
+    logger.info(
+      { providerEventId, contractId },
+      'Razorpay webhook already processed; ignoring redelivery',
+    );
+    return reply.status(200).send({ received: true });
+  }
+
+  if (event.event === 'payment.authorized' || event.event === 'order.paid') {
+    const updated = await dbPool.query(
+      `UPDATE escrow
+          SET status = 'AUTHORIZED', payment_id = $1, authorized_at = COALESCE(authorized_at, NOW())
+        WHERE order_id = $2 AND status = 'PENDING'
+        RETURNING order_id`,
+      [paymentId, escrowRow.rows[0].order_id],
+    );
+
+    // Only append to the ledger if this call is what made the transition. The
+    // /escrow/verify route may have got there first, and a hash chain with two
+    // entries for one event is a chain that misreports what happened.
+    if (updated.rowCount === 1) {
+      await ledgerClient.append(contractId, 'ESCROW_AUTHORIZED', {
+        orderId: escrowRow.rows[0].order_id,
+        paymentId,
+        amountMinor,
+        currency: escrowRow.rows[0].currency,
       });
-      // BUG-002: Use ESCROW_LOCKED — not CONTRACT_LOCKED — so payment webhooks don't
+      // BUG-002: ESCROW_LOCKED, not CONTRACT_LOCKED — payment webhooks must not
       // re-trigger the contract-lock subscriber flow and corrupt ledger state.
       await eventBus.publish(
         EVENT_TOPICS.ESCROW_LOCKED,
-        { contractId, paymentIntentId: piId, type: event.type },
+        { contractId, orderId: escrowRow.rows[0].order_id, paymentId, type: 'payment.authorized' },
         correlationId,
       );
     }
+  } else if (event.event === 'payment.failed') {
+    const updated = await dbPool.query(
+      `UPDATE escrow SET status = 'FAILED'
+        WHERE order_id = $1 AND status IN ('PENDING', 'AUTHORIZED')
+        RETURNING order_id`,
+      [escrowRow.rows[0].order_id],
+    );
+
+    if (updated.rowCount === 1) {
+      await ledgerClient.append(contractId, 'ESCROW_EVENT', {
+        orderId: escrowRow.rows[0].order_id,
+        paymentId,
+        type: event.event,
+        errorDescription: paymentEntity?.error_description ?? null,
+      });
+      await eventBus.publish(
+        EVENT_TOPICS.ESCROW_LOCKED,
+        { contractId, orderId: escrowRow.rows[0].order_id, paymentId, type: 'payment.failed' },
+        correlationId,
+      );
+      logger.warn({ contractId, paymentId }, 'Escrow payment failed; marked FAILED');
+    }
+  } else if (event.event === 'payment.captured') {
+    // The settlement worker captures and writes RELEASED in the same
+    // transaction as the ledger entry, so this is confirmation of something
+    // already recorded, not a state change to apply.
+    logger.info({ contractId, paymentId }, 'Razorpay confirmed capture of released escrow');
   }
 
   return reply.status(200).send({ received: true });
@@ -1484,7 +1935,7 @@ server.get<{
   };
 
   try {
-    const aiRes = await fetch(`${scorerUrl}/xai/score`, {
+    const aiRes = await fetch(`${aiServiceUrl}/xai/score`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1647,10 +2098,13 @@ server.get<{
         blockers: string[];
         scopeChecks: { allowed: number; rejected: number; total: number };
         escrow: {
-          paymentIntentId: string;
-          amountCents: number;
+          orderId: string;
+          paymentId: string | null;
+          amountMinor: number;
+          currency: string;
           status: string;
           createdAt: string;
+          authorizedAt: string | null;
         } | null;
         settlement: { status: string; transferId: string | null; updatedAt: string } | null;
       }
@@ -1676,9 +2130,11 @@ server.get<{
     const sc = scopeRes.rows[0] ?? {};
 
     // Any escrow row, not just PENDING: after a capture the row is RELEASED,
-    // and the UI needs to be able to say so.
+    // and the UI needs to be able to say so. It also drives the funding panel —
+    // a row at PENDING means an order exists that nobody has paid yet, which is
+    // exactly when the UI should offer Checkout.
     const escrowRes = await dbPool.query(
-      `SELECT payment_intent_id, amount_cents, status, created_at
+      `SELECT order_id, payment_id, amount_cents, currency, status, created_at, authorized_at
          FROM escrow WHERE contract_id = $1
         ORDER BY created_at DESC LIMIT 1`,
       [contractId],
@@ -1711,10 +2167,17 @@ server.get<{
       },
       escrow: escrowRow
         ? {
-            paymentIntentId: escrowRow.payment_intent_id,
-            amountCents: Number(escrowRow.amount_cents),
+            orderId: escrowRow.order_id,
+            // NULL until the customer pays — the difference between an order
+            // that exists and funds that are actually held.
+            paymentId: escrowRow.payment_id ?? null,
+            amountMinor: Number(escrowRow.amount_cents),
+            currency: escrowRow.currency ?? 'INR',
             status: escrowRow.status,
             createdAt: new Date(escrowRow.created_at).toISOString(),
+            authorizedAt: escrowRow.authorized_at
+              ? new Date(escrowRow.authorized_at).toISOString()
+              : null,
           }
         : null,
       settlement: settlementRow

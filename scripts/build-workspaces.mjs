@@ -16,7 +16,8 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const ORDER = [
   'packages/shared',
   'packages/telemetry',
-  'packages/stripe-adapter',
+  'packages/razorpay-adapter',
+  'packages/kyc-adapter',
   'packages/config',
   'packages/event-bus',
   'packages/ledger-client',

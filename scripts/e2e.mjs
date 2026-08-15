@@ -73,7 +73,11 @@ const TEST_ENV = {
   // with SERVICE_TOKEN (see tools/test-support/infra.ts serviceAuthHeaders).
   JWT_SECRET: 'e2e_jwt_secret_not_for_production',
   SERVICE_TOKEN: 'e2e_service_token_not_for_production',
-  STRIPE_SECRET_KEY: 'sk_test_mock',
+  // Not an `rzp_` key, so createRazorpayAdapter() selects FakeRazorpayAdapter
+  // and the escrow flow runs without touching Razorpay's API.
+  RAZORPAY_KEY_ID: 'rzp_test_mock',
+  RAZORPAY_KEY_SECRET: 'e2e_razorpay_secret_not_for_production',
+  RAZORPAY_WEBHOOK_SECRET: 'e2e_razorpay_webhook_secret_not_for_production',
 };
 
 const args = process.argv.slice(2);

@@ -99,7 +99,7 @@ export function KycVerificationModal({ isOpen, onClose, currentUser, onKycComple
 
               <div className="p-3 bg-ink-2 border border-rule text-prose-muted text-[11px] space-y-1">
                 <div className="text-prose font-bold flex items-center gap-1.5">
-                  <Lock className="w-3.5 h-3.5 text-signal" /> Stripe Identity & AML Screening
+                  <Lock className="w-3.5 h-3.5 text-signal" /> Identity &amp; AML Screening
                 </div>
                 <p>
                   Documents are encrypted via AES-256 and matched against global OFAC sanctions databases.

@@ -16,7 +16,7 @@ COPY packages/telemetry/package*.json ./packages/telemetry/
 COPY packages/event-bus/package*.json ./packages/event-bus/
 COPY packages/ledger-client/package*.json ./packages/ledger-client/
 COPY packages/oracle/package*.json ./packages/oracle/
-COPY packages/stripe-adapter/package*.json ./packages/stripe-adapter/
+COPY packages/razorpay-adapter/package*.json ./packages/razorpay-adapter/
 COPY apps/settlement-worker/package*.json ./apps/settlement-worker/
 
 RUN npm ci

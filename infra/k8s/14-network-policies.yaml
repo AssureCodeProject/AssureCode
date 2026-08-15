@@ -107,7 +107,7 @@ spec:
               - key: app
                 operator: In
                 values: ["postgres", "redis", "ai-service", "scope-guard"]
-    # Outbound to the internet: Stripe's API and the LLM providers. Port 443
+    # Outbound to the internet: Razorpay's API and the LLM providers. Port 443
     # only — there is no reason for this service to speak plaintext HTTP
     # outward. Narrow this to provider CIDRs if your environment can.
     - to:
@@ -239,7 +239,7 @@ spec:
               - key: app
                 operator: In
                 values: ["postgres", "redis"]
-    # Stripe's API, for the eventual payout leg.
+    # Razorpay's API — this worker captures the held payment on release.
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0

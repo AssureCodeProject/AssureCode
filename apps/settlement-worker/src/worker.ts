@@ -5,18 +5,23 @@
  * The gate is `trustScore >= 85 && criticalVulns === 0`, evaluated alongside the
  * four CI signals, against state held in Postgres rather than in this process.
  *
- * Release is a *capture*, not a transfer. StripeEscrowAdapter creates the
- * PaymentIntent with `capture_method: 'manual'`, which is what makes the funds
- * genuinely held: the money is authorised at contract time and only moves when
- * the oracle captures it. The previous implementation skipped the capture and
- * called transferToFreelancer with the hardcoded destination
- * 'acct_freelancer_123', so the escrow was never actually released and every
- * settlement paid the same placeholder account.
+ * Release is a *capture*, not a transfer. The gateway creates the Razorpay
+ * order with `payment_capture: 0`, so the customer's payment settles at status
+ * `authorized` — the funds are held on their card but have not moved. Capturing
+ * that payment is what actually takes the money, and this worker is the only
+ * thing that calls it. An earlier implementation skipped the capture and
+ * transferred to a hardcoded destination account, so the escrow was never
+ * really released and every settlement paid the same placeholder.
+ *
+ * The worker captures a *payment*, never an order. Razorpay's order is created
+ * before anyone has paid it; only the payment that fulfils it can be captured,
+ * which is why OracleStore.findEscrowPayment() matches on status 'AUTHORIZED'
+ * and refuses rows whose payment_id is still NULL.
  */
 import { createEventBus, eventBusOptionsFromConfig } from '@assurecode/event-bus';
 import { loadConfig, createLogger, getDatabaseUrl, buildDbConfig } from '@assurecode/config';
 import { LedgerClient } from '@assurecode/ledger-client';
-import { createEscrowAdapter } from '@assurecode/stripe-adapter';
+import { createRazorpayAdapter } from '@assurecode/razorpay-adapter';
 import { EVENT_TOPICS, EventEnvelope, SettlementRequested } from '@assurecode/shared';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
@@ -28,9 +33,10 @@ const databaseUrl = getDatabaseUrl(config);
 
 const dbPool = new pg.Pool(buildDbConfig(databaseUrl));
 const ledgerClient = new LedgerClient(databaseUrl);
-const escrowAdapter = createEscrowAdapter({
-  secretKey: config.STRIPE_SECRET_KEY ?? '',
-  webhookSecret: config.STRIPE_WEBHOOK_SECRET ?? '',
+const payments = createRazorpayAdapter({
+  keyId: config.RAZORPAY_KEY_ID ?? '',
+  keySecret: config.RAZORPAY_KEY_SECRET ?? '',
+  webhookSecret: config.RAZORPAY_WEBHOOK_SECRET ?? '',
 });
 
 const eventBus = createEventBus(eventBusOptionsFromConfig(config));
@@ -134,47 +140,79 @@ function subscribeScopeDecisions(): void {
 
 // ── 3b. Escrow funding ───────────────────────────────────────────────
 //
-// The gateway publishes ESCROW_LOCKED from the Stripe webhook and nothing
-// subscribed to it, so a PaymentIntent that succeeded or failed at Stripe left
-// the local escrow row at 'PENDING' forever. That matters for settlement:
-// findEscrowPaymentIntent() selects on status = 'PENDING', so a *failed*
-// payment stayed eligible for capture and a settlement would try to release
-// funds that were never collected.
+// The gateway publishes ESCROW_LOCKED whenever a payment's state changes —
+// from the Razorpay webhook, and from the /escrow/verify route that confirms a
+// Checkout callback. Nothing subscribed to this originally, so a payment that
+// succeeded or failed at the provider left the local escrow row at 'PENDING'
+// forever. That is a settlement problem in both directions: a *failed* payment
+// stayed eligible for capture, and an *authorised* one was never marked as the
+// funded escrow the oracle looks for.
+//
+// The gateway writes these transitions too, and does so first. This subscriber
+// is the safety net for the case where the gateway's own write failed after it
+// had already published — hence the status guards on both updates, which make
+// a redundant apply a no-op rather than a regression.
 function subscribeEscrowEvents(): void {
   void eventBus.subscribe(EVENT_TOPICS.ESCROW_LOCKED, async (event: EventEnvelope) => {
     const payload = event.payload as {
       contractId?: string;
-      paymentIntentId?: string;
+      orderId?: string;
+      paymentId?: string;
       type?: string;
     };
-    if (!payload?.paymentIntentId) return;
+    if (!payload?.paymentId) return;
 
-    // Only a failure changes the row. A success leaves it PENDING, which is
-    // correct: with capture_method 'manual' the funds are authorised but still
-    // held, and the oracle is what decides whether they are captured.
-    if (payload.type !== 'payment_intent.payment_failed') {
-      logger.info(
-        { contractId: payload.contractId, type: payload.type },
-        'Escrow event observed; PaymentIntent remains held pending oracle verdict',
-      );
+    // 'payment.failed' is the only event that takes an escrow out of play;
+    // 'payment.authorized' is the one that puts it in. Anything else — a
+    // capture notification for money this worker itself just took, say — is
+    // observational.
+    if (payload.type === 'payment.failed') {
+      try {
+        await dbPool.query(
+          `UPDATE escrow SET status = 'FAILED'
+            WHERE payment_id = $1 AND status IN ('PENDING', 'AUTHORIZED')`,
+          [payload.paymentId],
+        );
+        logger.warn(
+          { contractId: payload.contractId, paymentId: payload.paymentId },
+          'Escrow payment failed; marked FAILED so it cannot be captured',
+        );
+      } catch (err: any) {
+        logger.error(
+          { contractId: payload.contractId, err: err.message },
+          'Failed to mark escrow row FAILED',
+        );
+      }
       return;
     }
 
-    try {
-      await dbPool.query(
-        `UPDATE escrow SET status = 'FAILED' WHERE payment_intent_id = $1 AND status = 'PENDING'`,
-        [payload.paymentIntentId],
-      );
-      logger.warn(
-        { contractId: payload.contractId, paymentIntentId: payload.paymentIntentId },
-        'Escrow payment failed; marked FAILED so it cannot be captured',
-      );
-    } catch (err: any) {
-      logger.error(
-        { contractId: payload.contractId, err: err.message },
-        'Failed to mark escrow row FAILED',
-      );
+    if (payload.type === 'payment.authorized' || payload.type === 'order.paid') {
+      try {
+        // Guarded on 'PENDING' so this cannot drag a RELEASED or FAILED escrow
+        // back into a capturable state if the event is redelivered late.
+        await dbPool.query(
+          `UPDATE escrow
+              SET status = 'AUTHORIZED', payment_id = $1, authorized_at = COALESCE(authorized_at, NOW())
+            WHERE order_id = $2 AND status = 'PENDING'`,
+          [payload.paymentId, payload.orderId ?? null],
+        );
+        logger.info(
+          { contractId: payload.contractId, paymentId: payload.paymentId },
+          'Escrow funds authorized and held pending oracle verdict',
+        );
+      } catch (err: any) {
+        logger.error(
+          { contractId: payload.contractId, err: err.message },
+          'Failed to mark escrow row AUTHORIZED',
+        );
+      }
+      return;
     }
+
+    logger.info(
+      { contractId: payload.contractId, type: payload.type },
+      'Escrow event observed; no state change',
+    );
   });
 }
 
@@ -191,7 +229,7 @@ function subscribeEscrowEvents(): void {
  * A previously FAILED attempt is re-claimable. `ON CONFLICT DO NOTHING` alone
  * was not: markSettlementFailed() leaves the row behind at status 'FAILED',
  * `contract_id` is the primary key (V004), so after any transient failure — a
- * Stripe timeout, a momentary database blip — the insert could never win again
+ * Razorpay timeout, a momentary database blip — the insert could never win again
  * and the contract was permanently unsettleable with money still held in
  * escrow. The WHERE clause is what keeps this from also re-claiming a
  * PROCESSING or COMPLETED row: those are still the exactly-once cases.
@@ -230,11 +268,11 @@ async function claimSettlement(contractId: string): Promise<boolean> {
 async function commitSettlement(args: {
   contractId: string;
   freelancerId: string;
-  paymentIntentId: string;
+  paymentId: string;
   trustScore: number | null;
   settlementPayload: Record<string, unknown>;
 }): Promise<void> {
-  const { contractId, freelancerId, paymentIntentId, trustScore, settlementPayload } = args;
+  const { contractId, freelancerId, paymentId, trustScore, settlementPayload } = args;
 
   const client = await dbPool.connect();
   try {
@@ -243,14 +281,14 @@ async function commitSettlement(args: {
     // what happened rather than a generic INVOICE.
     await ledgerClient.append(contractId, 'SETTLEMENT_COMPLETED', settlementPayload, client);
     await client.query(
-      `UPDATE escrow SET status = 'RELEASED' WHERE payment_intent_id = $1`,
-      [paymentIntentId],
+      `UPDATE escrow SET status = 'RELEASED' WHERE payment_id = $1`,
+      [paymentId],
     );
     await client.query(
       `UPDATE settlements
           SET status = 'COMPLETED', transfer_id = $1, updated_at = NOW()
         WHERE contract_id = $2`,
-      [paymentIntentId, contractId],
+      [paymentId, contractId],
     );
 
     // Write the measured trust score back onto the freelancer's profile,
@@ -346,22 +384,32 @@ function subscribeSettlementRequests(): void {
     );
 
     try {
-      const held = await oracle.findEscrowPaymentIntent(contractId);
+      const held = await oracle.findEscrowPayment(contractId);
       if (!held) {
         throw new Error(
-          `no PENDING escrow PaymentIntent found for ${contractId}; nothing to release`,
+          `no AUTHORIZED escrow payment found for ${contractId}; nothing to release`,
         );
       }
 
       // Release the held funds. This is the action the whole oracle exists to
       // authorise.
-      const captured = await escrowAdapter.capturePaymentIntent(held.paymentIntentId);
+      //
+      // Capture the amount that was authorised, not the amount named in the
+      // settlement request. Razorpay rejects a capture whose amount or currency
+      // differs from the authorisation, and the escrow row is the record of
+      // what the client actually committed — an event payload is not.
+      const captured = await payments.capturePayment({
+        paymentId: held.paymentId,
+        amountMinor: held.amountMinor,
+        currency: held.currency,
+      });
 
       const settlementPayload = {
         contractId,
         freelancerId,
-        amountCents: amountCents ?? held.amountCents,
-        paymentIntentId: held.paymentIntentId,
+        amountCents: amountCents ?? held.amountMinor,
+        paymentId: held.paymentId,
+        currency: held.currency,
         captureStatus: captured.status,
         trustScore: verdict.signals.trustScore,
         criticalVulns: verdict.signals.criticalVulns,
@@ -372,14 +420,14 @@ function subscribeSettlementRequests(): void {
       await commitSettlement({
         contractId,
         freelancerId,
-        paymentIntentId: held.paymentIntentId,
+        paymentId: held.paymentId,
         trustScore: verdict.signals.trustScore,
         settlementPayload,
       });
 
       await eventBus.publish(EVENT_TOPICS.SETTLEMENT_COMPLETED, settlementPayload, correlationId);
       logger.info(
-        { contractId, paymentIntentId: held.paymentIntentId },
+        { contractId, paymentId: held.paymentId },
         'Settlement complete, escrow released',
       );
 

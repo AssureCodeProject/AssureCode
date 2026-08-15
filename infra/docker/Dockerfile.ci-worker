@@ -50,12 +50,17 @@ COPY scripts/ ./scripts/
 # Explicit workspace list, not a bare `npm run build`.
 #
 # `COPY packages/ ./packages/` above brings in every package, including
-# stripe-adapter, ledger-client and oracle — none of which this service uses and
-# none of whose manifests were installed by the `npm ci` above. The skip in
+# razorpay-adapter, ledger-client and oracle — none of which this service uses
+# and none of whose manifests were installed by the `npm ci` above. The skip in
 # scripts/build-workspaces.mjs keys off a missing tsconfig, and those tsconfigs
-# are present, so a bare build walks the full ORDER and dies on
-# `error TS2307: Cannot find module 'stripe'`. Naming the workspaces is the
-# mechanism that script already provides, and what Dockerfile.migrate uses.
+# are present, so a bare build walks the full ORDER and compiles workspaces this
+# image has no node_modules for. Naming the workspaces is the mechanism that
+# script already provides, and what Dockerfile.migrate uses.
+#
+# This used to fail concretely on `TS2307: Cannot find module 'stripe'`. The
+# Razorpay adapter calls the REST API over fetch and has no third-party
+# dependency, so that particular error is gone — but the list stays, because
+# building packages this image does not ship is still waste.
 RUN node scripts/build-workspaces.mjs \
       packages/shared \
       packages/telemetry \

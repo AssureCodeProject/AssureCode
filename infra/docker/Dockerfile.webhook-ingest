@@ -26,7 +26,7 @@ COPY scripts/ ./scripts/
 
 # Explicit workspace list — see the same block in Dockerfile.ci-worker. A bare
 # `npm run build` here walks the full ORDER in scripts/build-workspaces.mjs and
-# fails compiling stripe-adapter, whose manifest this image never installs.
+# compiles workspaces whose manifests this image never installs.
 RUN node scripts/build-workspaces.mjs \
       packages/shared \
       packages/telemetry \

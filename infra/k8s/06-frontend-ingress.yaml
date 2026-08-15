@@ -105,7 +105,7 @@ spec:
                 name: api-gateway
                 port:
                   number: 4000
-          # Stripe posts to /webhooks/stripe on the gateway. Same failure
+          # Razorpay posts to /webhooks/razorpay on the gateway. Same failure
           # mode: routed to the SPA, so signature verification never ran.
           # (GitHub's webhook goes to the separate webhook-ingest Service,
           # which needs its own host or path rule once a domain exists.)

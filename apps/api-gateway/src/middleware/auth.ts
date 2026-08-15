@@ -18,7 +18,7 @@ import type { AuthUser } from './rbac.js';
  * metrics probes (an orchestrator has no user session), and the two
  * machine-to-machine webhooks, which authenticate by HMAC signature over the
  * raw body rather than by user identity — putting them behind a user JWT
- * would make Stripe and GitHub unable to call us at all.
+ * would make Razorpay and GitHub unable to call us at all.
  */
 const PUBLIC_PATHS = new Set(['/healthz', '/readyz', '/metrics', '/auth/login']);
 const PUBLIC_PREFIXES = ['/webhooks/'];

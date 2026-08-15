@@ -71,8 +71,23 @@ export const AppConfigSchema = z.object({
   EVENT_BUS_TYPE: z.enum(['memory', 'redis', 'kafka']).optional(),
   KAFKA_BROKERS: z.string().default('localhost:9092'),
 
-  // ai-service base URL — Layer 2 of the OWASP scan is delegated to it.
+  // Downstream service base URLs.
+  //
+  // These are the addresses services use to reach each other, and they must be
+  // declared here rather than derived from the *_PORT vars below. The gateway
+  // previously built the ai-service URL as `http://localhost:${AI_SERVICE_PORT}`,
+  // which is correct only when everything runs on one host: inside a container
+  // that resolves to the gateway itself, so /match, /generate-tests and
+  // /rag/ingest all called into a port nothing was listening on. Every one of
+  // those calls has a fallback, so the failure was silent.
+  //
+  // ai-service base URL — matchmaking, test generation, RAG ingest, XAI scoring,
+  // and Layer 2 of the OWASP scan are all delegated to it.
   AI_SERVICE_URL: z.string().default('http://localhost:8000'),
+  SCOPE_GUARD_URL: z.string().default('http://localhost:8001'),
+  // Used by settlement-worker to trigger XAI scoring through the gateway rather
+  // than reimplementing the /score route's contract resolution and payload shaping.
+  GATEWAY_URL: z.string().default('http://localhost:4000'),
 
   // Neo4j
   NEO4J_URI: z.string().default('bolt://localhost:7687'),
@@ -87,13 +102,38 @@ export const AppConfigSchema = z.object({
   CI_WORKER_PORT: z.coerce.number().default(5001),
   SETTLEMENT_WORKER_PORT: z.coerce.number().default(5002),
 
-  // LLM keys (optional until used)
-  GEMINI_API_KEY: z.string().optional(),
-  OPENAI_API_KEY: z.string().optional(),
+  // LLM — Cloudflare Workers AI is the only provider. Consumed by ai-service
+  // (test generation, the security scan's LLM layer, the XAI judge); declared
+  // here so the whole stack has one env schema. The Gemini and OpenAI keys that
+  // used to sit here were removed with their adapters.
+  CLOUDFLARE_ACCOUNT_ID: z.string().optional(),
+  CLOUDFLARE_API_TOKEN: z.string().optional(),
+  LLM_PROVIDER: z.enum(['cloudflare', 'fake']).default('cloudflare'),
 
-  // Stripe (test mode)
-  STRIPE_SECRET_KEY: z.string().optional(),
-  STRIPE_WEBHOOK_SECRET: z.string().optional(),
+  // Razorpay (test mode).
+  //
+  // Three distinct values, and mixing them up produces failures that look like
+  // signature bugs:
+  //   - KEY_ID is public. It ships to the browser so Checkout can open, and the
+  //     gateway returns it in the escrow-create response rather than the web app
+  //     baking it in at build time — one source of truth, and no rebuild to
+  //     rotate it.
+  //   - KEY_SECRET authenticates API calls and signs the *checkout* callback
+  //     (HMAC over `orderId|paymentId`). Never leaves the server.
+  //   - WEBHOOK_SECRET is set independently in the Razorpay dashboard and signs
+  //     *webhook* bodies. It is not the key secret; using one where the other
+  //     belongs rejects every genuine request.
+  //
+  // Optional here so the adapter can fall back to FakeRazorpayAdapter offline.
+  // The gateway refuses to boot in production without a live `rzp_` key.
+  RAZORPAY_KEY_ID: z.string().optional(),
+  RAZORPAY_KEY_SECRET: z.string().optional(),
+  RAZORPAY_WEBHOOK_SECRET: z.string().optional(),
+
+  // Public base URL of the web app. Used to build KYC and payout-onboarding
+  // return URLs, which were hardcoded to http://localhost:3000 in the gateway
+  // and so pointed at the developer's own machine from every deployment.
+  WEB_APP_URL: z.string().default('http://localhost:3000'),
 
   // GitHub webhook HMAC secret. webhook-ingest read this straight off
   // process.env with a hardcoded fallback; schema-declaring it means the

@@ -1,5 +1,5 @@
 {
-  "name": "@assurecode/stripe-adapter",
+  "name": "@assurecode/kyc-adapter",
   "version": "1.0.0-alpha.0",
   "private": true,
   "type": "module",
@@ -9,9 +9,6 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
-  },
-  "dependencies": {
-    "stripe": "^15.12.0"
   },
   "types": "./dist/index.d.ts",
   "scripts": {

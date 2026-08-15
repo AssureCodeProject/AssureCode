@@ -36,6 +36,7 @@ import {
 } from 'lucide-react';
 import MobileDrawer from './ui/MobileDrawer';
 import ToastNotification from './ui/ToastNotification';
+import EscrowFundingPanel, { formatMinor } from './EscrowFundingPanel';
 import { apiRequest } from '../utils/api';
 
 /** The four CI signals, in the order the oracle evaluates them. */
@@ -62,8 +63,12 @@ const SIGNAL_ROWS = [
   },
 ];
 
-const formatCents = (cents) =>
-  `$${(cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+/**
+ * Amounts are Razorpay minor units (paise) and the currency is INR, so this
+ * formats rupees — not the dollars the Stripe-era helper assumed. The value in
+ * `amount_cents` never changed meaning; only the currency it denominates did.
+ */
+const formatAmount = (minor, currency = 'INR') => formatMinor(minor, currency);
 
 /** Toast styling is derived from the message text, so the three outcomes of a
  *  settlement request stay in one place instead of two parallel ternaries. */
@@ -151,6 +156,14 @@ export function EscrowSettlementView({ contractData, onResetWorkflow }) {
   const released = data?.escrow?.status === 'RELEASED';
   const settlementStatus = data?.settlement?.status ?? null;
 
+  // Funded means AUTHORIZED or beyond: an order at PENDING is one nobody has
+  // paid, and releasing it would capture money that was never authorised. This
+  // is the same distinction the oracle enforces server-side when it selects
+  // escrow rows on status = 'AUTHORIZED'.
+  const escrowFunded =
+    data?.escrow != null && data.escrow.status !== 'PENDING' && data.escrow.status !== 'FAILED';
+  const needsFunding = data != null && (data.escrow == null || data.escrow.status === 'PENDING');
+
   /**
    * Request settlement, then watch oracle state until the escrow row changes or
    * the settlement row reports a terminal status. The 202 from /settle means the
@@ -169,7 +182,7 @@ export function EscrowSettlementView({ contractData, onResetWorkflow }) {
         // a default of 250000 cents, so the UI decided who got paid how much.
         body: {
           freelancerId: data?.freelancerId ?? null,
-          amountCents: data?.escrow?.amountCents ?? null,
+          amountCents: data?.escrow?.amountMinor ?? null,
         },
       });
 
@@ -199,8 +212,8 @@ export function EscrowSettlementView({ contractData, onResetWorkflow }) {
 
           if (done) {
             setToastMessage(
-              `Escrow released: PaymentIntent ${fresh.escrow.paymentIntentId} captured for ` +
-                `${formatCents(fresh.escrow.amountCents)}.`,
+              `Escrow released: payment ${fresh.escrow.paymentId} captured for ` +
+                `${formatAmount(fresh.escrow.amountMinor, fresh.escrow.currency)}.`,
             );
           } else if (failed) {
             setToastMessage('Failed: the oracle approved but escrow capture did not complete.');
@@ -236,12 +249,15 @@ export function EscrowSettlementView({ contractData, onResetWorkflow }) {
         </>
       );
     }
+    if (!escrowFunded) {
+      return <span>ESCROW NOT FUNDED</span>;
+    }
     if (!data.approved) {
       return <span>BLOCKED BY ORACLE</span>;
     }
     return (
       <span>
-        RELEASE FUNDS{data.escrow ? ` (${formatCents(data.escrow.amountCents)})` : ''} →
+        RELEASE FUNDS{data.escrow ? ` (${formatAmount(data.escrow.amountMinor, data.escrow.currency)})` : ''} →
       </span>
     );
   }
@@ -282,7 +298,8 @@ export function EscrowSettlementView({ contractData, onResetWorkflow }) {
               Escrow Settlement.
             </h1>
             <p className="text-prose-muted mt-2 text-base max-w-2xl">
-              Stripe manual-capture escrow, released only when the settlement oracle approves.
+              Razorpay authorise-and-capture escrow, released only when the settlement oracle
+              approves.
             </p>
           </div>
 
@@ -328,6 +345,21 @@ export function EscrowSettlementView({ contractData, onResetWorkflow }) {
         </div>
       )}
 
+      {/* ── Fund Escrow ──────────────────────────────────────
+          Only while there is nothing held: either no escrow row at all, or an
+          order at PENDING that nobody has paid. Once the funds are authorised
+          this disappears and the vault panel below takes over. */}
+      {needsFunding && (
+        <EscrowFundingPanel
+          contractId={contractId}
+          existingEscrow={data.escrow}
+          onFunded={() => {
+            setToastMessage('Escrow funded. Funds are authorised and held pending the oracle verdict.');
+            void load();
+          }}
+        />
+      )}
+
       {/* ── Vault Status ─────────────────────────────────── */}
       {data && (
         <div className="bg-ink-2 border border-rule p-8 font-mono">
@@ -343,10 +375,12 @@ export function EscrowSettlementView({ contractData, onResetWorkflow }) {
                 </div>
                 <div>
                   <span className="text-xs text-prose-muted uppercase tracking-wider block">
-                    Stripe Escrow (manual capture)
+                    Razorpay Escrow (authorise &amp; capture)
                   </span>
                   <h2 className="text-3xl font-bold text-prose font-mono">
-                    {data.escrow ? formatCents(data.escrow.amountCents) : 'NO ESCROW'}
+                    {data.escrow
+                      ? formatAmount(data.escrow.amountMinor, data.escrow.currency)
+                      : 'NO ESCROW'}
                   </h2>
                 </div>
               </div>
@@ -355,18 +389,26 @@ export function EscrowSettlementView({ contractData, onResetWorkflow }) {
                 <>
                   <p
                     className={`text-xs font-mono flex items-center gap-2 ${
-                      released ? 'text-signal' : 'text-warn'
+                      released ? 'text-signal' : escrowFunded ? 'text-warn' : 'text-prose-muted'
                     }`}
                   >
                     <span>●</span>
                     {released
                       ? 'Funds captured and released to the freelancer'
-                      : 'Funds authorised and held — not yet captured'}
+                      : escrowFunded
+                        ? 'Funds authorised and held — not yet captured'
+                        : 'Order created — awaiting payment. No funds are held yet.'}
                   </p>
                   <div className="text-xs font-mono text-prose-muted">
-                    PaymentIntent:{' '}
-                    <span className="text-prose font-medium">{data.escrow.paymentIntentId}</span>
+                    Order: <span className="text-prose font-medium">{data.escrow.orderId}</span>
                   </div>
+                  {/* Null until someone actually pays; that gap is the whole
+                      difference between an order and a held escrow. */}
+                  {data.escrow.paymentId && (
+                    <div className="text-xs font-mono text-prose-muted">
+                      Payment: <span className="text-prose font-medium">{data.escrow.paymentId}</span>
+                    </div>
+                  )}
                 </>
               ) : (
                 <p className="text-xs font-mono text-warn">
@@ -386,16 +428,21 @@ export function EscrowSettlementView({ contractData, onResetWorkflow }) {
               <button
                 id="btn-release-funds"
                 onClick={handleReleaseFunds}
-                disabled={released || isReleasing || !data.escrow || !data.approved}
+                // `escrowFunded`, not just `data.escrow`: a PENDING order is an
+                // escrow row with nothing behind it, and asking the oracle to
+                // release it can only fail.
+                disabled={released || isReleasing || !escrowFunded || !data.approved}
                 title={
-                  data.approved
-                    ? undefined
-                    : `Blocked by the oracle: ${data.blockers.join('; ')}`
+                  !escrowFunded
+                    ? 'The escrow has not been funded yet — complete the payment first.'
+                    : data.approved
+                      ? undefined
+                      : `Blocked by the oracle: ${data.blockers.join('; ')}`
                 }
                 className={releaseButtonClasses({
                   released,
                   isReleasing,
-                  canRelease: Boolean(data.approved && data.escrow),
+                  canRelease: Boolean(data.approved && escrowFunded),
                 })}
               >
                 {renderReleaseButtonLabel()}

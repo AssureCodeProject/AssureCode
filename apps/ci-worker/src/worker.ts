@@ -10,6 +10,12 @@ import { performDualLayerScan } from './security-auditor.js';
 import { runInSandbox } from './sandbox-runner.js';
 import { PostgresAuditStore, type AuditStore } from './audit-store.js';
 import { buildWorkspace, type Workspace } from './workspace-builder.js';
+import {
+  createSourceFetcher,
+  SourceUnavailableError,
+  type PushRef,
+  type SourceFetcher,
+} from './source-fetcher.js';
 
 const config = loadConfig();
 const logger = createLogger('ci-worker', config.LOG_LEVEL);
@@ -31,10 +37,34 @@ export async function processCodePush(
   contractId: string,
   correlationId: string,
   sampleCode?: string,
-  options?: { workDir?: string; auditStore?: AuditStore; demo?: boolean },
+  options?: {
+    workDir?: string;
+    auditStore?: AuditStore;
+    demo?: boolean;
+    /** Where to get the source when the event carries none. See source-fetcher.ts. */
+    sourceFetcher?: SourceFetcher | null;
+    /** Repository coordinates from the webhook, used only by that path. */
+    pushRef?: PushRef;
+  },
 ): Promise<void> {
   const startTime = Date.now();
   logger.info({ contractId, correlationId }, 'Starting zero-trust CI pipeline');
+
+  // A GitHub push arrives with repository coordinates but no file contents, so
+  // the source is fetched here, pinned to the reported commit. Only reached when
+  // the event carried no inline code — the gateway's /simulate-push path does,
+  // and must not be second-guessed.
+  if ((!sampleCode || sampleCode.trim() === '') && options?.pushRef && options.sourceFetcher) {
+    logger.info(
+      { contractId, commitHash: options.pushRef.commitHash },
+      'Event carried no inline code; fetching pushed source',
+    );
+    // Deliberately not wrapped in a try/catch that falls back. A fetch failure
+    // must surface as a failed run: auditing something other than what was
+    // pushed produces a trust score that looks like evidence and is not.
+    sampleCode = await options.sourceFetcher.fetchSource(options.pushRef);
+    logger.info({ contractId, bytes: sampleCode.length }, 'Fetched pushed source');
+  }
 
   // A pipeline with nothing to analyse has no verdict to give. This used to
   // fall back to a hardcoded `processTransaction` sample, so a push carrying no
@@ -42,8 +72,10 @@ export async function processCodePush(
   // freelancer never wrote.
   if (!sampleCode || sampleCode.trim() === '') {
     throw new Error(
-      `No code supplied for contract ${contractId}. Refusing to emit audit telemetry ` +
-        'for code that was never submitted.',
+      `No code supplied for contract ${contractId}, and no source could be fetched. ` +
+        'Refusing to emit audit telemetry for code that was never submitted. ' +
+        '(A GitHub push carries no file contents; set ENABLE_GITHUB_SOURCE_FETCH=true ' +
+        'to have ci-worker fetch the commit.)',
     );
   }
 
@@ -63,6 +95,7 @@ export async function processCodePush(
         contractId,
         code: sampleCode,
         aiServiceUrl: config.AI_SERVICE_URL,
+        serviceToken: config.SERVICE_TOKEN,
         demo: options?.demo,
       });
       logger.info(
@@ -122,6 +155,7 @@ export async function processCodePush(
     // never be *passed*. Same guarantee, without losing the evidence.
     const securityScan = await performDualLayerScan(sampleCode, {
       aiServiceUrl: config.AI_SERVICE_URL,
+      serviceToken: config.SERVICE_TOKEN,
     });
     const securityScanComplete = securityScan.layersRun.includes('llm');
     logger.info(
@@ -208,21 +242,52 @@ export async function processCodePush(
 async function main(): Promise<void> {
   logger.info('CI Worker starting...');
 
+  // Built once. Null when ENABLE_GITHUB_SOURCE_FETCH is not 'true', which is a
+  // checkable "the GitHub path is off" rather than a fetcher that fails on
+  // first use — a very different diagnosis to report.
+  const sourceFetcher = createSourceFetcher();
+  logger.info(
+    { githubSourceFetch: sourceFetcher !== null },
+    sourceFetcher
+      ? 'GitHub source fetching enabled; real pushes will be audited'
+      : 'GitHub source fetching disabled; only pushes carrying inline code will be audited',
+  );
+
   await eventBus.subscribe(EVENT_TOPICS.CODE_PUSH_RECEIVED, async (event: EventEnvelope) => {
-    const { contractId, code, demo } = event.payload as {
+    const { contractId, code, demo, repoUrl, commitHash } = event.payload as {
       contractId: string;
       code?: string;
       demo?: boolean;
+      repoUrl?: string;
+      commitHash?: string;
     };
     const correlationId = event.correlationId || event.id;
 
     logger.info({ contractId, correlationId, demo: Boolean(demo) }, 'Received code.push.received event');
 
+    // Only a webhook-originated event carries these; /simulate-push does not.
+    const pushRef: PushRef | undefined =
+      repoUrl && commitHash ? { repoUrl, commitHash } : undefined;
+
     try {
-      await processCodePush(contractId, correlationId, code, { demo: Boolean(demo) });
+      await processCodePush(contractId, correlationId, code, {
+        demo: Boolean(demo),
+        sourceFetcher,
+        pushRef,
+      });
       logger.info({ contractId }, 'CI processing successfully completed');
     } catch (error) {
-      logger.error({ contractId, error }, 'CI processing failed');
+      // Distinguished in the log because the operator action differs: a source
+      // fetch failure is a configuration or permissions problem, not a failing
+      // audit, and it must not be read as "the code did not pass".
+      if (error instanceof SourceUnavailableError) {
+        logger.error(
+          { contractId, repoUrl, commitHash, error: error.message },
+          'Could not obtain pushed source; no audit was performed',
+        );
+      } else {
+        logger.error({ contractId, error }, 'CI processing failed');
+      }
     }
   });
 

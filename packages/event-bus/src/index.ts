@@ -5,7 +5,7 @@
 import { randomUUID } from 'node:crypto';
 import type { EventEnvelope } from '@assurecode/shared';
 import { Redis } from 'ioredis';
-import { Kafka } from 'kafkajs';
+import { Kafka, type Consumer, type Producer } from 'kafkajs';
 import { getCorrelationId, runWithCorrelationId } from '@assurecode/config';
 import { trace, context, propagation, type Context } from '@opentelemetry/api';
 import { metrics } from '@assurecode/telemetry';
@@ -347,18 +347,23 @@ export class RedisStreamsBus implements EventBus {
 // ── KafkaBus (Sprint 2 task 2.1) ───────────────────────────────
 
 export class KafkaBus implements EventBus {
-  private kafka: any;
-  private producer: any;
-  private readonly consumers = new Map<string, any>();
+  private readonly kafka: Kafka;
+  private readonly producer: Producer;
+  private readonly consumers = new Map<string, Consumer>();
   private isConnected = false;
 
   constructor(brokers: string[], clientId = 'assurecode-bus') {
+    if (brokers.length === 0) {
+      // Refusing here rather than constructing a broker-less client: kafkajs
+      // accepts an empty list and then fails at connect() time, deep inside a
+      // publish, which is the harder failure to trace back to its cause.
+      throw new Error('KafkaBus requires at least one broker (check KAFKA_BROKERS)');
+    }
     this.kafka = new Kafka({ clientId, brokers });
     this.producer = this.kafka.producer();
   }
 
   private async ensureProducerConnected(): Promise<void> {
-    if (!this.producer) return;
     if (!this.isConnected) {
       await this.producer.connect();
       this.isConnected = true;
@@ -378,23 +383,30 @@ export class KafkaBus implements EventBus {
     });
 
     try {
-      if (this.producer) {
-        await this.ensureProducerConnected();
-        await this.producer.send({
-          topic,
-          messages: [{ value: JSON.stringify(envelope), key: cid }],
-        });
-      }
+      // No `if (this.producer)` guard. An earlier version loaded kafkajs with
+      // require() inside this ESM package; that threw ReferenceError, a catch
+      // swallowed it, and `producer` stayed undefined — so this guard turned
+      // every publish into a silent no-op and EVENT_BUS_TYPE=kafka dropped the
+      // entire event stream with nothing logged. kafkajs is a static import and
+      // a declared dependency now, so the producer always exists; a genuine
+      // broker failure must surface as a rejected publish, not a dropped event.
+      await this.ensureProducerConnected();
+      await this.producer.send({
+        topic,
+        messages: [{ value: JSON.stringify(envelope), key: cid }],
+      });
       return envelope;
+    } catch (err) {
+      span.recordException(err as Error);
+      throw err;
     } finally {
       span.end();
     }
   }
 
   async subscribe(topic: string, handler: EventHandler, options?: SubscribeOptions): Promise<() => Promise<void>> {
-    if (!this.kafka) {
-      return async () => {};
-    }
+    // Likewise no `if (!this.kafka) return async () => {}` escape hatch here:
+    // it returned a subscription that was never subscribed to anything.
     const consumerId = randomUUID();
     const consumer = this.kafka.consumer({ groupId: options?.groupId ?? `assurecode-${topic}` });
     await consumer.connect();

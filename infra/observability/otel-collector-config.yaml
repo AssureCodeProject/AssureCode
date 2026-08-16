@@ -1,0 +1,51 @@
+# OpenTelemetry Collector — the piece that was missing.
+#
+# packages/telemetry has always produced real spans (NodeSDK, OTLP/gRPC
+# exporter, Fastify/HTTP/pg/ioredis auto-instrumentation, correlation ids). What
+# did not exist was anything to receive them: OTEL_EXPORTER_OTLP_ENDPOINT
+# defaulted to http://localhost:4317 and was set in no compose file and no
+# ConfigMap, so each service exported into its own loopback and every trace was
+# discarded at the socket.
+#
+# This collector accepts OTLP on 4317 (gRPC) and 4318 (HTTP) and forwards traces
+# to Jaeger. Metrics are NOT routed through here — the Node services expose a
+# Prometheus /metrics endpoint that Prometheus scrapes directly, which keeps the
+# collector out of the path of the numbers used for the latency figures.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Bounded queue. Without a memory limiter a burst of spans during a load run
+  # can push the collector into an OOM kill, which looks like a service outage
+  # in the traces rather than what it is.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+
+exporters:
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+  # Uncomment to see spans in the collector's own log while debugging wiring.
+  # debug:
+  #   verbosity: detailed
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/jaeger]
+  telemetry:
+    logs:
+      level: info

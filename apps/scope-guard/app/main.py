@@ -53,13 +53,34 @@ from app.deps import (
     get_scope_log,
     get_settings,
 )
+from app.ports.service_auth import assert_configured, verify_service_token
+from app.ports.telemetry import (
+    make_metrics_middleware,
+    metrics_response,
+    scope_decisions_total,
+)
 from app.services.drift_detector import ConformalDriftDetector, NotCalibrated
+
+# `x-service-token` on every route except the probe allow-list. Same single
+# definition ai-service uses — app.ports.service_auth resolves to
+# apps/ai-service/app/ports/ via the __path__ extension documented in
+# app/__init__.py. Declared on the constructor so routes added later are
+# protected by default.
+#
+# Refuse to import at all in production without a real SERVICE_TOKEN. At import
+# time rather than on a startup event: the process then fails before it binds a
+# port, so an orchestrator sees a crash-looping container instead of a healthy
+# one serving unauthenticated traffic.
+assert_configured()
 
 app = FastAPI(
     title="AssureCode Scope Guard",
     version="1.0.0a0",
     description="RAG scope mediator: retrieval-backed scope checks anchored to the contract hash.",
+    dependencies=[Depends(verify_service_token)],
 )
+
+app.middleware("http")(make_metrics_middleware("scope-guard"))
 
 
 class ScopeCheckRequest(BaseModel):
@@ -92,6 +113,12 @@ class ScopeCheckResponse(BaseModel):
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok", "service": "scope-guard", "time": datetime.now(UTC).isoformat()}
+
+
+@app.get("/metrics")
+def metrics():
+    """Prometheus exposition. Unauthenticated — see service_auth.PUBLIC_PATHS."""
+    return metrics_response()
 
 
 @app.get("/")
@@ -273,6 +300,12 @@ def check_scope(
     # 4. Decide on the best match.
     best = max(r.similarity for r in retrieved)
     allowed = best >= settings.scope_threshold
+
+    # Counted by outcome only. The label is the decision, not its correctness —
+    # this cannot tell you the false-negative rate, and given the measured
+    # recall of 0.20 the gap between the two is large. Deliberately not labelled
+    # by contract: that would be unbounded cardinality.
+    scope_decisions_total.labels(allowed=str(allowed).lower()).inc()
 
     if allowed:
         reason = (

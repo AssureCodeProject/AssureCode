@@ -6,6 +6,21 @@
 > category coverage, the scope-check mechanism, and the visual-proof signal.
 > Corrections are marked inline below.
 >
+> Two further corrections that apply throughout, added after the Razorpay pivot:
+>
+> * **Every reference to Stripe describes deleted code.** `packages/stripe-adapter`,
+>   `StripeEscrowAdapter`, `createPaymentIntent`, `transferToFreelancer`,
+>   `stripe.transfers.create`, `STRIPE_SECRET_KEY` and `FakeEscrowAdapter` no
+>   longer exist. Payments are `packages/razorpay-adapter`, which creates an
+>   order with `payment_capture: 0` and captures on settlement.
+>   **`transferToFreelancer` has no replacement** — capture moves money to the
+>   platform and no payout leg exists.
+> * **"5-signal oracle" is wrong; it is six.** `packages/oracle` evaluates AST,
+>   tests, security, scope, `trustScore >= 85` and `criticalVulns === 0`. There
+>   is no video signal — visual proof was withdrawn.
+>
+> See `ARCHITECTURE.md` at the repository root for the current design.
+>
 > **The current description is
 > [`ASSURECODE_COMPLETE_TECHNICAL_SPECIFICATION.md`](./ASSURECODE_COMPLETE_TECHNICAL_SPECIFICATION.md).**
 

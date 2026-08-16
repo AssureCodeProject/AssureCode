@@ -20,12 +20,17 @@ from pydantic import BaseModel, Field
 
 from app.deps import get_llm_client
 from app.ports.llm_client import LlmClient, LlmUnavailableError
-from app.services import owasp_static
+from app.services import owasp_static, prompt_guard
 
 router = APIRouter(prefix="/security-scan", tags=["security"])
 
 SEVERITIES = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
 
+# The code is fenced with a per-request nonce marker rather than a markdown
+# ``` fence. Submitted code containing ``` closes a markdown fence, and
+# everything after it is read as prompt rather than as data — which is the
+# cheapest possible prompt injection against a code reviewer. See
+# app.services.prompt_guard.
 PROMPT_TEMPLATE = """\
 You are a application security reviewer auditing untrusted code against the
 OWASP Top 10:2025 categories listed below.
@@ -44,10 +49,10 @@ Respond with ONLY a JSON array, no prose and no markdown fence. Each element:
     "message": "one sentence naming the specific flaw",
     "line": <1-based line number>}}
 
+{preamble}
+
 Code under review:
-```
-{code}
-```
+{code_block}
 """
 
 
@@ -159,9 +164,32 @@ def security_scan(
         findings.extend(owasp_static.scan(req.code))
         layers_run.append("static")
 
+    # Prompt-injection attempts are reported whenever the static layer runs,
+    # independently of whether the LLM layer does. The attempt is evidence about
+    # the submission in its own right: code that argues with the auditor is a
+    # finding even if no model ever reads it. Labelled layer="static" because
+    # the detection is deterministic pattern matching, not a model judgement.
+    #
+    # ci-worker sets include_static=False to avoid paying for the static pass
+    # twice, so it runs this check on its own side.
+    injection_signals = prompt_guard.scan_for_injection(req.code)
+    if req.include_static and injection_signals:
+        findings.extend(
+            owasp_static.Vulnerability(**finding)  # type: ignore[arg-type]
+            for finding in prompt_guard.signals_to_finding_dicts(injection_signals)
+        )
+
     if req.include_llm:
         category_lines = "\n".join(f"  {c['id']} — {c['name']}" for c in owasp_static.categories())
-        prompt = PROMPT_TEMPLATE.format(categories=category_lines, code=req.code)
+        # Nonce-delimited, backtick-defanged, with an explicit standing order
+        # that the block is data. The attacker cannot close a fence whose name
+        # is generated per request.
+        block = prompt_guard.guard(req.code)
+        prompt = PROMPT_TEMPLATE.format(
+            categories=category_lines,
+            preamble=prompt_guard.instruction_preamble(block, "code"),
+            code_block=block.render(),
+        )
 
         try:
             raw = llm.generate(prompt, max_tokens=2048)

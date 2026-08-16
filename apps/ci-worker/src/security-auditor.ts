@@ -156,6 +156,13 @@ export function performSecurityScan(codeString: string): SecurityScanResult {
 export interface DualLayerOptions {
   /** Base URL of the ai-service exposing POST /security-scan. */
   aiServiceUrl: string;
+  /**
+   * Shared secret presented as `x-service-token`. ai-service rejects
+   * unauthenticated calls to /security-scan outside development, so omitting
+   * this against a configured deployment turns every Layer 2 call into a 401 —
+   * which, without `requireLlmLayer`, degrades silently to a static-only scan.
+   */
+  serviceToken?: string;
   /** Abort the Layer 2 call after this many milliseconds. */
   timeoutMs?: number;
   /**
@@ -178,7 +185,7 @@ export async function performDualLayerScan(
   options: DualLayerOptions,
 ): Promise<SecurityScanResult> {
   const staticFindings = performStaticScan(codeString);
-  const { aiServiceUrl, timeoutMs = 30_000, requireLlmLayer = false } = options;
+  const { aiServiceUrl, serviceToken, timeoutMs = 30_000, requireLlmLayer = false } = options;
 
   let llmFindings: Vulnerability[] = [];
   let llmError: string | undefined;
@@ -189,7 +196,10 @@ export async function performDualLayerScan(
   try {
     const res = await fetch(`${aiServiceUrl.replace(/\/$/, '')}/security-scan`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(serviceToken ? { 'x-service-token': serviceToken } : {}),
+      },
       body: JSON.stringify({ code: codeString, include_static: false }),
       signal: controller.signal,
     });

@@ -1,0 +1,18 @@
+# Provisioned datasources, so a fresh `npm run infra:up` gives a Grafana that
+# is already connected rather than one that needs clicking through a setup
+# wizard before it shows anything.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+
+  - name: Jaeger
+    type: jaeger
+    access: proxy
+    url: http://jaeger:16686
+    editable: false

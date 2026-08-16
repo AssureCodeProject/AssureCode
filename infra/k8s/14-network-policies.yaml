@@ -282,3 +282,195 @@ spec:
       ports:
         - protocol: TCP
           port: 6379
+---
+# ── Observability (15-observability.yaml) ───────────────────────────────────
+#
+# default-deny-all above applies to Ingress AND Egress, so without these the
+# collector tier is inert twice over: application pods cannot reach
+# otel-collector:4317 (every span is dropped at the network layer rather than
+# at the exporter, which looks identical from inside the app), and Prometheus
+# cannot reach any /metrics endpoint.
+#
+# ci-worker is deliberately NOT granted collector egress. Its policy above
+# allows Redis and nothing else, on the grounds that submitted code must have
+# no outbound channel; adding one here for telemetry would reopen it. Losing
+# ci-worker's spans is the correct trade — it is the pod that runs untrusted
+# code.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-otlp-egress-to-collector
+  namespace: assurecode
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: ["api-gateway", "settlement-worker", "webhook-ingest", "ai-service", "scope-guard"]
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: otel-collector
+      ports:
+        - protocol: TCP
+          port: 4317
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: otel-collector-policy
+  namespace: assurecode
+spec:
+  podSelector:
+    matchLabels:
+      app: otel-collector
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values: ["api-gateway", "settlement-worker", "webhook-ingest", "ai-service", "scope-guard"]
+      ports:
+        - protocol: TCP
+          port: 4317
+        - protocol: TCP
+          port: 4318
+  egress:
+    # Forwards traces to Jaeger and nothing else. No internet egress: a
+    # collector that can reach arbitrary hosts is an exfiltration path for
+    # everything every service traces.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: jaeger
+      ports:
+        - protocol: TCP
+          port: 4317
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: jaeger-policy
+  namespace: assurecode
+spec:
+  podSelector:
+    matchLabels:
+      app: jaeger
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: otel-collector
+      ports:
+        - protocol: TCP
+          port: 4317
+    # Grafana's Jaeger datasource, and the UI itself.
+    - from:
+        - podSelector:
+            matchLabels:
+              app: grafana
+      ports:
+        - protocol: TCP
+          port: 16686
+  # In-memory storage; nothing to talk to.
+  egress: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus-policy
+  namespace: assurecode
+spec:
+  podSelector:
+    matchLabels:
+      app: prometheus
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: grafana
+      ports:
+        - protocol: TCP
+          port: 9090
+  egress:
+    # Scrape targets, by their actual metrics ports. Enumerated rather than
+    # opened wide so Prometheus cannot reach Postgres or Redis.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: api-gateway
+      ports:
+        - protocol: TCP
+          port: 4000
+    - to:
+        - podSelector:
+            matchLabels:
+              app: webhook-ingest
+      ports:
+        - protocol: TCP
+          port: 9000
+    - to:
+        - podSelector:
+            matchLabels:
+              app: ai-service
+      ports:
+        - protocol: TCP
+          port: 8000
+    - to:
+        - podSelector:
+            matchLabels:
+              app: scope-guard
+      ports:
+        - protocol: TCP
+          port: 8001
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scrape
+  namespace: assurecode
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: ["api-gateway", "webhook-ingest", "ai-service", "scope-guard"]
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: grafana-policy
+  namespace: assurecode
+spec:
+  podSelector:
+    matchLabels:
+      app: grafana
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values: ["prometheus", "jaeger"]

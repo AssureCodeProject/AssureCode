@@ -24,15 +24,18 @@
     "migrate": "tsx tools/migrate.ts",
     "seed:neo4j": "tsx tools/seed-neo4j.ts",
     "test": "npm run test --workspaces --if-present --include-workspace-root=false",
+    "test:coverage": "vitest run --coverage --config vitest.coverage.config.ts",
     "test:e2e": "node scripts/e2e.mjs",
     "test:e2e:up": "node scripts/e2e.mjs up",
     "test:e2e:down": "node scripts/e2e.mjs down",
     "infra:up": "docker compose --env-file .env -f infra/docker-compose.yml up -d",
-    "infra:down": "docker compose -f infra/docker-compose.yml down"
+    "infra:down": "docker compose -f infra/docker-compose.yml down",
+    "ledger:legacy": "tsx tools/ledger-legacy-anchor.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
     "@types/pg": "^8.11.10",
+    "@vitest/coverage-v8": "^2.1.9",
     "eslint": "^9.39.5",
     "globals": "^15.15.0",
     "neo4j-driver": "^5.28.3",
@@ -43,6 +46,7 @@
   },
   "dependencies": {
     "@fastify/multipart": "^8.3.1",
+    "@fastify/rate-limit": "^9.1.0",
     "kafkajs": "^2.2.4",
     "pdf-parse": "^2.4.5",
     "pg": "^8.12.0"

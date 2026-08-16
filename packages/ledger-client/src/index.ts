@@ -407,6 +407,20 @@ export {
   type ProofStep,
 } from './merkle.js';
 
+export {
+  LEGACY_ANCHOR_ACTION,
+  NoLegacyRowsError,
+  buildLegacyAnchorPayload,
+  canonicalAnchorBytes,
+  isLegacyRow,
+  reportLegacySegment,
+  selectLegacyRows,
+  verifyLegacyAnchor,
+  type AnchorCheck,
+  type LegacyAnchorPayload,
+  type LegacySegmentReport,
+} from './legacy-anchor.js';
+
 export { pg };
 export type { Pool, PoolClient };
 export type { LedgerEntry };

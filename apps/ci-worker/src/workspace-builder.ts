@@ -53,6 +53,8 @@ export interface WorkspaceBuildOptions {
   code: string;
   /** Base URL of ai-service, which serves the stored bundle. */
   aiServiceUrl: string;
+  /** Shared secret presented as `x-service-token`; see DualLayerOptions. */
+  serviceToken?: string;
   framework?: 'jest' | 'cypress';
   /** Abort the bundle fetch after this long. */
   timeoutMs?: number;
@@ -184,12 +186,16 @@ async function fetchTestBundle(
   contractId: string,
   framework: string,
   timeoutMs: number,
+  serviceToken?: string,
 ): Promise<string> {
   const url = `${aiServiceUrl.replace(/\/$/, '')}/generate-tests/${encodeURIComponent(contractId)}?framework=${framework}`;
 
   let res: Response;
   try {
-    res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    res = await fetch(url, {
+      headers: serviceToken ? { 'x-service-token': serviceToken } : {},
+      signal: AbortSignal.timeout(timeoutMs),
+    });
   } catch (err) {
     throw new TestBundleUnavailableError(
       `could not reach ai-service to fetch the test bundle for ${contractId}: ` +
@@ -222,7 +228,14 @@ async function fetchTestBundle(
  * here after a run is only what this function put in.
  */
 export async function buildWorkspace(options: WorkspaceBuildOptions): Promise<Workspace> {
-  const { contractId, code, aiServiceUrl, framework = 'jest', timeoutMs = 10_000 } = options;
+  const {
+    contractId,
+    code,
+    aiServiceUrl,
+    serviceToken,
+    framework = 'jest',
+    timeoutMs = 10_000,
+  } = options;
 
   if (!code || !code.trim()) {
     throw new TestBundleUnavailableError(
@@ -240,7 +253,7 @@ export async function buildWorkspace(options: WorkspaceBuildOptions): Promise<Wo
     bundle = DEMO_TEST_BUNDLE;
   } else {
     bundleSource = 'ai-service';
-    bundle = await fetchTestBundle(aiServiceUrl, contractId, framework, timeoutMs);
+    bundle = await fetchTestBundle(aiServiceUrl, contractId, framework, timeoutMs, serviceToken);
   }
 
   // The harness must exist before anything is written — a workspace without a

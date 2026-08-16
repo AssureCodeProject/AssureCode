@@ -70,6 +70,7 @@ coverage/
 .nyc_output/
 .pytest_cache/
 .coverage
+coverage/
 htmlcov/
 .tox/
 .mypy_cache/
@@ -80,8 +81,23 @@ docker-compose.override.yml
 *.pid
 .data/
 data/
+# Container data directories, not source. The bare `neo4j/` pattern also
+# matched infra/seed/neo4j/, so the matchmaking seed was never committed and
+# `npm run seed:neo4j` found nothing on a fresh clone — the negation below
+# keeps the runtime volume ignored while tracking the seed.
 neo4j/
+!infra/seed/neo4j/
 postgres-data/
+
+# ── Local run artifacts ────────────────────────────────────────
+# S3-fallback output written when LocalStack is unavailable. These are the
+# results of somebody's local run, not source; a set of them was committed by
+# accident, including one LLM response with prompt instructions leaked into it.
+storage_fallback/
+apps/ai-service/storage_fallback/
+# Agent scratch directories (BRIEFING/DISPATCH/handoff/progress). Process
+# residue from how the code was produced, not part of the artifact.
+.agents/
 
 # ── Misc ───────────────────────────────────────────────────────
 .cache/

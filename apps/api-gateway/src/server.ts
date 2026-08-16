@@ -17,6 +17,7 @@ import type { FastifyRequest, FastifyReply } from 'fastify';
 import fastifyCors from '@fastify/cors';
 import fastifyWebsocket from '@fastify/websocket';
 import fastifyMultipart from '@fastify/multipart';
+import fastifyRateLimit from '@fastify/rate-limit';
 import { randomUUID } from 'node:crypto';
 import net from 'node:net';
 import pg from 'pg';
@@ -157,16 +158,33 @@ outboxRelay.start();
 const aiServiceUrl = config.AI_SERVICE_URL;
 const scopeGuardUrl = config.SCOPE_GUARD_URL;
 
+/**
+ * Headers for every outbound call to ai-service and scope-guard.
+ *
+ * Both Python services now require `x-service-token` on everything except their
+ * probe endpoints (see apps/ai-service/app/ports/service_auth.py). They used to
+ * accept unauthenticated calls from anything that could reach them, which under
+ * docker-compose was anything on the network.
+ *
+ * Built per call rather than hoisted to a constant so the correlation id is the
+ * current request's, not the first one the process handled.
+ */
+function serviceCallHeaders(extra?: Record<string, string>): Record<string, string> {
+  return {
+    'Content-Type': 'application/json',
+    'x-correlation-id': getCorrelationId() || randomUUID(),
+    'x-service-token': config.SERVICE_TOKEN,
+    ...extra,
+  };
+}
+
 /** Fire-and-forget call to ai-service — logs errors but doesn't block. */
 async function callAiService(path: string, body: unknown): Promise<void> {
   const cid = getCorrelationId() || randomUUID();
   try {
     const res = await fetch(`${aiServiceUrl}${path}`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-correlation-id': cid,
-      },
+      headers: serviceCallHeaders({ 'x-correlation-id': cid }),
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(10_000), // 10s timeout
     });
@@ -284,6 +302,45 @@ server.addHook('onRequest', (request, reply, done) => {
   });
 });
 
+// Global rate limit (plan2.md task 8.5). Registered before auth so that an
+// unauthenticated flood is rejected at the limiter rather than after a JWT
+// verify and a database round-trip — the point of the limit is to cap work done
+// on behalf of an unidentified caller.
+//
+// Keyed on the authenticated subject when there is one, so a shared NAT egress
+// or a proxy does not put every user behind one bucket, and falls back to the
+// source IP for the anonymous routes. Health and metrics endpoints are exempt:
+// Kubernetes liveness/readiness probes and Prometheus scrape on a fixed
+// interval, and a limiter that 429s a probe turns a busy service into a
+// restarting one.
+//
+// Disabled under NODE_ENV=test — the integration suites fire hundreds of
+// requests from one address in seconds and would otherwise trip the limit and
+// fail for a reason unrelated to what they assert.
+// Cast at the boundary for the same workspace-hoisting type friction as
+// @fastify/jwt and @fastify/multipart above: the plugin resolves a second copy
+// of fastify's types from the hoisted root, so the FastifyInstance it declares
+// is structurally distinct from ours. It registers and runs correctly.
+void server.register(fastifyRateLimit as any, {
+  global: true,
+  max: Number(process.env.RATE_LIMIT_MAX ?? 300),
+  timeWindow: process.env.RATE_LIMIT_WINDOW ?? '1 minute',
+  keyGenerator: (request: FastifyRequest) => {
+    const user = (request as any).user as AuthUser | undefined;
+    return user?.userId ?? request.ip;
+  },
+  enableDraftSpec: true, // RateLimit-* response headers so clients can back off
+  allowList: (request: FastifyRequest) => {
+    if (config.NODE_ENV === 'test') return true;
+    return request.url === '/healthz' || request.url === '/readyz' || request.url === '/metrics';
+  },
+  errorResponseBuilder: (_request: FastifyRequest, context: { after: string }) => ({
+    error: 'Too many requests',
+    message: `Rate limit exceeded. Retry in ${context.after}.`,
+    statusCode: 429,
+  }),
+});
+
 // JWT bearer auth (or x-service-token for machine callers) on every route
 // except the allow-list inside registerAuth (health/ready/metrics/login/
 // webhooks). Registered after the correlation-id hook so a 401 still carries
@@ -331,9 +388,22 @@ server.get('/metrics', async (_request, reply) => {
 
 // ── Auth Endpoints ───────────────────────────────────────────────────────
 
+// A far tighter bucket than the global one. Login is the only unauthenticated
+// route that does credential work, so it is where an online password-guessing
+// attempt lands; argon2id verification is also deliberately expensive, which
+// makes this endpoint the cheapest way to burn gateway CPU. Keyed on IP because
+// there is by definition no authenticated subject yet.
 server.post<{
   Body: { email: string; password: string };
-}>('/auth/login', async (request, reply) => {
+}>('/auth/login', {
+  config: {
+    rateLimit: {
+      max: Number(process.env.RATE_LIMIT_LOGIN_MAX ?? 10),
+      timeWindow: '1 minute',
+      keyGenerator: (request: FastifyRequest) => request.ip,
+    },
+  },
+}, async (request, reply) => {
   const { email, password } = request.body || {};
   if (!email || !password) {
     return reply.status(400).send({ error: 'email and password are required' });
@@ -570,7 +640,7 @@ server.post<{
   try {
     const aiRes = await fetch(`${aiServiceUrl}/match`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: serviceCallHeaders(),
       body: JSON.stringify({
         requirements: requirements || '',
         top_k: topK || 5,
@@ -891,7 +961,7 @@ server.post<{
     try {
       const aiRes = await fetch(`${aiServiceUrl}/generate-tests`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: serviceCallHeaders(),
         body: JSON.stringify({
           contract_id: contractId,
           title: title || 'untitled',
@@ -1937,7 +2007,7 @@ server.get<{
   try {
     const aiRes = await fetch(`${aiServiceUrl}/xai/score`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: serviceCallHeaders(),
       body: JSON.stringify({
         contract_id: contractId,
         freelancer_id: freelancerId,
@@ -2029,7 +2099,7 @@ server.post<{
   try {
     const res = await fetch(
       `${scopeGuardUrl}/scope/drift/${encodeURIComponent(contractId)}`,
-      { signal: AbortSignal.timeout(10_000) },
+      { headers: serviceCallHeaders(), signal: AbortSignal.timeout(10_000) },
     );
 
     if (!res.ok) {
@@ -2233,7 +2303,7 @@ server.post<{
   try {
     const scopeRes = await fetch(`${scopeGuardUrl}/scope/check`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: serviceCallHeaders(),
       body: JSON.stringify({ contract_id: contractId, message, sender }),
       signal: AbortSignal.timeout(5000),
     });

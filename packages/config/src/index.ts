@@ -153,6 +153,49 @@ export const AppConfigSchema = z.object({
   AWS_REGION: z.string().default('us-east-1'),
   AWS_ACCESS_KEY_ID: z.string().default('test'),
   AWS_SECRET_ACCESS_KEY: z.string().default('test'),
+
+  // ── Previously undeclared ────────────────────────────────────────────────
+  // Each of the following was read straight off process.env by exactly one
+  // module and appeared in no schema, no .env.example and no k8s ConfigMap.
+  // That combination means a deployment has no documented way to set them and
+  // a typo produces a silent default rather than a startup error, so they are
+  // declared here even though their consumers still read process.env directly.
+
+  // CORS allow-list (comma-separated), read by api-gateway. Falls back to the
+  // production hostname when unset in production and to origin-reflection in
+  // development, so a missing value in production silently locks out any other
+  // front-end host.
+  ALLOWED_ORIGINS: z.string().optional(),
+
+  // Where packages/telemetry ships OTLP spans. The default points at the
+  // loopback collector convention; in-cluster, with nothing listening on
+  // 127.0.0.1:4317, every span is exported into a closed socket and discarded.
+  OTEL_EXPORTER_OTLP_ENDPOINT: z.string().default('http://localhost:4317'),
+
+  // Which sandbox ci-worker executes untrusted code in. 'docker' needs the
+  // Docker socket mounted; 'node' uses the Node permission model, which is
+  // weaker isolation and is what infra/k8s/07-ci-worker.yaml deliberately pins.
+  SANDBOX_RUNNER: z.enum(['docker', 'node']).default('docker'),
+
+  // Rate limiting (plan2.md task 8.5). The global bucket applies to every route
+  // except health/ready/metrics; the login bucket is far tighter because that
+  // endpoint is unauthenticated and does argon2id work.
+  RATE_LIMIT_MAX: z.coerce.number().default(300),
+  RATE_LIMIT_WINDOW: z.string().default('1 minute'),
+  RATE_LIMIT_LOGIN_MAX: z.coerce.number().default(10),
+
+  // Whether ci-worker fetches the pushed source for a GitHub webhook event.
+  //
+  // Off by default, and deliberately opt-in rather than inferred from the
+  // presence of a token: turning it on means the audit pipeline makes outbound
+  // requests to github.com, which is a deployment decision. While it is off, a
+  // webhook-originated push is refused with an explanation rather than audited
+  // against substitute code — see apps/ci-worker/src/source-fetcher.ts.
+  ENABLE_GITHUB_SOURCE_FETCH: z.enum(['true', 'false']).default('false'),
+  // Needed for private repositories, and for a workable rate limit: GitHub
+  // allows 60 unauthenticated requests per hour per IP, and one audit costs one
+  // request per source file plus one for the tree.
+  GITHUB_TOKEN: z.string().optional(),
 });
 export type AppConfig = z.infer<typeof AppConfigSchema>;
 

@@ -166,10 +166,14 @@ def main() -> int:
             "ORDER BY embedding <=> %s::vector LIMIT 5",
             (contract_id, qvec),
         )
+        with conn.cursor() as cur:
+            cur.execute("SET enable_seqscan = off")
         unfiltered_plan = explain(
             "SELECT chunk_idx FROM rag_embeddings ORDER BY embedding <=> %s::vector LIMIT 5",
             (qvec,),
         )
+        with conn.cursor() as cur:
+            cur.execute("SET enable_seqscan = on")
 
         chosen = (
             "idx_rag_embeddings_hnsw"

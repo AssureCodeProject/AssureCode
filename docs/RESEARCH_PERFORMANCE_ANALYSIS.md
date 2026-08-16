@@ -56,7 +56,7 @@ lightweight constraint**.
 ### 2.1 RAG Vector Search & Embedding Scalability (AI/ML Domain)
 
 #### Analysis
-In [`infra/migrations/postgres/V001__init.sql`](file:///C:/Users/hp/AssureCode/infra/migrations/postgres/V001__init.sql#L28-L37), the `rag_embeddings` table stores 384-dimensional vectors from `all-MiniLM-L6-v2`:
+In [`infra/migrations/postgres/V001__init.sql`](infra/migrations/postgres/V001__init.sql), the `rag_embeddings` table stores 384-dimensional vectors from `all-MiniLM-L6-v2`:
 ```sql
 CREATE TABLE IF NOT EXISTS rag_embeddings (
     id           BIGSERIAL   PRIMARY KEY,
@@ -90,7 +90,7 @@ WITH (m = 16, ef_construction = 64);
 ### 2.2 Cryptographic Ledger Verification ($O(N)$ vs $O(\log N)$)
 
 #### Analysis
-In [`packages/ledger-client/src/index.ts`](file:///C:/Users/hp/AssureCode/packages/ledger-client/src/index.ts#L180-L215), `verifyChain` validates contract history by fetching every historical ledger row and re-calculating SHA-256 hashes sequentially:
+In [`packages/ledger-client/src/index.ts`](packages/ledger-client/src/index.ts), `verifyChain` validates contract history by fetching every historical ledger row and re-calculating SHA-256 hashes sequentially:
 $$\text{Current Hash}_k = \text{SHA256}(\text{CanonicalJSON}(\text{Payload}_k) \parallel \text{Current Hash}_{k-1})$$
 
 ```ts
@@ -120,7 +120,7 @@ Maintain the linear hash chain for execution history in PostgreSQL, but compute 
 ### 2.3 Outbox Event Propagation: Polling vs `LISTEN / NOTIFY`
 
 #### Analysis
-In [`packages/event-bus/src/outbox-relay.ts`](file:///C:/Users/hp/AssureCode/packages/event-bus/src/outbox-relay.ts#L46-L52), `OutboxRelay` polls PostgreSQL every 500ms:
+In [`packages/event-bus/src/outbox-relay.ts`](packages/event-bus/src/outbox-relay.ts), `OutboxRelay` polls PostgreSQL every 500ms:
 ```ts
 this.timer = setTimeout(() => {
   void this.pump().finally(() => {
@@ -180,7 +180,7 @@ model = ORTModelForFeatureExtraction.from_pretrained(
 ### 2.5 Redis Streams Batch Acknowledgments
 
 #### Analysis
-In [`packages/event-bus/src/index.ts`](file:///C:/Users/hp/AssureCode/packages/event-bus/src/index.ts#L288), `RedisStreamsBus` calls `xack` once per message:
+In [`packages/event-bus/src/index.ts`](packages/event-bus/src/index.ts), `RedisStreamsBus` calls `xack` once per message:
 ```ts
 await this.client.xack(topic, this.groupName, id);
 ```

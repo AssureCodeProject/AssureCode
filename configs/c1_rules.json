@@ -75,6 +75,42 @@
       "per_message_llm_judge",
       "cusum_without_conformal_calibration"
     ],
+    "baselines_implementation_status": {
+      "$comment": [
+        "NON-NORMATIVE. This block records where each pre-registered baseline's",
+        "code lives and whether it has been executed. It does not add, remove or",
+        "reweight any baseline, and it does not alter a decision rule — the",
+        "`baselines` array above is unchanged and remains the commitment.",
+        "",
+        "It exists because 'implemented' and 'run' had become indistinguishable",
+        "from outside the repository: poincare_hyperbolic_distance was fully",
+        "written but had no importer, no route and no test, which is externally",
+        "identical to a baseline that was quietly dropped. Every entry is",
+        "'not_run' for the same reason the observed_* fields above are null —",
+        "the T2 set does not exist. None of these may be reported as a result."
+      ],
+      "cosine_threshold": {
+        "implements": "apps/scope-guard/app/deps.py (threshold 0.2731)",
+        "run_on_t2": false,
+        "note": "The shipped guard's own rule. The 0.2731 threshold was fit on the same 16-message set it was evaluated against, so it is a fitting figure, not a generalisation estimate."
+      },
+      "poincare_hyperbolic_distance": {
+        "implements": "apps/ai-service/app/services/hyperbolic.py",
+        "unit_tested": "apps/ai-service/tests/test_hyperbolic.py",
+        "run_on_t2": false,
+        "note": "Geodesic distance verified against closed-form values and the metric axioms; correctness of the implementation is established, its discriminative power is not. Its 2.5 threshold is a placeholder that must be fit on T2 exactly as the cosine threshold is, or the comparison is rigged. See the projection caveat in the module docstring: L2-normalised embeddings all clamp to the same shell."
+      },
+      "per_message_llm_judge": {
+        "implements": null,
+        "run_on_t2": false,
+        "note": "Not implemented. Would call the Cloudflare Workers AI provider per message; cost and non-determinism both need stating before it is run."
+      },
+      "cusum_without_conformal_calibration": {
+        "implements": "apps/scope-guard/app/services/drift_detector.py (CUSUM path)",
+        "run_on_t2": false,
+        "note": "Blocked on the same kappa/h selection as the full detector — both are null above."
+      }
+    },
     "metrics": ["auc", "detection_delay_messages_from_onset", "empirical_false_alarm_rate_vs_delta"],
     "reporting": "T2 and T1 in separate tables, never pooled"
   },

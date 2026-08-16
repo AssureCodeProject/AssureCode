@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from app.deps import get_artifact_store, get_llm_client
 from app.ports.artifact_store import ArtifactStore
 from app.ports.llm_client import LlmClient, LlmUnavailableError
+from app.services import prompt_guard
 
 router = APIRouter(prefix="/generate-tests", tags=["test-gen"])
 
@@ -52,9 +53,10 @@ PROMPT_TEMPLATE = """\
 You are a senior QA engineer. Generate Jest tests (CommonJS, require syntax)
 for a freelance contract with the following requirements:
 
-Title: {title}
-Requirements:
-{requirements}
+{preamble}
+
+Title and Requirements:
+{requirements_block}
 
 Output ONLY valid Jest JavaScript code wrapped in a describe block.
 Include at least 3 test cases covering:
@@ -89,9 +91,16 @@ def generate_tests(
     llm: LlmClient = Depends(get_llm_client),
     store: ArtifactStore = Depends(get_artifact_store),
 ) -> GenerateTestsResponse:
+    # Contract title and requirements are client-supplied text. The blast radius
+    # here is smaller than the security scan's — generated tests are executed in
+    # ci-worker's sandbox and their pass/fail feeds `testsPassed` rather than
+    # `criticalVulns` — but a client who can steer this can generate a suite that
+    # passes vacuously. Fenced with the same per-request nonce; title and
+    # requirements go inside one block so neither can be used to escape.
+    block = prompt_guard.guard(f"Title: {req.title}\nRequirements:\n{req.requirements}")
     prompt = PROMPT_TEMPLATE.format(
-        title=req.title,
-        requirements=req.requirements,
+        preamble=prompt_guard.instruction_preamble(block, "contract text"),
+        requirements_block=block.render(),
         contract_id=req.contract_id,
     )
 

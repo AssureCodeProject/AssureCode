@@ -84,6 +84,12 @@ x-datastore-env: &datastore-env
   CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
   CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
   LLM_PROVIDER: ${LLM_PROVIDER:-cloudflare}
+  # The collector's in-network address, NOT the localhost:4317 default in
+  # packages/telemetry. Inside a container that default is the container's own
+  # loopback, so every span produced by the OTel SDK was exported into a socket
+  # nothing was listening on: the instrumentation was real, complete and
+  # entirely unobservable. Set here on the shared anchor so all services agree.
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
 
 # Data plane must be healthy before an app service starts. Compose's
 # `service_healthy` is what makes this a real gate rather than a start order.
@@ -439,9 +445,81 @@ services:
       retries: 6
       start_period: 10s
 
+  # ── Observability ─────────────────────────────────────────────
+  #
+  # packages/telemetry emits OTLP spans and Prometheus metrics and always has.
+  # Until now nothing in this file received either, so the instrumentation
+  # produced no observable output: OTEL_EXPORTER_OTLP_ENDPOINT defaulted to a
+  # container's own loopback and /metrics was exposed but never scraped.
+  #
+  # These four services close that loop. They are ordinary compose services
+  # rather than a separate overlay because a stack whose traces go nowhere is
+  # the state this is fixing; if you need to skip them on a small machine, use
+  #   docker compose up -d --scale grafana=0 --scale prometheus=0
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.115.1
+    container_name: assurecode-otel-collector
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./observability/otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "${OTEL_GRPC_PORT:-4317}:4317"   # OTLP gRPC — what the SDK uses
+      - "${OTEL_HTTP_PORT:-4318}:4318"   # OTLP HTTP
+    depends_on:
+      - jaeger
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    container_name: assurecode-jaeger
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "${JAEGER_UI_PORT:-16686}:16686"  # trace UI
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: assurecode-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    container_name: assurecode-grafana
+    restart: unless-stopped
+    environment:
+      # Anonymous viewer access. This is a local development stack behind no
+      # network boundary of its own; requiring a login here protects nothing
+      # and makes the dashboards harder to screenshot for the report. Do not
+      # carry this setting to a deployed Grafana.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./observability/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    depends_on:
+      - prometheus
+      - jaeger
+
 volumes:
   postgres-data:
   neo4j-data:
   redis-data:
   localstack-data:
   hf-cache:
+  prometheus-data:
+  grafana-data:

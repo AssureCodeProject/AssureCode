@@ -130,6 +130,14 @@ jobs:
       - name: Run Node Unit & Integration Tests
         run: npm run test
 
+      # Enforces the thresholds in vitest.config.ts over the pure-logic
+      # packages. Separate from the step above because that one runs each
+      # workspace's own vitest; coverage has to be measured in one pass to
+      # produce a single number. packages/oracle — the settlement gate — is
+      # pinned at 100% statements here and fails the build if it regresses.
+      - name: Enforce Coverage Thresholds
+        run: npm run test:coverage
+
       # Run from each service's own directory, and never in one invocation.
       # Both services define a top-level package called `app`, so collecting
       # them together resolves ai-service's imports against scope-guard's

@@ -56,7 +56,7 @@ trust score that gates escrow release.
    text and decides each request against it, anchoring every decision to the
    contract's genesis ledger hash $H_0$.
 4. **Objective Evaluation & Escrow Settlement.** A deterministic 0–100 trust
-   score computed from system telemetry gates a Stripe escrow capture.
+   score computed from system telemetry gates a Razorpay escrow capture.
 
 ---
 
@@ -95,7 +95,7 @@ trust score that gates escrow release.
 | `apps/ai-service` | FastAPI. Sentence-BERT matchmaker, RAG ingest, trust score, LLM ports. |
 | `apps/scope-guard` | FastAPI. Retrieval-based scope decisions and the C1 drift detector. |
 | `apps/ci-worker` | AST analyzer, OWASP auditor, ephemeral sandbox runner. |
-| `apps/settlement-worker` | Advisory-lock single-fire settlement, Stripe capture. |
+| `apps/settlement-worker` | Advisory-lock single-fire settlement, Razorpay capture. |
 | `apps/webhook-ingest` | GitHub `X-Hub-Signature-256` HMAC listener. |
 
 ### 7 Packages
@@ -103,8 +103,9 @@ trust score that gates escrow release.
 `config` (PG pool, TLS pinning, `.env` loading) · `event-bus` (in-memory /
 Redis + transactional outbox) · `ledger-client` (RFC 8785 canonicalization,
 RFC 6962 Merkle tree, ML-DSA-87 signing) · `oracle` (the single definition of
-the settlement gate) · `shared` (Zod schemas, event topics) · `stripe-adapter`
-(manual-capture PaymentIntent escrow) · `telemetry` (OpenTelemetry, Prometheus).
+the settlement gate) · `shared` (Zod schemas, event topics) · `razorpay-adapter`
+(authorize-then-capture escrow, in paise) · `kyc-adapter` (KYC port; the only
+implementation is a fake) · `telemetry` (OpenTelemetry, Prometheus).
 
 `packages/oracle` exists so the settlement worker and the gateway share one
 `evaluate()`. A second copy in the gateway would be a second definition of the
@@ -195,8 +196,10 @@ calibration set is configured**, which is the current state (§11).
 2. **Single-fire lock.** `pg_advisory_xact_lock` inside the settlement
    transaction prevents duplicate release. Oracle state lives in Postgres
    (`oracle_state`), not an in-process `Map`.
-3. **Stripe capture.** `StripeEscrowAdapter` uses `capture_method: 'manual'`;
-   capture *is* the release.
+3. **Razorpay capture.** The order is created with `payment_capture: 0`
+   (authorize now, capture later); capture *is* the release. Note that capture
+   moves funds from the client to the *platform* — there is no transfer onward
+   to the freelancer anywhere in the codebase (see §12, Limitations).
 4. **Ledger append** of `SETTLEMENT_COMPLETED`.
 
 ---
@@ -366,7 +369,7 @@ Twelve tables across migrations `V001`–`V009`.
 | `merkle_roots` | Per-contract Merkle roots and ML-DSA signatures |
 | `rag_embeddings` | 384-D HNSW vector store |
 | `scope_checks` | Recorded scope decisions (drift detector input) |
-| `escrow` | Stripe escrow payments |
+| `escrow` | Razorpay escrow payments (amounts in paise) |
 | `settlements` | Settlement records |
 | `oracle_state` | Durable oracle state (was an in-process Map) |
 | `audit_results` | CI telemetry and trust-score inputs |
@@ -551,7 +554,7 @@ AssureCode/
 │   │   ├── src/index.ts             # append, verifyChainDetailed, roots, proofs
 │   │   └── src/ml_dsa.py            # FIPS 204 ML-DSA-87
 │   ├── oracle/                      # The single definition of the settlement gate
-│   ├── shared/  stripe-adapter/  telemetry/
+│   ├── shared/  razorpay-adapter/  kyc-adapter/  telemetry/
 ├── configs/
 │   └── c1_rules.json                # Pre-registered drift decision rules (frozen PRE_DATA)
 ├── infra/

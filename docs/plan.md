@@ -1,5 +1,29 @@
 # AssureCode (Trust-Code 2.0) — Execution Plan
 
+> ## ⚠️ HISTORICAL — read `docs/plan2.md` and `README.md` for current status
+>
+> This file is the Sprints 0–5 plan as it stood when those sprints were run. It
+> is kept for provenance, not as a description of the system. Three of its
+> claims are now wrong, and are corrected here rather than edited away:
+>
+> * **Payments are Razorpay, not Stripe.** `packages/stripe-adapter` was deleted
+>   and replaced by `packages/razorpay-adapter` (authorize-then-capture, in
+>   paise) plus `packages/kyc-adapter`. Every mention of Stripe, Stripe Connect,
+>   PaymentIntent or `sk_test_` below refers to code that no longer exists.
+>   Task 5.3's "escrow → freelancer transfer" was never realised in the
+>   replacement: capture moves money to the platform and there is no payout leg.
+> * **The oracle evaluates six signals, not five.** Task 5.1 describes
+>   "AST/Tests/Security/Scope/Video". There is no video signal — the visual-proof
+>   mechanism was withdrawn (see `docs/NEXTGEN_RESEARCH_PARADIGM.md`).
+>   `packages/oracle` evaluates AST, tests, security, scope, `trustScore >= 85`
+>   and `criticalVulns === 0`.
+> * **LLM providers are Cloudflare Workers AI only.** The Gemini and OpenAI
+>   adapters referenced below were removed.
+>
+> The status marks are also unreliable: `docs/plan2.md` records a 2026-08-11
+> audit which found tasks marked `[x]` on the strength of code existing, without
+> the stated verification having been run.
+>
 > **Status legend:** `[x]` completed · `[~]` in progress · `[ ]` pending · `[!]` blocked
 
 This is the living execution plan for AssureCode — a zero-trust, event-driven

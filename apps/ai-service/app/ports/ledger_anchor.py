@@ -15,6 +15,20 @@ against.
 Anchoring is not optional. If H0 cannot be resolved, the guard has no verifiable
 contract to judge against and must say so rather than silently degrade into a
 free-floating similarity check.
+
+DO NOT DELETE THIS MODULE AS DEAD CODE. Nothing inside apps/ai-service imports
+it, so a grep scoped to this service makes it look orphaned — it is not. The
+real consumer is apps/scope-guard, which has no `app/ports/` package of its own
+and reaches this file through `from app.ports.ledger_anchor import ...`; both
+services declare a top-level package named `app`, so scope-guard's import
+resolves here. Removing it breaks scope-guard's `/scope-check` at import time,
+not at runtime.
+
+That coupling is fragile and is the same package-name collision that forces CI
+to run the two pytest suites from separate working directories (see
+.github/workflows/production-ci-cd.yml). Moving this module into a shared
+package, or giving scope-guard its own copy, would be an improvement; until then
+this notice is the safeguard.
 """
 from __future__ import annotations
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { InMemoryBus } from '../src/index.js';
+import { InMemoryBus, KafkaBus, eventBusOptionsFromConfig } from '../src/index.js';
 import { EVENT_TOPICS } from '@assurecode/shared';
 import { redisAvailable, announceSkip } from '../../../tools/test-support/infra.js';
 
@@ -55,6 +55,84 @@ describe('InMemoryBus', () => {
     await bus.publish('multi.topic', {});
     expect(a.length).toBe(1);
     expect(b.length).toBe(1);
+  });
+});
+
+describe('eventBusOptionsFromConfig', () => {
+  const base = { REDIS_URL: 'redis://localhost:6379', KAFKA_BROKERS: 'a:9092, b:9092' };
+
+  it('defaults to redis when EVENT_BUS_TYPE is unset', () => {
+    expect(eventBusOptionsFromConfig({ ...base })).toEqual({
+      type: 'redis',
+      redisUrl: 'redis://localhost:6379',
+    });
+  });
+
+  it('returns a kafka-only shape so the factory cannot fall through to redis', () => {
+    const opts = eventBusOptionsFromConfig({ ...base, EVENT_BUS_TYPE: 'kafka' });
+    expect(opts.type).toBe('kafka');
+    expect(opts.kafkaBrokers).toEqual(['a:9092', 'b:9092']);
+    expect(opts.redisUrl).toBeUndefined();
+  });
+
+  it('returns a memory-only shape carrying no broker or redis fields', () => {
+    // createEventBus() checks `kafkaBrokers` before it checks `type`, so a
+    // memory/redis options object that still carried brokers would silently
+    // select Kafka. These disjoint shapes are what prevent that.
+    const opts = eventBusOptionsFromConfig({ ...base, EVENT_BUS_TYPE: 'memory' });
+    expect(opts).toEqual({ type: 'memory' });
+  });
+
+  it('drops blank entries from a trailing-comma KAFKA_BROKERS', () => {
+    const opts = eventBusOptionsFromConfig({
+      ...base,
+      EVENT_BUS_TYPE: 'kafka',
+      KAFKA_BROKERS: 'a:9092,,',
+    });
+    expect(opts.kafkaBrokers).toEqual(['a:9092']);
+  });
+});
+
+describe('KafkaBus — publish must never silently drop', () => {
+  // Regression guard for the bug documented in docs/HANDOFF_32GB_TESTING.md:
+  // kafkajs was loaded with require() inside this ESM package, the resulting
+  // ReferenceError was swallowed by a catch, and `producer` stayed undefined.
+  // An `if (this.producer)` guard in publish() then made every send a no-op, so
+  // EVENT_BUS_TYPE=kafka discarded the whole event stream with zero errors
+  // logged. No broker is needed to prove the guard is gone.
+
+  it('rejects an empty broker list at construction', () => {
+    expect(() => new KafkaBus([])).toThrow(/at least one broker/);
+  });
+
+  it('propagates a broker failure instead of resolving as if it published', async () => {
+    const bus = new KafkaBus(['localhost:9092']);
+    const boom = new Error('broker unreachable');
+    (bus as any).isConnected = true; // skip connect(); this test is about send()
+    (bus as any).producer.send = async () => {
+      throw boom;
+    };
+
+    await expect(bus.publish('test.topic', { a: 1 })).rejects.toThrow('broker unreachable');
+  });
+
+  it('sends the envelope keyed by correlation id when the broker accepts it', async () => {
+    const bus = new KafkaBus(['localhost:9092']);
+    const sent: any[] = [];
+    (bus as any).isConnected = true;
+    (bus as any).producer.send = async (payload: any) => {
+      sent.push(payload);
+      return [];
+    };
+
+    const envelope = await bus.publish('test.topic', { a: 1 }, 'corr-abc');
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].topic).toBe('test.topic');
+    expect(sent[0].messages[0].key).toBe('corr-abc');
+    expect(JSON.parse(sent[0].messages[0].value)).toEqual(envelope);
+    expect(envelope.correlationId).toBe('corr-abc');
+    expect(envelope.payload).toEqual({ a: 1 });
   });
 });
 

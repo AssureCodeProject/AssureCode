@@ -1,5 +1,7 @@
 """AssureCode AI service package.
 
-STUB (task 0.1). Real implementation (matchmaker, embedding, test-gen, security,
-RAG, XAI judge) lands across Sprints 1, 2, 3, 4.
+FastAPI application exposing the matchmaker, the embedding port, RAG ingest and
+retrieval, LLM test generation, the OWASP static/LLM security scan, and the XAI
+trust-score judge. See app/main.py for the route surface and app/deps.py for how
+each port's adapter is selected.
 """

@@ -181,13 +181,25 @@ jobs:
       - name: Install Node Dependencies
         run: npm ci
 
-      # docs/security/npm-audit.json suggests this was run by hand once.
-      - name: npm audit
-        run: npm audit --audit-level=high
+      # Was a bare `npm audit --audit-level=high`, which failed on every single
+      # run — every remaining production advisory needs a major-version bump
+      # (fastify 4->5, OpenTelemetry 0.51->0.221). A permanently-red job is not
+      # a gate: it cannot distinguish the run where a new critical appeared from
+      # the hundreds before it, so the only workable response is to ignore it.
+      #
+      # scripts/audit-check.mjs gates on *production* advisories only (dev-tool
+      # CVEs ship in no image) and accepts a finding only if it has a reviewed,
+      # dated entry in docs/security/audit-exceptions.json. It fails on anything
+      # unaccepted, on an expired exception, and on a stale one — so accepting a
+      # risk has a deadline and the file cannot accumulate dead suppressions.
+      - name: Dependency Audit Gate
+        run: node scripts/audit-check.mjs
 
   container-build:
     name: Build Container Images
-    needs: [lint, test]
+    # `security` is in here deliberately. It previously gated nothing, so it
+    # reddened the workflow without blocking a merge — the worst of both worlds.
+    needs: [lint, test, security]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -201,10 +213,18 @@ jobs:
             dockerfile: infra/docker/Dockerfile.gateway
           - name: frontend-web
             dockerfile: infra/docker/Dockerfile.web
+          # `smoke` is an import the built image must be able to perform. Set
+          # only for the Python services: they resolve their whole dependency
+          # graph at module load, which is exactly the failure this catches.
+          # The Node images are deliberately excluded — their dist entrypoints
+          # call listen() on import, so "importing" one starts a server and
+          # hangs rather than returning a verdict.
           - name: ai-service
             dockerfile: infra/docker/Dockerfile.ai-service
+            smoke: import app.main
           - name: scope-guard
             dockerfile: infra/docker/Dockerfile.scope-guard
+            smoke: import app.main
           - name: ci-worker
             dockerfile: infra/docker/Dockerfile.ci-worker
           - name: settlement-worker
@@ -237,6 +257,20 @@ jobs:
             assurecode/${{ matrix.name }}:latest
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+      # A build that only builds proves nothing about a container that must
+      # import at start. This job shipped a scope-guard image whose very first
+      # import raised ModuleNotFoundError — prometheus_client had landed in a
+      # dev extra while the Dockerfile installs `.` with no extras — and the
+      # pipeline was green throughout, because `push: false` meant no image was
+      # ever run. `load: true` above puts the image in the local daemon, so
+      # running it costs one container start.
+      - name: Smoke-Test Image Imports
+        if: matrix.smoke
+        run: |
+          docker run --rm --entrypoint python \
+            assurecode/${{ matrix.name }}:${{ github.sha }} \
+            -c "${{ matrix.smoke }}"
 
       - name: Scan Image for Vulnerabilities
         uses: aquasecurity/trivy-action@0.28.0

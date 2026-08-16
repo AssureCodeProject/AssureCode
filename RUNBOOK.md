@@ -72,7 +72,8 @@ a limiter that 429s a kubelet probe turns a busy service into a restarting one.
 npm run infra:up          # start the stack
 npm run infra:down        # stop it
 npm run migrate           # apply pending migrations (idempotent)
-npm run seed:neo4j        # matchmaking graph seed
+npm run audit             # production dependency gate + exception review
+npm run seed:neo4j        # matchmaking graph structure (nodes + relationships)
 npm test                  # all Node workspace suites
 npm run test:coverage     # coverage thresholds (pure-logic packages)
 npm run test:e2e          # full stack, isolated compose project, auto teardown
@@ -181,6 +182,48 @@ Global limit is 300/minute keyed on the authenticated user (falling back to IP);
 Fixed — `infra/seed/neo4j/` was previously matched by the bare `neo4j/` pattern
 in `.gitignore`, so the seed was never committed. If you are on an older clone,
 pull and confirm the file exists.
+
+### Switching the matchmaking graph to Neo4j
+
+Postgres is the default. Neo4j needs **two** seeds, in order:
+
+```bash
+docker compose -f infra/docker-compose.yml up -d neo4j
+npm run seed:neo4j                                    # nodes + relationships
+python tools/seed-neo4j-vectors.py                    # embeddings + vector index
+GRAPH_BACKEND=neo4j <start ai-service>
+```
+
+The second step is not optional. Without the vector index the adapter degrades
+to a hardcoded in-process fixture — the service reports healthy and returns
+plausible rankings computed from fixture data, which is the most misleading
+failure mode in the system. Confirm with:
+
+```
+MATCH (f:Freelancer) WHERE f.embedding IS NOT NULL RETURN count(f)   -- expect 12
+SHOW INDEXES WHERE name = 'freelancer_embeddings'
+```
+
+The two backends are verified to produce identical rankings — see
+`TestCrossBackendParity` in `apps/ai-service/tests/test_graph_repo_neo4j.py`.
+That test skips (loudly) unless both `DATABASE_URL` and Neo4j are reachable and
+seeded.
+
+### The dependency audit fails
+
+`npm run audit` gates on **production** advisories only, and accepts a finding
+only when `docs/security/audit-exceptions.json` carries a dated entry for it.
+Three ways it fails:
+
+- *no reviewed exception* — a new advisory appeared. Fix it, or add an entry
+  with a real justification and an expiry.
+- *past its review date* — an accepted risk lapsed. Do the upgrade, or
+  re-review deliberately. Do not extend by habit.
+- *no longer fires* — remove the entry; the file must not accumulate dead
+  suppressions.
+
+Dev-only advisories (vitest, vite, postcss, nanoid) are reported but not gated:
+none of them ship in a published image.
 
 ## Running lean
 

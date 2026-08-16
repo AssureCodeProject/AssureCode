@@ -1,0 +1,85 @@
+{
+  "$comment": [
+    "Reviewed, dated exceptions to the production dependency audit gate.",
+    "Enforced by scripts/audit-check.mjs, run by the `security` CI job.",
+    "",
+    "An entry here means: we have looked at this advisory, we understand what it",
+    "would take to fix, and we have decided not to do that work before the date",
+    "given. It does NOT mean the advisory is wrong or harmless.",
+    "",
+    "The gate fails if a production high/critical advisory has no entry, if an",
+    "entry is past its `expires` date, or if an entry no longer matches anything",
+    "(so the file cannot quietly accumulate dead suppressions).",
+    "",
+    "Every entry below has the same root cause: the only available fix is a",
+    "major-version upgrade. `npm audit fix --force` would apply them, and would",
+    "take fastify from 4 to 5 across the whole gateway.",
+    "",
+    "Dev-only advisories (vitest, vite, @vitest/coverage-v8, postcss, nanoid) are",
+    "not listed because the gate audits with --omit=dev. They are reported in the",
+    "job output and are a genuinely different risk class: none of them ship in a",
+    "published image."
+  ],
+  "reviewed": "2026-08-16",
+  "exceptions": [
+    {
+      "package": "fastify",
+      "severity": "high",
+      "advisories": [
+        "GHSA-mrq3-vjjr-p77c (DoS via unbounded memory in sendWebStream)",
+        "GHSA-jx2c-rxcm-jvmq (Content-Type tab character bypasses body validation)",
+        "GHSA-444r-cwp2-x5xf (request.protocol/host spoofable via X-Forwarded-*)"
+      ],
+      "requires": "fastify 4 -> 5 (major)",
+      "reason": "The gateway is built on fastify 4 and the upgrade also forces new majors of @fastify/jwt, cors, multipart and websocket, each with its own breaking changes. Partially mitigated already: the gateway sits behind an ingress that terminates TLS and sets X-Forwarded-*, and ALLOWED_ORIGINS is explicit rather than reflective in production. Scheduled as its own change, not folded into unrelated work.",
+      "expires": "2026-11-30"
+    },
+    {
+      "package": "find-my-way",
+      "severity": "high",
+      "advisories": ["GHSA-c96f-x56v-gq3h (DDoS with HTTP/2)"],
+      "requires": "fastify 4 -> 5 (major); this is fastify's router",
+      "reason": "Transitive through fastify; cannot be lifted independently. The deployed ingress does not expose HTTP/2 directly to the gateway pod. Fixed by the same upgrade as the entry above.",
+      "expires": "2026-11-30"
+    },
+    {
+      "package": "fast-jwt",
+      "severity": "critical",
+      "advisories": [
+        "GHSA-gm45-q3v2-6cf8",
+        "GHSA-hm7r-c7qw-ghp6",
+        "GHSA-mvf2-f6gm-w987",
+        "GHSA-rp9m-7r4c-75qg",
+        "GHSA-3j8v-cgw4-2g6q",
+        "GHSA-gmvf-9v4p-v8jc"
+      ],
+      "requires": "@fastify/jwt 8 -> 10 (major), which requires fastify 5",
+      "reason": "Transitive through @fastify/jwt. This is the one entry that genuinely warrants moving first, because it is in the token verification path. Tokens here are minted by this service alone with a single symmetric secret and no external issuer, which removes the confused-deputy shape most of these advisories rely on. Should be re-reviewed before the expiry rather than extended by habit.",
+      "expires": "2026-10-31"
+    },
+    {
+      "package": "@opentelemetry/sdk-node",
+      "severity": "high",
+      "advisories": ["GHSA-q7rr-3cgh-j5r3"],
+      "requires": "@opentelemetry/sdk-node 0.51 -> 0.221 (major)",
+      "reason": "Telemetry only. It processes spans this system produces about itself; it parses no attacker-controlled input on any request path. The jump spans many pre-1.0 releases with repeated API churn and would touch every file in packages/telemetry.",
+      "expires": "2026-11-30"
+    },
+    {
+      "package": "@opentelemetry/sdk-trace-node",
+      "severity": "high",
+      "advisories": ["transitive via @opentelemetry/sdk-node"],
+      "requires": "@opentelemetry/sdk-node 0.51 -> 0.221 (major)",
+      "reason": "Transitive; same upgrade, same reasoning as above.",
+      "expires": "2026-11-30"
+    },
+    {
+      "package": "@opentelemetry/propagator-jaeger",
+      "severity": "high",
+      "advisories": ["GHSA-45rx-2jwx-cxfr"],
+      "requires": "@opentelemetry/sdk-node 0.51 -> 0.221 (major)",
+      "reason": "Transitive; same upgrade. The Jaeger propagator is not selected at runtime — packages/telemetry uses W3C trace context — so this code path is not exercised.",
+      "expires": "2026-11-30"
+    }
+  ]
+}

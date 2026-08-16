@@ -1,0 +1,109 @@
+# =============================================================================
+# Neo4j vector seed Job.
+#
+# Only needed when GRAPH_BACKEND=neo4j. Nothing in infra/k8s ran any Neo4j seed
+# before this file existed, so a deployed graph was empty: the StatefulSet came
+# up healthy, `Neo4jGraphRepo` connected successfully, found no nodes, and
+# degraded to its in-memory mirror — a fully "green" cluster serving
+# matchmaking results from a hardcoded fixture.
+#
+# ── What it does NOT do ──────────────────────────────────────────────────
+# It attaches embeddings to :Freelancer nodes; it does not create them. The
+# structural seed (infra/seed/neo4j/V001__seed_matchmaking.cypher, applied by
+# tools/seed-neo4j.ts) is a host-side TypeScript script with no image, so it has
+# no in-cluster equivalent yet. Run it against the cluster's Bolt endpoint
+# first, e.g. through a port-forward:
+#
+#     kubectl port-forward -n assurecode svc/neo4j 7687:7687 &
+#     NEO4J_URI=bolt://localhost:7687 npm run seed:neo4j
+#     kubectl apply -f infra/k8s/16-seed-neo4j-job.yaml
+#
+# If the nodes are absent this Job exits non-zero naming every missing id,
+# rather than succeeding against an empty graph.
+#
+# ── Model cache ──────────────────────────────────────────────────────────
+# It reuses the ai-service image because it needs sentence-transformers to
+# produce vectors in the same space the matchmaker embeds queries into — a
+# vector from any other model does not error, it just ranks badly. The image
+# carries the model, so no download is needed at run time. `HF_HOME` points at
+# an emptyDir purely so the library has a writable cache directory; nothing is
+# expected to be fetched into it.
+#
+# ── Idempotency ──────────────────────────────────────────────────────────
+# `CREATE VECTOR INDEX ... IF NOT EXISTS` and `SET f.embedding` are both
+# idempotent, so a retry re-seeds cleanly and backoffLimit is safe.
+# =============================================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: assurecode-seed-neo4j-vectors
+  namespace: assurecode
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: assurecode-seed-neo4j-vectors
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: seed-neo4j-vectors
+          # The ai-service image, for the model and the Python environment. The
+          # script lives in tools/, which that image does not carry, so it is
+          # mounted from a ConfigMap below rather than baked in — the same
+          # separation compose achieves with a bind mount.
+          image: assurecode/ai-service:latest
+          workingDir: /srv
+          command: ["python", "/srv/tools/seed-neo4j-vectors.py"]
+          env:
+            - name: HF_HOME
+              value: /tmp/hf-cache
+          envFrom:
+            - configMapRef:
+                name: assurecode-config
+            - secretRef:
+                name: assurecode-secrets
+          volumeMounts:
+            - name: seed-script
+              mountPath: /srv/tools
+              readOnly: true
+            - name: hf-cache
+              mountPath: /tmp/hf-cache
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "500m"
+              # sentence-transformers loads a ~90MB model plus torch. Sized to
+              # match ai-service's own floor; a lower limit OOM-kills during
+              # model load, which surfaces as an unexplained Job failure.
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+      volumes:
+        # Populate with:
+        #   kubectl create configmap seed-neo4j-vectors-script -n assurecode \
+        #     --from-file=seed-neo4j-vectors.py=tools/seed-neo4j-vectors.py \
+        #     --from-file=seed-users.py=tools/seed-users.py
+        # Both files are required: the vector seeder imports the freelancer
+        # roster and the embedder factory from seed-users.py so the two cannot
+        # hold different rosters.
+        - name: seed-script
+          configMap:
+            name: seed-neo4j-vectors-script
+            defaultMode: 0755
+        - name: hf-cache
+          emptyDir: {}

@@ -94,6 +94,7 @@ the click-through walkthrough.
 npm test                  # all workspace suites (Node)
 npm run test:coverage     # coverage thresholds over the pure-logic packages
 npm run test:e2e          # full stack in an isolated compose project
+npm run audit             # production dependency gate (see docs/security/)
 ```
 
 Python suites run per service, from that service's own directory — both declare

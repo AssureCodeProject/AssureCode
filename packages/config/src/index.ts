@@ -89,6 +89,16 @@ export const AppConfigSchema = z.object({
   // than reimplementing the /score route's contract resolution and payload shaping.
   GATEWAY_URL: z.string().default('http://localhost:4000'),
 
+  // Which backend serves the matchmaking graph. 'postgres' (default) uses
+  // pgvector + HNSW; 'neo4j' uses the native vector index and additionally
+  // requires tools/seed-neo4j-vectors.py to have run, without which the adapter
+  // degrades to an in-process fixture.
+  //
+  // Explicit rather than inferred from NEO4J_URI being set — that variable has
+  // a default and is present in every environment, so inferring from it would
+  // silently switch the backend for every existing deployment.
+  GRAPH_BACKEND: z.enum(['postgres', 'neo4j']).default('postgres'),
+
   // Neo4j
   NEO4J_URI: z.string().default('bolt://localhost:7687'),
   NEO4J_USER: z.string().default('neo4j'),

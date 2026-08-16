@@ -166,10 +166,30 @@ at this point in a project.
 - **LocalStack S3** — artifact storage (test bundles). The local-disk fallback is
   opt-in and off in production, because with multiple replicas a disk write
   succeeds and then the artifact cannot be found by any other pod.
-- **Neo4j** — provisioned but **not queried**. `Neo4jGraphRepo` exists in
-  `apps/ai-service/app/ports/graph_repo.py`, but `get_graph_repo()` only ever
-  selects `InMemoryGraphRepo` or `PostgresGraphRepo`. Kept for now rather than
-  removed silently; see [Known structural issues](#known-structural-issues).
+- **Neo4j** — a **selectable alternative** to Postgres for the matchmaking
+  graph, chosen with `GRAPH_BACKEND=neo4j`. Postgres remains the default.
+
+  It was until recently provisioned but never queried: `get_graph_repo()` had no
+  Neo4j branch, and `Neo4jGraphRepo.retrieve_by_embedding` was a stub returning
+  similarity `0.0` for every freelancer — so selecting it would have deleted the
+  semantic half of matchmaking without erroring. It now uses Neo4j's native
+  vector index (`db.index.vector.queryNodes`), seeded by
+  `tools/seed-neo4j-vectors.py`, which is a separate step from the structural
+  seed and is what creates the 384-dimension cosine index.
+
+  **The two backends do not report similarity on the same scale.** pgvector's
+  `1 - (a <=> b)` is raw cosine in `[-1, 1]`; a Neo4j cosine index returns
+  `(1 + cos) / 2` in `[0, 1]`. Both are plausible floats that survive the
+  matchmaker's `max(0.0, …)` clamp, so mixing them up changes rankings without
+  raising anything. `neo4j_score_to_cosine` inverts it, and a cross-backend
+  parity test asserts both backends return the same top-k ordering *and*
+  matching similarity values for the same query.
+
+  Whether Neo4j is worth using is a separate question from whether it works: the
+  matchmaker performs **no traversal**. It calls one method and reranks flat
+  scalars in Python, which Postgres+HNSW serves at least as well. The graph
+  structure the seed builds — `(Freelancer)-[:COMPLETED]->(Project)-[:REQUIRES]->(Skill)`
+  — is what would justify it, and nothing walks those edges yet.
 
 ## Observability
 
@@ -214,7 +234,12 @@ somebody has to find.
    `ENABLE_GITHUB_SOURCE_FETCH=true`. While it is off, webhook-originated
    pushes are refused with an explanation and only `/simulate-push` reaches the
    pipeline. The fetch is untested against live GitHub.
-3. **Neo4j is provisioned and never queried** (above).
+3. **Neo4j is selectable but unjustified.** It works and is verified against
+   Postgres for ranking parity, but the matchmaker does no traversal, so it buys
+   nothing measurable over pgvector today. Its seed is also two steps
+   (structural via `npm run seed:neo4j`, then vectors via
+   `tools/seed-neo4j-vectors.py`), and the structural half still has no
+   in-cluster Job — `infra/k8s/16-seed-neo4j-job.yaml` covers only the vectors.
 4. **Kafka is implemented but unexercised** — no k8s manifest, and Redis is the
    default everywhere.
 5. **No payout leg.** Capture moves money from the client to the platform; there

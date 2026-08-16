@@ -30,7 +30,8 @@
     "test:e2e:down": "node scripts/e2e.mjs down",
     "infra:up": "docker compose --env-file .env -f infra/docker-compose.yml up -d",
     "infra:down": "docker compose -f infra/docker-compose.yml down",
-    "ledger:legacy": "tsx tools/ledger-legacy-anchor.ts"
+    "ledger:legacy": "tsx tools/ledger-legacy-anchor.ts",
+    "audit": "node scripts/audit-check.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",

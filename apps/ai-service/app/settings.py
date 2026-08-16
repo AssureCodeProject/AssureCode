@@ -11,6 +11,7 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
 def _find_repo_root() -> Path | None:
     """The checkout root, or None when the service is not running from one.
 
@@ -68,6 +69,14 @@ class Settings(BaseSettings):
     embed_provider: str = Field(default="sentence-transformers", alias="EMBED_PROVIDER")
     embed_model_name: str = Field(default="all-MiniLM-L6-v2", alias="EMBED_MODEL_NAME")
     embed_dim: int = Field(default=384, alias="EMBED_DIM")
+
+    # ── Matchmaking graph backend ─────────────────────────────
+    # "postgres" (default) | "neo4j". Explicit rather than inferred from
+    # NEO4J_URI, which has a default and is set everywhere — inferring from it
+    # would switch the backend for every existing deployment. Neo4j additionally
+    # needs the vector index created by tools/seed-neo4j-vectors.py; without it
+    # the adapter degrades to the in-memory mirror.
+    graph_backend: str = Field(default="postgres", alias="GRAPH_BACKEND")
 
     # ── Neo4j (matchmaker graph) ──────────────────────────────
     neo4j_uri: str = Field(default="bolt://localhost:7687", alias="NEO4J_URI")

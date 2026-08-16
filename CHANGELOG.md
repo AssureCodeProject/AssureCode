@@ -10,6 +10,40 @@ be the artifact a paper cites, and is gated on the criteria in
 
 ## [Unreleased]
 
+### Neo4j is a working backend
+Previously provisioned everywhere and queried nowhere: a 1–2Gi StatefulSet, a
+10Gi PVC, two compose services, a driver dependency and two NetworkPolicy
+entries existed for an adapter `get_graph_repo()` never constructed.
+
+- `Neo4jGraphRepo.retrieve_by_embedding` was a stub returning similarity `0.0`
+  for every freelancer. Because the matchmaker multiplies that by `w_skill`,
+  selecting this backend would have deleted the semantic half of matchmaking
+  and collapsed ranking to trust + delivery count — silently. It now queries
+  the native vector index.
+- **The two backends report similarity on different scales.** pgvector returns
+  raw cosine in `[-1, 1]`; a Neo4j cosine index returns `(1 + cos) / 2` in
+  `[0, 1]`. Both survive the matchmaker's `max(0.0, …)` clamp, so confusing them
+  changes rankings with no error, no log line and no failing test — a silent
+  wrong answer in a reported result. `neo4j_score_to_cosine` inverts it, and a
+  cross-backend parity test asserts identical top-k ordering *and* similarity
+  values across four queries. That test was verified to fail (12 comparison
+  errors) when the conversion is removed.
+- `tools/seed-neo4j-vectors.py` creates the 384-d cosine index and writes
+  embeddings. It **imports** the roster and embedder from `tools/seed-users.py`
+  rather than forking them, so the two cannot hold different rosters or embed
+  different `profile_text`.
+- `GRAPH_BACKEND` selects the backend; Postgres remains the default. Explicit
+  rather than inferred from `NEO4J_URI`, which has a default and is set
+  everywhere — inferring would have switched the backend for every deployment.
+- `infra/k8s/16-seed-neo4j-job.yaml` and a compose `seed-neo4j-vectors` service
+  (behind the `neo4j` profile). There was previously no in-cluster Neo4j seed at
+  all, so a deployed graph was empty and the adapter degraded to a fixture while
+  the cluster reported healthy.
+- Pinned `neo4j:5.26-community` in compose and k8s (native vector indexes need
+  5.13+; the floating `5-community` tag made that an unstated assumption), and
+  bounded the driver to `>=5.26.0,<7.0.0` — the venv had resolved 6.x against
+  code written for 5.x.
+
 ### Security
 - **Prompt-injection defences** for the two routes that put untrusted text in an
   LLM prompt (`apps/ai-service/app/services/prompt_guard.py`, 41 tests). The
@@ -129,6 +163,36 @@ be the artifact a paper cites, and is gated on the criteria in
   adapters.
 
 ### Fixed
+- **`apps/scope-guard`'s published image could not start.** `prometheus-client`
+  was added to its `dev` extras rather than core dependencies (a script matched
+  the `httpx>=` line, which in that file only appears under `dev`), while
+  `Dockerfile.scope-guard` installs `.` with no extras and `app/main.py` imports
+  it at module load. CI reported green throughout because `container-build` uses
+  `push: false` and never ran the image. A `Smoke-Test Image Imports` step now
+  runs `python -c "import app.main"` against each built Python image.
+- **The `security` job failed on every run and gated nothing.** `npm audit
+  --audit-level=high` cannot pass while every remaining production advisory
+  needs a major bump (fastify 4→5, OpenTelemetry 0.51→0.221), and no job listed
+  it in `needs:`. Replaced with `scripts/audit-check.mjs`, which gates on
+  production advisories only, accepts a finding only with a dated entry in
+  `docs/security/audit-exceptions.json`, and fails on unaccepted, expired *or*
+  stale exceptions. `container-build` now depends on it. All three failure modes
+  were verified by deliberately breaking the exceptions file.
+- `InMemoryGraphRepo` held 8 freelancers to the seed's 12, with
+  `freelancer-chen` named "Chen Wei" (reversed) carrying Python/AI skills that
+  belong to `freelancer-alex`, `freelancer-sarah` holding chen's front-end
+  skills, and a `freelancer-devon` that exists nowhere else. Since tests default
+  to this fixture, `test_match.py`'s assertions had been describing a roster the
+  rest of the system left behind — its own comments referenced a
+  `freelancer-alex` the fixture did not contain.
+- `trust_score_persisted` in `/xai/score` could report `true` for a write that
+  reached only an in-process dict. `update_trust_score` is now part of the
+  `GraphRepo` Protocol (dropping a `hasattr` guard that reported "not persisted"
+  and "no such method" identically), and fallback writes return `false`.
+- Skill normalisation in the Neo4j adapter lived only in the Cypher's
+  `toLower()`, so a query edit could have silently stopped every skill matching.
+  Both query paths now share one record-mapping helper that lowercases in Python
+  as well.
 - `KafkaBus` no longer silently discards events. The vestigial
   `if (this.producer)` and `if (!this.kafka)` guards — left over from an era
   when `kafkajs` was loaded with `require()` inside this ESM package and the
@@ -151,6 +215,26 @@ be the artifact a paper cites, and is gated on the criteria in
   untracked from git (files retained on disk, now gitignored). These were local
   run artifacts and ~390 files of agent scratch directories; one contained an
   LLM response with prompt instructions leaked into it.
+
+### Deferred CI/CD work (deliberately out of scope, recorded so it is not rediscovered)
+- **No CD.** Images are still built with `push: false`; there is no registry
+  login, no deploy job, no `environment:`, no tag trigger and no release
+  workflow. Manifests are validated and never applied.
+- **Trivy is soft-failed** (`exit-code: '0'`), so CRITICAL/HIGH container
+  findings report but cannot block.
+- **No Redis service in the `test` job**, so `packages/event-bus`'s retry/DLQ
+  suite — the only coverage of that logic — silently skips in CI.
+- **The two `pip install -e` steps are order-dependent**: scope-guard's tests
+  pass partly because ai-service is installed first and leaks `httpx` into the
+  interpreter. Its `dev` extra now declares `httpx` explicitly, but the steps
+  should still be decoupled.
+- `k8s-validate` needlessly `needs: container-build`, serialising the pipeline
+  behind eight image builds it does not use.
+- Ruff skips `scripts/validate-k8s.py` and `packages/ledger-client/**/*.py`.
+- No CODEOWNERS, Dependabot/Renovate, or PR template.
+- The six accepted audit exceptions expire 2026-10-31 (fast-jwt) and 2026-11-30
+  (the rest); the gate fails once they lapse, which is the intended forcing
+  function for the fastify 4→5 and OpenTelemetry upgrades.
 
 ### Known issues
 Unchanged and unresolved — see `README.md` and `docs/THREAT_MODEL.md`:

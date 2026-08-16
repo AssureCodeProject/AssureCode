@@ -121,7 +121,12 @@ services:
       retries: 10
 
   neo4j:
-    image: neo4j:5-community
+    # Pinned, not `5-community`. Native vector indexes
+    # (CREATE VECTOR INDEX / db.index.vector.queryNodes) are what
+    # Neo4jGraphRepo.retrieve_by_embedding depends on, and they are only
+    # available from 5.13. A floating major tag resolved to "whatever 5.x is
+    # current", which is a silent dependency on a feature that could move.
+    image: neo4j:5.26-community
     container_name: assurecode-neo4j
     restart: unless-stopped
     ports:
@@ -265,6 +270,37 @@ services:
     # restart re-seeds harmlessly. The gateway gates on this completing:
     # without it `users` is empty, every login 401s, and the UI cannot get past
     # the login screen — a stack that is "up" but unusable.
+    restart: "no"
+
+  seed-neo4j-vectors:
+    # Writes profile embeddings and the vector index into Neo4j. Same image and
+    # mount rationale as `seed` above — it needs the sentence-transformers model
+    # to produce vectors in the same space the matchmaker embeds queries into.
+    #
+    # Separate from `seed` because it targets a different datastore and is only
+    # meaningful once the *structural* seed has run: it attaches vectors to
+    # :Freelancer nodes it does not create. Compose has no equivalent of
+    # `npm run seed:neo4j` (that is a host-side TypeScript script), so this
+    # service will report the missing nodes and exit non-zero if the graph is
+    # empty — which is the correct, legible failure rather than a silent no-op.
+    #
+    # Only needed when GRAPH_BACKEND=neo4j. It is harmless otherwise: the
+    # vectors simply go unread.
+    image: assurecode/ai-service:local
+    container_name: assurecode-seed-neo4j-vectors
+    profiles: ["neo4j"]
+    environment:
+      <<: *datastore-env
+      NODE_ENV: ${NODE_ENV:-development}
+      HF_HOME: /home/appuser/.cache/huggingface
+    volumes:
+      - ../tools:/srv/tools:ro
+      - hf-cache:/home/appuser/.cache/huggingface
+    working_dir: /srv
+    command: ["python", "tools/seed-neo4j-vectors.py"]
+    depends_on:
+      neo4j:
+        condition: service_healthy
     restart: "no"
 
   api-gateway:

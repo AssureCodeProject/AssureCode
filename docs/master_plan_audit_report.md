@@ -14,6 +14,23 @@
 > notice) and the working plan in this repo for what is actually implemented
 > today. The rest of this document is left as originally written for audit-trail
 > purposes — read it as "what an earlier audit believed," not as current fact.
+>
+> **Two further corrections, added 2026-08-16:**
+>
+> * **The oracle gates on six signals, not four** — this notice previously said
+>   four. `packages/oracle/src/index.ts` evaluates `astPassed`, `testsPassed`,
+>   `securityPassed`, `scopePassed`, **and** `trustScore >= 85` and
+>   `criticalVulns === 0`. The two numeric conditions are as load-bearing as the
+>   booleans: a contract with every boolean true and no recorded trust score is
+>   blocked, and `null` is treated as "not yet scored" rather than as zero.
+> * **This report's Neo4j section is wrong.** It records Neo4j as "INSTALLED"
+>   and operational and cites `graph_repo.py:101-170` — a line range that does
+>   not contain the class. In fact `get_graph_repo()` had no Neo4j branch at
+>   all, so `Neo4jGraphRepo` was unreachable and every request was served by
+>   `PostgresGraphRepo`. Since 2026-08-16 Neo4j is a genuinely working backend,
+>   but only under an explicit `GRAPH_BACKEND=neo4j` and only once
+>   `tools/seed-neo4j-vectors.py` has created the vector index. Postgres is
+>   still the default.
 
 ---
 

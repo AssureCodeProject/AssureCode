@@ -53,7 +53,10 @@ spec:
         fsGroup: 7474
       containers:
         - name: neo4j
-          image: neo4j:5-community
+          # Pinned rather than the floating `5-community`: native vector
+          # indexes, which Neo4jGraphRepo.retrieve_by_embedding depends on, are
+          # only available from 5.13. Matches infra/docker-compose.yml.
+          image: neo4j:5.26-community
           ports:
             - containerPort: 7687
               name: bolt

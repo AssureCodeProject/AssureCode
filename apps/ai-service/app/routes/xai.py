@@ -299,9 +299,12 @@ def calculate_xai_score(
     # Neo4jGraphRepo degrades to an in-process mirror that nothing else reads,
     # so without this flag a caller has no way to distinguish "written to the
     # graph" from "written to a dictionary that dies with the process".
-    trust_score_persisted = False
-    if hasattr(graph_repo, "update_trust_score"):
-        trust_score_persisted = bool(graph_repo.update_trust_score(req.freelancer_id, trust_score))
+    # `update_trust_score` is part of the GraphRepo Protocol now, so the previous
+    # `hasattr` guard is gone: it silently reported not-persisted for any backend
+    # that happened to lack the method, which is indistinguishable from a failed
+    # write. Each adapter returns False when the value reached only its
+    # in-process mirror.
+    trust_score_persisted = bool(graph_repo.update_trust_score(req.freelancer_id, trust_score))
 
     # Advisory only, computed after trust_score is final — see
     # _generate_narrative's docstring for the isolation guarantee.

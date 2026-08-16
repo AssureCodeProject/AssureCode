@@ -9,7 +9,12 @@ from functools import lru_cache
 
 from app.ports.artifact_store import ArtifactStore, InMemoryArtifactStore, S3ArtifactStore
 from app.ports.embedder import Embedder, FakeEmbedder, SentenceTransformerEmbedder
-from app.ports.graph_repo import GraphRepo, InMemoryGraphRepo, PostgresGraphRepo
+from app.ports.graph_repo import (
+    GraphRepo,
+    InMemoryGraphRepo,
+    Neo4jGraphRepo,
+    PostgresGraphRepo,
+)
 from app.ports.llm_client import (
     CloudflareWorkersAiClient,
     FakeLlmClient,
@@ -41,10 +46,32 @@ def get_graph_repo() -> GraphRepo:
     connect that adapter used, `pytest tests/test_xai.py` blocked forever
     against a database that is not running in CI, which is why that suite could
     not be executed at all.
+
+    Backend selection
+    -----------------
+    `GRAPH_BACKEND` chooses explicitly; Postgres remains the default. Neo4j is
+    opt-in rather than inferred from NEO4J_URI being set, because that variable
+    has a default and is present in every environment — inferring from it would
+    silently switch the backend for every existing deployment.
+
+    Neo4j requires the vector index from tools/seed-neo4j-vectors.py. Without
+    it the adapter degrades to the in-memory mirror rather than returning
+    zero-similarity candidates, which is what it used to do and which quietly
+    removed the semantic half of matchmaking.
     """
     settings = get_settings()
+
+    # Tests always get the deterministic fixture, whatever the backend says.
     if settings.environment == "test" or not settings.database_url:
         return InMemoryGraphRepo()
+
+    if settings.graph_backend == "neo4j":
+        return Neo4jGraphRepo(
+            uri=settings.neo4j_uri,
+            user=settings.neo4j_user,
+            password=settings.neo4j_password,
+        )
+
     return PostgresGraphRepo(database_url=settings.database_url)
 
 

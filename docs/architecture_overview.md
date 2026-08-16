@@ -18,6 +18,15 @@
 > * **"5-signal oracle" is wrong; it is six.** `packages/oracle` evaluates AST,
 >   tests, security, scope, `trustScore >= 85` and `criticalVulns === 0`. There
 >   is no video signal — visual proof was withdrawn.
+> * **Neo4j claims below were false when written and are only conditionally
+>   true now.** This document states that `/match` reads "Neo4j skill graph
+>   records" and that `/xai/score` runs `SET f.trust_score = $trust_score`.
+>   Neither happened: `get_graph_repo()` had no Neo4j branch at all, so
+>   `PostgresGraphRepo` served every request. (The property name is also wrong —
+>   it is `XAI_Trust_Score`, not `trust_score`.) As of 2026-08-16 Neo4j *is* a
+>   working backend, but only when `GRAPH_BACKEND=neo4j` is set explicitly and
+>   only after `tools/seed-neo4j-vectors.py` has built the vector index.
+>   Postgres remains the default, so the default path still does not touch Neo4j.
 >
 > See `ARCHITECTURE.md` at the repository root for the current design.
 >

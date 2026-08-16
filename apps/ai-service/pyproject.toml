@@ -24,7 +24,11 @@ test = [
 # Full stack — real embedder (torch), live graph, RAG store, S3. Pulls heavy deps.
 full = [
     "sentence-transformers>=3.3.0",
-    "neo4j>=5.26.0",
+    # Upper bound added: the venv resolved 6.x while the adapter was written
+    # against 5.x, so CI and a developer machine could be a major version apart
+    # with nothing reporting it. `execute_query` (the only driver API used here)
+    # is stable across both, but that is luck rather than a guarantee.
+    "neo4j>=5.26.0,<7.0.0",
     "psycopg[binary]>=3.2.0",
     "pgvector>=0.3.6",
     "boto3>=1.35.0",

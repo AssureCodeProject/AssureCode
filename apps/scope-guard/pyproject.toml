@@ -11,14 +11,24 @@ dependencies = [
     "pgvector>=0.3.6",
     "psycopg[binary]>=3.2.0",
     "sentence-transformers>=3.3.0",
+    # Core, not a dev extra. app/main.py imports app.ports.telemetry at module
+    # load, which imports prometheus_client — so the service cannot start
+    # without it. It was briefly listed under `dev` below, and because
+    # infra/docker/Dockerfile.scope-guard installs `.` with no extras, the
+    # published image raised ModuleNotFoundError on `uvicorn app.main:app`.
+    # CI did not catch it: container-build uses push: false and never runs the
+    # image. The smoke step added to that job now does.
+    "prometheus-client>=0.21.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
+    # Required by fastapi.testclient, which every test here uses. Declared
+    # explicitly rather than relying on `pip install -e apps/ai-service`
+    # running first in CI and leaking it into the shared interpreter.
     "httpx>=0.27.0",
-    "prometheus-client>=0.21.0",
     "ruff>=0.8.0",
 ]
 

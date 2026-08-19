@@ -45,16 +45,40 @@ function splitStatements(text: string): string[] {
     }
 
     if (ch === ';' && inString === null) {
-      const stmt = current.trim();
-      if (stmt && !stmt.startsWith('//')) statements.push(stmt);
+      pushIfExecutable(statements, current);
       current = '';
     } else {
       current += ch;
     }
   }
-  const tail = current.trim();
-  if (tail && !tail.startsWith('//')) statements.push(tail);
+  pushIfExecutable(statements, current);
   return statements;
+}
+
+/**
+ * Push `chunk`'s executable content, unless it's nothing but comment lines.
+ *
+ * Comments never contain a semicolon, so a chunk spanning a `// section
+ * header` (or the file's own leading doc comment) immediately followed by a
+ * real statement — with no semicolon between them — arrives here as ONE
+ * chunk whose first line, after trimming, is `//`. Checking only
+ * `chunk.startsWith('//')` (the previous approach) misjudged that whole
+ * chunk as "just a comment" and dropped the real statement bundled after
+ * it — silently, since a dropped MERGE throws no error.
+ *
+ * Comment lines are stripped from what's actually pushed, not just detected:
+ * Aura's server-side parser counts a leading `//` line plus a statement on
+ * the next line as more than "exactly one statement per query" and rejects
+ * the whole query, even though Cypher's grammar treats `//` as a same-line
+ * comment. Sending only the statement lines avoids that entirely.
+ */
+function pushIfExecutable(statements: string[], chunk: string): void {
+  const withoutComments = chunk
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('//'))
+    .join('\n')
+    .trim();
+  if (withoutComments) statements.push(withoutComments);
 }
 
 async function applyFile(session: Session, filename: string, content: string): Promise<number> {

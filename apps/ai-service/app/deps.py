@@ -42,6 +42,24 @@ def get_graph_repo() -> GraphRepo:
 
 
 @lru_cache(maxsize=1)
+def get_relationship_graph() -> Neo4jGraphRepo | None:
+    """The optional Neo4j/AuraDB collaboration-network signal for the matchmaker.
+
+    None whenever NEO4J_ENABLED is off or in the test environment — same
+    opt-in-only shape as every other adapter factory here, so no test or
+    unconfigured deployment ever attempts a connection. Neo4jGraphRepo
+    connects lazily (see its docstring), so constructing it here performs no
+    network I/O even when enabled.
+    """
+    settings = get_settings()
+    if settings.environment == "test" or not settings.neo4j_enabled:
+        return None
+    return Neo4jGraphRepo(
+        uri=settings.neo4j_uri, user=settings.neo4j_user, password=settings.neo4j_password
+    )
+
+
+@lru_cache(maxsize=1)
 def get_matchmaker() -> Matchmaker:
     settings = get_settings()
     return Matchmaker(
@@ -50,6 +68,8 @@ def get_matchmaker() -> Matchmaker:
         w_skill=settings.match_weight_skill,
         w_trust=settings.match_weight_trust,
         w_history=settings.match_weight_history,
+        w_network=settings.match_weight_network,
+        relationship_graph=get_relationship_graph(),
     )
 
 
@@ -105,6 +125,7 @@ def reset_deps_cache() -> None:
     """Clear the lru_caches — used by tests that swap settings/adapters."""
     get_embedder.cache_clear()
     get_graph_repo.cache_clear()
+    get_relationship_graph.cache_clear()
     get_matchmaker.cache_clear()
     get_rag_store.cache_clear()
     get_llm_client.cache_clear()
@@ -120,6 +141,7 @@ __all__ = [
     "get_llm_client",
     "get_matchmaker",
     "get_rag_store",
+    "get_relationship_graph",
     "get_scope_log",
     "get_settings",
     "reset_deps_cache",

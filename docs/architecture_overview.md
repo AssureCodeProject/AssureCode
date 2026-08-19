@@ -38,7 +38,8 @@
 +--------------+-----------------------+                              +----------------+---------------+
 |          Data Storage Layer          |                              |       EventBus Infrastructure  |
 |  - PostgreSQL (pgvector, ledger)      |<============================>|   (Redis Streams / Kafka)     |
-|  - Neo4j (Skill & Trust Graph)       |                              |   + Transactional Outbox      |
+|  - Neo4j/AuraDB (optional: network   |                              |   + Transactional Outbox      |
+|    signal — pgvector is primary)     |                              |                                |
 |  - LocalStack S3 (Artifacts & Video) |                              +----------------+---------------+
 +--------------------------------------+                                               |
                                                                                        | (code.push.received)
@@ -105,7 +106,7 @@ graph TB
     subgraph Data & Storage Systems
         PG[(PostgreSQL\nmerkle_ledger / outbox / pgvector)]
         REDIS[(Redis 6379\nStreams & Locks)]
-        NEO[(Neo4j Graph DB\nSkill & Trust Graph)]
+        NEO[(Neo4j/AuraDB — optional\nCollaboration-Network Signal)]
         S3[(LocalStack S3 / AWS S3\nArtifacts & Video Proofs)]
     end
 
@@ -291,19 +292,19 @@ AssureCode is structured as 5 modular microservices under `apps/`, each possessi
 
 ### 3.5 `ai-service` (`apps/ai-service/`)
 
-* **Primary Purpose & Business Role**: Intelligence microservice written in Python (FastAPI). Provides vector text embeddings, candidate freelancer NLP matchmaker ranking, contract chunking and RAG ingestion using `pgvector`, LLM Jest/Cypress test bundle generation with S3 storage, and Explainable AI (XAI) trust score calculation with Neo4j graph updates.
+* **Primary Purpose & Business Role**: Intelligence microservice written in Python (FastAPI). Provides vector text embeddings, candidate freelancer NLP matchmaker ranking, contract chunking and RAG ingestion using `pgvector`, LLM Jest/Cypress test bundle generation with S3 storage, and Explainable AI (XAI) trust score calculation with an optional Neo4j/AuraDB collaboration-network signal and trust-score mirror (`NEO4J_ENABLED`, off by default — `pgvector`/PostgreSQL remain the primary, always-on embedding index and trust-score store).
 * **Entry Point & Architecture**:
   * Entry Point: `apps/ai-service/app/main.py` (FastAPI app running on port 8000 via Uvicorn).
   * Architecture: Hexagonal architecture with abstract ports in `app/ports/` (`embedder.py`, `graph_repo.py`, `llm_client.py`, `rag_store.py`, `artifact_store.py`), adapters in `app/adapters/`, and dependency injection container in `app/deps.py`.
 * **Routes & Endpoints**:
   * `GET /healthz` — Service health probe.
   * `POST /embed` & `POST /embed/batch` — Generates 384-dimensional vector embeddings using `SentenceTransformerEmbedder` (`all-MiniLM-L6-v2`) or `FakeEmbedder` fallback.
-  * `POST /match` — Ranks freelancers against job requirements using cosine vector similarity, Neo4j skill graph records, trust score, and historical delivery counts.
+  * `POST /match` — Ranks freelancers against job requirements using cosine vector similarity (`pgvector`, always on), trust score, historical delivery counts, and an optional Neo4j/AuraDB collaboration-network term (graph traversal over completed-project skill exposure; zero-weighted unless `NEO4J_ENABLED=true`).
   * `POST /rag/ingest` — Chunks contract requirement text via paragraph packing, embeds chunks in batch, and persists into PostgreSQL using `pgvector` (`PostgresRagStore`).
   * `GET /rag/count/{contract_id}` — Returns count of vector chunks for contract.
   * `POST /generate-tests` — Invokes Gemini (`GeminiClient`) or OpenAI (`OpenAIClient`) to generate unit/integration test code, uploads test bundle to S3 (`S3ArtifactStore`), and returns S3 URL. Returns HTTP 503 with `Retry-After` header when LLM quota is exhausted.
-  * `POST /xai/score` — Calculates weighted XAI Trust Score (40% test pass rate, 25% maintainability index, 20% security score, 15% sentiment analysis), updates Neo4j freelancer node (`SET f.trust_score = $trust_score`), and returns score with itemized justifications.
-* **Storage Dependencies**: PostgreSQL with `pgvector` extension, Neo4j Graph DB (`bolt://localhost:7687`), and LocalStack/AWS S3 (`http://localhost:4566`).
+  * `POST /xai/score` — Calculates weighted XAI Trust Score (40% test pass rate, 25% maintainability index, 20% security score, 15% sentiment analysis), persists it to PostgreSQL (system of record), optionally dual-writes it to a Neo4j/AuraDB freelancer node (`SET f.XAI_Trust_Score = $trust`) when `NEO4J_ENABLED=true`, and returns the score with itemized justifications.
+* **Storage Dependencies**: PostgreSQL with `pgvector` extension (primary), optional Neo4j/AuraDB Graph DB for the collaboration-network signal (`NEO4J_ENABLED`, off by default — see `.env.example` for local docker-compose vs. AuraDB Free Tier configuration), and LocalStack/AWS S3 (`http://localhost:4566`).
 
 ---
 
@@ -721,7 +722,7 @@ The payment workflow uses Stripe PaymentIntents with manual capture:
 | `apps/settlement-worker/src/worker.ts` | Microservice (`settlement-worker`) | 5-Signal Oracle settlement engine, single-fire lock, Stripe transfer, Merkle invoice writer. |
 | `apps/webhook-ingest/src/server.ts` | Microservice (`webhook-ingest`) | Ingestion gateway for GitHub webhooks with HMAC SHA-256 verification. |
 | `apps/ai-service/app/main.py` | Microservice (`ai-service`) | FastAPI entry point for NLP matchmaker, RAG, LLM test generation, XAI trust score. |
-| `apps/ai-service/app/routes/xai.py` | AI Route | Weighted XAI trust score calculator (40% tests, 25% AST, 20% security, 15% sentiment) + Neo4j updater. |
+| `apps/ai-service/app/routes/xai.py` | AI Route | Weighted XAI trust score calculator (40% tests, 25% AST, 20% security, 15% sentiment) + optional Neo4j/AuraDB mirror. |
 | `apps/scope-guard/app/main.py` | Service (`scope-guard`) | Python FastAPI scope boundary checker using vector similarity & pattern matching. |
 | `packages/event-bus/src/index.ts` | Shared Package | `EventBus` interface, `RedisStreamsBus` (with DLQ), `KafkaBus`, `InMemoryBus`. |
 | `packages/event-bus/src/outbox-relay.ts` | Shared Package | Transactional Outbox background daemon (`FOR UPDATE SKIP LOCKED`). |

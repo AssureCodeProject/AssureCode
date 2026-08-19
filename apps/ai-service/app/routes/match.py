@@ -22,6 +22,7 @@ class ExplanationModel(BaseModel):
     skill_score: float
     trust_score: float
     history_score: float
+    network_score: float
     matched_skills: list[str]
 
 
@@ -49,6 +50,7 @@ def _to_item(r: MatchResult) -> MatchItem:
             skill_score=r.explanation.skill_score,
             trust_score=r.explanation.trust_score,
             history_score=r.explanation.history_score,
+            network_score=r.explanation.network_score,
             matched_skills=list(r.explanation.matched_skills),
         ),
         hourly_rate_cents=r.hourly_rate_cents,

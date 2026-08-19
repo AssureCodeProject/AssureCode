@@ -60,8 +60,8 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from app.deps import get_graph_repo, get_llm_client, get_scope_log
-from app.ports.graph_repo import GraphRepo
+from app.deps import get_graph_repo, get_llm_client, get_relationship_graph, get_scope_log
+from app.ports.graph_repo import GraphRepo, Neo4jGraphRepo
 from app.ports.llm_client import LlmClient, LlmUnavailableError
 from app.ports.scope_log import ScopeAdherence, ScopeLogUnavailable
 
@@ -111,6 +111,12 @@ class XaiScoreResponse(BaseModel):
     critical_vulnerabilities: int
     scope_measured: bool
     trust_score_persisted: bool
+    # Neo4j/AuraDB write of the same score, independent of trust_score_persisted
+    # above (the primary graph_repo store). False whenever no relationship
+    # graph is configured (NEO4J_ENABLED off) or the write failed — never
+    # conflated with "not configured", per the same rationale
+    # trust_score_persisted itself documents at its call site.
+    network_graph_persisted: bool
     terms: list[TermBreakdown]
     justifications: list[str]
     scored_at: str
@@ -266,6 +272,7 @@ def _generate_narrative(
 def calculate_xai_score(
     req: XaiScoreRequest,
     graph_repo: GraphRepo = Depends(get_graph_repo),
+    relationship_graph: Neo4jGraphRepo | None = Depends(get_relationship_graph),
     scope_log=Depends(get_scope_log),
     llm_client: LlmClient = Depends(get_llm_client),
 ) -> XaiScoreResponse:
@@ -303,6 +310,18 @@ def calculate_xai_score(
     if hasattr(graph_repo, "update_trust_score"):
         trust_score_persisted = bool(graph_repo.update_trust_score(req.freelancer_id, trust_score))
 
+    # Same side-effect contract as the write above, on the optional Neo4j
+    # relationship graph — must not fail the request even if AuraDB is
+    # unreachable or misconfigured.
+    network_graph_persisted = False
+    if relationship_graph is not None:
+        try:
+            network_graph_persisted = bool(
+                relationship_graph.update_trust_score(req.freelancer_id, trust_score)
+            )
+        except Exception:
+            network_graph_persisted = False
+
     # Advisory only, computed after trust_score is final — see
     # _generate_narrative's docstring for the isolation guarantee.
     narrative = _generate_narrative(llm_client, trust_score, terms)
@@ -314,6 +333,7 @@ def calculate_xai_score(
         critical_vulnerabilities=req.telemetry.critical_vulnerabilities,
         scope_measured=adherence.measured,
         trust_score_persisted=trust_score_persisted,
+        network_graph_persisted=network_graph_persisted,
         terms=terms,
         justifications=justifications,
         scored_at=datetime.now(timezone.utc).isoformat(),

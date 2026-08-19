@@ -272,6 +272,44 @@ class Neo4jGraphRepo:
         # full Protocol.
         return [(p, 0.0) for p in self.all_freelancers()[:limit]]
 
+    def project_exposure(
+        self, freelancer_ids: Sequence[str], required_skills: Sequence[str]
+    ) -> dict[str, int]:
+        """Count each candidate's completed-project exposure to `required_skills`.
+
+        This is the graph-native signal Postgres's flat `skills` array can't
+        express directly: not "does this freelancer list the skill", but "how
+        many of their *completed projects* actually required it" — a
+        collaboration-network proxy for relevant experience. Not part of the
+        `GraphRepo` Protocol; Matchmaker takes it as a separate optional
+        collaborator so Postgres-only deployments never need to implement it.
+
+        Returns {} — an explicit "unmeasured", matching retrieve_by_embedding's
+        own convention — for empty inputs or on any driver/query failure. No
+        InMemory fallback here: an in-process dict has no completed-project
+        history to consult, so the honest answer is "unmeasured", not a
+        fabricated zero count for every candidate.
+        """
+        if not freelancer_ids or not required_skills:
+            return {}
+        self._ensure_driver()
+        if self._driver is None:
+            return {}
+        try:
+            cypher = """
+            MATCH (f:Freelancer)-[:COMPLETED]->(p:Project)-[:REQUIRED_SKILL]->(s:Skill)
+            WHERE f.id IN $freelancer_ids AND toLower(s.name) IN $required_skills
+            RETURN f.id AS id, count(DISTINCT p) AS exposure
+            """
+            records, _, _ = self._driver.execute_query(
+                cypher,
+                freelancer_ids=list(freelancer_ids),
+                required_skills=[s.lower() for s in required_skills],
+            )
+            return {r["id"]: int(r["exposure"]) for r in records}
+        except Exception:  # pragma: no cover — live DB only
+            return {}
+
     def _query_freelancers(self) -> Sequence[FreelancerProfile]:  # pragma: no cover — live DB only
         cypher = """
         MATCH (f:Freelancer)

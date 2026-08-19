@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     embed_dim: int = Field(default=384, alias="EMBED_DIM")
 
     # ── Neo4j (matchmaker graph) ──────────────────────────────
+    # Off by default: without an instance configured (e.g. a Neo4j AuraDB Free
+    # Tier database), no connection is ever attempted and the matchmaker's
+    # network term simply contributes 0 — see deps.get_relationship_graph.
+    neo4j_enabled: bool = Field(default=False, alias="NEO4J_ENABLED")
     neo4j_uri: str = Field(default="bolt://localhost:7687", alias="NEO4J_URI")
     neo4j_user: str = Field(default="neo4j", alias="NEO4J_USER")
     neo4j_password: str = Field(default="assurecode_local_dev", alias="NEO4J_PASSWORD")
@@ -72,9 +76,13 @@ class Settings(BaseSettings):
 
     # ── Matchmaker tuning ─────────────────────────────────────
     # Score = w_skill * skill_overlap + w_trust * trust + w_history * history
+    #         + w_network * graph_exposure
+    # w_network defaults to 0 so the formula is unchanged until NEO4J_ENABLED
+    # is actually turned on — see Matchmaker's module docstring.
     match_weight_skill: float = Field(default=0.5, alias="MATCH_WEIGHT_SKILL")
     match_weight_trust: float = Field(default=0.35, alias="MATCH_WEIGHT_TRUST")
     match_weight_history: float = Field(default=0.15, alias="MATCH_WEIGHT_HISTORY")
+    match_weight_network: float = Field(default=0.0, alias="MATCH_WEIGHT_NETWORK")
 
 
 @lru_cache(maxsize=1)

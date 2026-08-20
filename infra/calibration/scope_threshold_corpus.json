@@ -1,0 +1,214 @@
+{
+  "$comment": [
+    "Labelled corpus for scope-guard threshold calibration.",
+    "",
+    "PROVENANCE: authored in-repo. Not collected from production traffic and not",
+    "dual-annotated. It is a larger and more varied replacement for the 16 messages",
+    "that were hardcoded in tools/calibrate_scope_threshold.py, and it is split into",
+    "a calibration half and a held-out half so that a generalisation estimate can be",
+    "reported at all -- the previous script could only report its own fitting score.",
+    "",
+    "This is NOT the T2 set. T2 requires human annotators and a kappa gate (see",
+    "configs/c1_rules.json); these are one author's labels, so the held-out numbers",
+    "are an optimistic estimate and must be quoted as such.",
+    "",
+    "The split is by CONTRACT, not by message. Holding out messages from a contract",
+    "the threshold was fitted on would leak that contract's similarity scale into",
+    "the test set and overstate generalisation."
+  ],
+  "provenance": "authored_in_repo",
+  "dual_annotated": false,
+  "contracts": [
+    {
+      "id": "auth-api",
+      "split": "calibration",
+      "requirements": [
+        "Build a REST API for user login and session management using Fastify.",
+        "Persist user accounts and sessions in PostgreSQL with schema migrations.",
+        "Return JSON error responses with appropriate HTTP status codes.",
+        "Write Jest integration tests covering the authentication endpoints.",
+        "Add input validation and sanitization on all user-supplied fields.",
+        "Deploy the service behind HTTPS with environment-based configuration."
+      ],
+      "in_scope": [
+        "Can we clarify the JSON error response format for the user login endpoint?",
+        "Add PostgreSQL migrations for the sessions table.",
+        "Write Jest tests for the authentication endpoints.",
+        "What HTTP status codes should the login API return on a bad password?",
+        "Please add session expiry handling to the login flow.",
+        "Could you document the environment variables needed for deployment?",
+        "The integration tests for signup are failing, can you look?",
+        "Should the API return 401 or 403 for an expired session?",
+        "Add input sanitization for the profile name field.",
+        "Refactor the API response helper to handle standard error status codes."
+      ],
+      "out_of_scope": [
+        "Also build a native iOS and Android mobile app with push notifications.",
+        "Rewrite the entire product as a blockchain game.",
+        "Design a new company logo and brand guidelines.",
+        "Migrate all infrastructure to Kubernetes with a service mesh.",
+        "Can you also run our social media marketing campaign?",
+        "Add a real-time video conferencing feature to the dashboard.",
+        "Build an admin analytics dashboard with a custom report builder.",
+        "Please translate the whole product into eight languages.",
+        "Include unpaid maintenance for five years.",
+        "Set up our office wifi and staff laptops."
+      ]
+    },
+    {
+      "id": "checkout",
+      "split": "calibration",
+      "requirements": [
+        "Implement a shopping cart with add, remove and quantity update operations.",
+        "Integrate Stripe checkout for card payments in GBP.",
+        "Send an order confirmation email after a successful payment.",
+        "Store order history against the customer account.",
+        "Handle payment failures with a retry prompt and a clear error message."
+      ],
+      "in_scope": [
+        "Can the cart keep items when the user logs out and back in?",
+        "What happens when a Stripe payment is declined?",
+        "Please add VAT to the cart total before checkout.",
+        "The order confirmation email is not sending on mobile orders.",
+        "Can we show past orders on the customer account page?",
+        "Add a quantity stepper to the cart line items.",
+        "Should a failed payment retry automatically or ask the customer?",
+        "Change the currency formatting on the checkout page to GBP."
+      ],
+      "out_of_scope": [
+        "Build a warehouse inventory management system as well.",
+        "Add a loyalty points programme with tiered rewards.",
+        "Can you design our print catalogue?",
+        "Write the terms and conditions and privacy policy for us.",
+        "Also integrate with our accounting software and payroll.",
+        "Create a TikTok marketing strategy for the store.",
+        "Build a supplier bidding portal with contract negotiation.",
+        "Set up a physical point-of-sale system in our shops."
+      ]
+    },
+    {
+      "id": "data-pipeline",
+      "split": "calibration",
+      "requirements": [
+        "Build a nightly ETL job pulling records from the partner SFTP feed.",
+        "Validate incoming rows against a schema and quarantine malformed records.",
+        "Load clean records into the Snowflake warehouse.",
+        "Emit job metrics and alert on failure via PagerDuty.",
+        "Backfill the last twelve months of historical data once on first run."
+      ],
+      "in_scope": [
+        "How should the ETL job behave if the SFTP feed is empty that night?",
+        "Can we alert on quarantined row count as well as job failure?",
+        "What Snowflake warehouse size should the load target use?",
+        "Please add a schema validation rule for the new postcode column.",
+        "The backfill is timing out on month three, can you check?",
+        "Should malformed records be retried the next night or held?",
+        "Add a PagerDuty alert when the nightly job runs over two hours.",
+        "Can we log the row counts before and after validation?"
+      ],
+      "out_of_scope": [
+        "Also build a customer-facing BI dashboard with drill-downs.",
+        "Train a machine learning model to predict churn from this data.",
+        "Migrate our whole company off Snowflake onto BigQuery.",
+        "Can you take over managing our data vendor contracts?",
+        "Build a mobile app so the sales team can browse the warehouse.",
+        "Write a data governance policy and run staff training.",
+        "Set up a real-time streaming platform with Kafka and Flink.",
+        "Design the annual report graphics for the board."
+      ]
+    },
+    {
+      "id": "cms-site",
+      "split": "held_out",
+      "requirements": [
+        "Build a marketing site with a headless CMS backing the page content.",
+        "Support draft and published states with a preview URL for editors.",
+        "Make every page responsive down to a 360 pixel viewport.",
+        "Achieve a Lighthouse performance score above ninety on the home page.",
+        "Add structured data markup for articles and breadcrumbs."
+      ],
+      "in_scope": [
+        "Can editors preview a draft page before publishing it?",
+        "The home page Lighthouse score dropped to eighty two, can you look?",
+        "Please make the pricing table readable on a 360 pixel screen.",
+        "Add breadcrumb structured data to the article template.",
+        "How do we roll back a published page to its previous version?",
+        "The CMS preview URL is returning a 404 for unpublished pages.",
+        "Can we add an author field to the article content model?",
+        "Make the navigation collapse into a menu on small viewports."
+      ],
+      "out_of_scope": [
+        "Also write all the marketing copy for the twelve landing pages.",
+        "Run our Google Ads campaign and manage the monthly budget.",
+        "Build a customer support ticketing system into the site.",
+        "Can you handle our email newsletter production every week?",
+        "Develop a native mobile app version of the marketing site.",
+        "Set up and administer our CRM and sales pipeline.",
+        "Design a full rebrand including logo and typography.",
+        "Provide unlimited free changes for the next three years."
+      ]
+    },
+    {
+      "id": "recommender",
+      "split": "held_out",
+      "requirements": [
+        "Train a collaborative filtering recommender on the purchase history dataset.",
+        "Expose recommendations through a low latency inference API.",
+        "Evaluate the model with precision at k and report the baseline comparison.",
+        "Retrain the model weekly on a scheduled job.",
+        "Log prediction inputs and outputs for offline analysis."
+      ],
+      "in_scope": [
+        "What precision at k does the collaborative filtering model reach?",
+        "Can the inference API respond in under fifty milliseconds?",
+        "Please add the popularity baseline to the evaluation report.",
+        "How much history does the weekly retrain job use?",
+        "Are the prediction logs capturing the user features too?",
+        "The recommendations look identical for new users, is that cold start?",
+        "Can we schedule the retrain for Sunday night instead?",
+        "Add precision at ten alongside precision at five in the report."
+      ],
+      "out_of_scope": [
+        "Also build the entire e-commerce storefront around it.",
+        "Can you negotiate our cloud hosting contract?",
+        "Write a research paper about this for us to publish.",
+        "Build a real-time chat feature for customer support.",
+        "Handle our GDPR compliance audit and legal filings.",
+        "Design and print physical marketing materials.",
+        "Recruit and interview two more data scientists for our team.",
+        "Migrate the company email from Outlook to Gmail."
+      ]
+    },
+    {
+      "id": "mobile-fitness",
+      "split": "held_out",
+      "requirements": [
+        "Build a React Native fitness tracking app for iOS and Android.",
+        "Record workout sessions with duration, distance and heart rate.",
+        "Sync sessions to the backend when the device regains connectivity.",
+        "Show a weekly progress chart on the home screen.",
+        "Support offline use with local storage of unsynced sessions."
+      ],
+      "in_scope": [
+        "Does the workout recording keep going if the screen locks?",
+        "How are unsynced sessions stored while the phone is offline?",
+        "Please add distance in miles as well as kilometres.",
+        "The weekly progress chart is empty after a fresh install.",
+        "Can heart rate come from the paired watch rather than the phone?",
+        "What happens if the sync conflicts with a session edited on another device?",
+        "Add a monthly view next to the weekly progress chart.",
+        "The Android build crashes when connectivity returns mid-session."
+      ],
+      "out_of_scope": [
+        "Also build a web dashboard for gym owners to manage members.",
+        "Can you write the nutrition plans and workout content?",
+        "Set up our App Store marketing and paid user acquisition.",
+        "Build a wearable hardware device to go with the app.",
+        "Handle customer support emails for the app once it launches.",
+        "Create a social network with friend requests and messaging.",
+        "Do the company accounts and tax return this year.",
+        "Translate the app into twelve languages with voice-over."
+      ]
+    }
+  ]
+}

@@ -179,10 +179,11 @@ Blocked by guard          FN = {fn:<4}            TN = {tn:<4}
 Precision of {pct(acc.get('precision', 0.0))} with recall of {pct(acc.get('recall', 0.0))}
 is not a good result. It means the guard almost never allows an out-of-scope
 request — and also blocks most in-scope ones. The similarity threshold
-(`SCOPE_SIMILARITY_THRESHOLD`, calibrated at 0.2731) was selected on a 16-message
-hand-labelled set and scored 14/16 **on that same set**, which is a fitting
-figure. These numbers are what it does on messages it was not selected against,
-and the gap between the two is the finding.
+(`SCOPE_SIMILARITY_THRESHOLD`, calibrated at 0.3056) was selected on the
+calibration split of `infra/calibration/scope_threshold_corpus.json` and scores
+0.792 accuracy / 0.917 recall on the held-out split. These numbers are what it
+does against this benchmark's own fixture, and the gap between the two is the
+finding.
 
 The failure direction is the safer one for a payment system — a false block
 costs a scope amendment, a false allow releases work that was never contracted —

@@ -5,20 +5,35 @@ Why this exists
 ---------------
 The scope guard flags a message when its best retrieved similarity falls below
 a threshold. That number decides whether a payment is held, so it cannot be
-chosen by feel — and it cannot be inherited from a different embedder either.
+chosen by feel -- and it cannot be inherited from a different embedder either.
 Similarity scales are model-specific: the deterministic FakeEmbedder used in
-unit tests is hash-bucket bag-of-words, and measured on the fixture below its
-in-scope and out-of-scope ranges overlap completely. No threshold separates
-them, which is exactly why the unit tests assert mechanism rather than accuracy.
+unit tests is hash-bucket bag-of-words, and its in-scope and out-of-scope
+ranges overlap completely. No threshold separates them, which is exactly why
+the unit tests assert mechanism rather than accuracy.
 
-This script measures the real distribution under all-MiniLM-L6-v2 and reports
-the threshold that maximises separation, together with the numbers behind it.
+What changed
+------------
+Two defects in the previous version of this script, both of which inflated the
+number it reported:
 
-What it reports
----------------
-  * best-match similarity for every labelled message
-  * the achievable separation, if in-scope and out-of-scope are separable
-  * the chosen threshold, its accuracy, and the margin either side
+1. It scored messages against each requirement string embedded separately,
+   which is not what production does. Production ingests the requirements
+   through chunk_text() and ranks chunks with RagStore.search(). Calibrating on
+   a path the product does not use produces a threshold for a distribution the
+   product never sees. This now runs the real chunker and the real retrieval.
+
+2. It fitted the threshold on 16 messages from one contract and reported the
+   accuracy on those same 16 messages. That is a fitting score, not a
+   generalisation estimate, and the two differed by a lot: the fitted figure was
+   14/16 while the held-out benchmark measured 36% accuracy at 20% recall.
+   The corpus is now split by contract, the sweep sees only the calibration
+   contracts, and the reported metrics come from contracts it never saw.
+
+The corpus lives in infra/calibration/scope_threshold_corpus.json rather than in
+this file, so the data can grow without editing code -- and so its provenance is
+recorded next to it. Read that file's $comment before quoting any number from
+here: the labels are authored in-repo, not dual-annotated, so the held-out
+figures are an optimistic estimate rather than a measurement of real traffic.
 
 Usage
 -----
@@ -29,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import itertools
+import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,140 +55,205 @@ sys.path.insert(0, str(REPO_ROOT / "apps" / "ai-service"))
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
+DEFAULT_CORPUS = REPO_ROOT / "infra" / "calibration" / "scope_threshold_corpus.json"
 
-# A single contract's requirements, and messages labelled against them.
-# Deliberately small and hand-labelled: this calibrates one number, and a
-# larger set belongs in the evaluation corpus rather than here.
-
-REQUIREMENTS = [
-    "Build a REST API for user login and session management using Fastify.",
-    "Persist user accounts and sessions in PostgreSQL with schema migrations.",
-    "Return JSON error responses with appropriate HTTP status codes.",
-    "Write Jest integration tests covering the authentication endpoints.",
-    "Deploy the service behind HTTPS with environment-based configuration.",
-]
-
-IN_SCOPE = [
-    "Can we clarify the JSON error response format for the user login endpoint?",
-    "Add PostgreSQL migrations for the sessions table.",
-    "Write Jest tests for the authentication endpoints.",
-    "What HTTP status codes should the login API return on a bad password?",
-    "Please add session expiry handling to the login flow.",
-    "Could you document the environment variables needed for deployment?",
-    "The integration tests for signup are failing, can you look?",
-    "Should the API return 401 or 403 for an expired session?",
-]
-
-OUT_OF_SCOPE = [
-    "Also build a native iOS and Android mobile app with push notifications.",
-    "Rewrite the entire product as a blockchain game.",
-    "Design a new company logo and brand guidelines.",
-    "Migrate all infrastructure to Kubernetes with a service mesh.",
-    "Can you also run our social media marketing campaign?",
-    "Add a real-time video conferencing feature to the dashboard.",
-    "Build an admin analytics dashboard with custom report builder.",
-    "Please translate the whole product into eight languages.",
-]
+# These must match what the gateway sends to /rag/ingest and what scope-guard
+# uses to retrieve, or the calibration describes a different pipeline.
+CHUNK_TARGET_CHARS = 512
+CHUNK_OVERLAP_CHARS = 64
+RETRIEVAL_K = 5
 
 
 @dataclass
 class Scored:
+    contract: str
     message: str
-    label: str
+    label: str  # "in" | "out"
     best: float
+
+
+def metrics(scored: list[Scored], threshold: float) -> dict[str, float]:
+    """Treats 'in scope' as the positive class, matching tools/benchmark.js."""
+    tp = sum(1 for s in scored if s.label == "in" and s.best >= threshold)
+    fn = sum(1 for s in scored if s.label == "in" and s.best < threshold)
+    fp = sum(1 for s in scored if s.label == "out" and s.best >= threshold)
+    tn = sum(1 for s in scored if s.label == "out" and s.best < threshold)
+    total = tp + fn + fp + tn
+    precision = tp / (tp + fp) if (tp + fp) else 0.0
+    recall = tp / (tp + fn) if (tp + fn) else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
+    return {
+        "tp": tp, "fn": fn, "fp": fp, "tn": tn,
+        "accuracy": (tp + tn) / total if total else 0.0,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+    }
+
+
+def score_corpus(contracts: list[dict], embedder, store_cls, chunk_text) -> list[Scored]:
+    """Embed and retrieve exactly the way apps/scope-guard does."""
+    from app.ports.rag_store import StoredChunk
+
+    scored: list[Scored] = []
+    for contract in contracts:
+        cid = contract["id"]
+        requirements = "\n".join(contract["requirements"])
+        chunks = chunk_text(
+            requirements,
+            target_chars=CHUNK_TARGET_CHARS,
+            overlap_chars=CHUNK_OVERLAP_CHARS,
+        )
+        store = store_cls()
+        store.store(cid, [
+            StoredChunk(
+                contract_id=cid,
+                chunk_idx=c.idx,
+                content=c.content,
+                embedding=tuple(embedder.embed(c.content).tolist()),
+            )
+            for c in chunks
+        ])
+        print(f"  {cid:<16} {len(contract['requirements']):>2} requirements -> "
+              f"{len(chunks):>2} chunks")
+
+        for label, key in (("in", "in_scope"), ("out", "out_of_scope")):
+            for message in contract[key]:
+                retrieved = store.search(cid, embedder.embed(message).tolist(), k=RETRIEVAL_K)
+                best = max(r.similarity for r in retrieved)
+                scored.append(Scored(cid, message, label, best))
+    return scored
+
+
+# How much worse a false negative is than a false positive.
+#
+# Not a free parameter, and not tuned: a false negative blocks legitimate work
+# and holds a payment, while a false positive costs a scope amendment. The
+# product has always documented that ordering (spec section 4.4) -- what it did
+# not do was give the sweep an objective that respected it, so the sweep
+# maximised plain accuracy and chose a threshold that, on the held-out
+# contracts, blocked 8 legitimate requests to avoid 3 scope amendments.
+#
+# The exact value barely matters, which is the point: every weight from 1.5 to
+# 5.0 selects the same threshold on this corpus. Only the ordering is being
+# asserted, not a measured exchange rate.
+FALSE_NEGATIVE_WEIGHT = 3.0
+
+
+def sweep(scored: list[Scored]) -> tuple[float, float]:
+    """Lowest policy-weighted cost over every midpoint between adjacent scores.
+
+    Ties break toward the larger margin to the nearest sample, so the chosen
+    value sits in the middle of a gap rather than flush against an observation
+    that a slightly different message would have moved.
+    """
+    candidates = sorted({s.best for s in scored})
+    best_threshold, best_cost, best_margin = 0.0, float("inf"), 0.0
+    for t in ((a + b) / 2 for a, b in itertools.pairwise(candidates)):
+        m = metrics(scored, t)
+        cost = FALSE_NEGATIVE_WEIGHT * m["fn"] + m["fp"]
+        margin = min(abs(s.best - t) for s in scored)
+        if cost < best_cost or (cost == best_cost and margin > best_margin):
+            best_threshold, best_cost, best_margin = t, cost, margin
+    return best_threshold, best_cost
+
+
+def report(title: str, scored: list[Scored], threshold: float) -> dict[str, float]:
+    m = metrics(scored, threshold)
+    print(f"\n  {title}")
+    print(f"    messages  : {len(scored)}  "
+          f"({sum(1 for s in scored if s.label == 'in')} in / "
+          f"{sum(1 for s in scored if s.label == 'out')} out)")
+    print(f"    accuracy  : {m['accuracy']:.3f}")
+    print(f"    precision : {m['precision']:.3f}")
+    print(f"    recall    : {m['recall']:.3f}")
+    print(f"    F1        : {m['f1']:.3f}")
+    print(f"    confusion : tp={m['tp']} fn={m['fn']} fp={m['fp']} tn={m['tn']}")
+    return m
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--set", action="store_true", help="write the chosen threshold to .env")
     parser.add_argument("--model", default="all-MiniLM-L6-v2")
+    parser.add_argument("--corpus", default=str(DEFAULT_CORPUS))
     args = parser.parse_args()
+
+    corpus = json.loads(Path(args.corpus).read_text(encoding="utf-8"))
+    contracts = corpus["contracts"]
+    calibration = [c for c in contracts if c["split"] == "calibration"]
+    held_out = [c for c in contracts if c["split"] == "held_out"]
+
+    if not calibration or not held_out:
+        print("Corpus needs at least one calibration and one held_out contract.")
+        return 1
 
     try:
         from app.ports.embedder import SentenceTransformerEmbedder
+        from app.ports.rag_store import InMemoryRagStore
+        from app.services.chunker import chunk_text
     except ImportError as err:
-        print(f"cannot import the embedder port: {err}")
+        print(f"cannot import the scope-guard pipeline: {err}")
         return 1
 
     print("=" * 76)
     print(" Scope-guard threshold calibration")
-    print(f" model: {args.model}")
-    print(f" corpus: {len(REQUIREMENTS)} requirement chunks")
-    print(f" labelled: {len(IN_SCOPE)} in-scope, {len(OUT_OF_SCOPE)} out-of-scope")
+    print(f" model      : {args.model}")
+    print(f" corpus     : {Path(args.corpus).name}  ({corpus.get('provenance', 'unknown')})")
+    print(f" split      : {len(calibration)} calibration / {len(held_out)} held-out contracts")
+    print(f" pipeline   : chunk_text -> InMemoryRagStore.search(k={RETRIEVAL_K}) "
+          "(the production path)")
     print("=" * 76)
 
     try:
         embedder = SentenceTransformerEmbedder(model_name=args.model, dim=384)
-        chunk_vectors = [embedder.embed(text) for text in REQUIREMENTS]
     except Exception as err:
         print(f"\nFAILED to load {args.model}: {err}")
         print("Install it with: pip install sentence-transformers")
-        print("This is a SKIP, not a pass — no threshold has been calibrated.")
+        print("This is a SKIP, not a pass -- no threshold has been calibrated.")
         return 1
 
-    from app.ports.rag_store import cosine
+    print("\nCALIBRATION CONTRACTS")
+    cal_scored = score_corpus(calibration, embedder, InMemoryRagStore, chunk_text)
+    print("\nHELD-OUT CONTRACTS")
+    held_scored = score_corpus(held_out, embedder, InMemoryRagStore, chunk_text)
 
-    def best_match(message: str) -> float:
-        q = embedder.embed(message)
-        return max(cosine(q, c) for c in chunk_vectors)
-
-    scored: list[Scored] = []
-    print("\nIN SCOPE")
-    for m in IN_SCOPE:
-        b = best_match(m)
-        scored.append(Scored(m, "in", b))
-        print(f"  {b:.4f}  {m[:66]}")
-
-    print("\nOUT OF SCOPE")
-    for m in OUT_OF_SCOPE:
-        b = best_match(m)
-        scored.append(Scored(m, "out", b))
-        print(f"  {b:.4f}  {m[:66]}")
-
-    ins = sorted(s.best for s in scored if s.label == "in")
-    outs = sorted(s.best for s in scored if s.label == "out")
-
+    ins = sorted(s.best for s in cal_scored if s.label == "in")
+    outs = sorted(s.best for s in cal_scored if s.label == "out")
     print("\n" + "-" * 76)
-    print(f"  in-scope  min={ins[0]:.4f}  median={ins[len(ins)//2]:.4f}  max={ins[-1]:.4f}")
-    print(f"  out-scope min={outs[0]:.4f}  median={outs[len(outs)//2]:.4f}  max={outs[-1]:.4f}")
+    print(f"  calibration in-scope  min={ins[0]:.4f}  median={ins[len(ins) // 2]:.4f}  max={ins[-1]:.4f}")
+    print(f"  calibration out-scope min={outs[0]:.4f}  median={outs[len(outs) // 2]:.4f}  max={outs[-1]:.4f}")
+    print(f"  cleanly separable: {ins[0] > outs[-1]}")
 
-    separable = ins[0] > outs[-1]
-    print(f"  cleanly separable: {separable}")
-
-    # Sweep every midpoint between adjacent observed scores and keep the
-    # threshold with the best accuracy, breaking ties toward the largest margin.
-    candidates = sorted({s.best for s in scored})
-    midpoints = [(a + b) / 2 for a, b in itertools.pairwise(candidates)]
-    best_threshold, best_acc, best_margin = 0.0, -1.0, 0.0
-
-    for t in midpoints:
-        tp = sum(1 for s in scored if s.label == "in" and s.best >= t)
-        tn = sum(1 for s in scored if s.label == "out" and s.best < t)
-        acc = (tp + tn) / len(scored)
-        margin = min(abs(s.best - t) for s in scored)
-        if acc > best_acc or (acc == best_acc and margin > best_margin):
-            best_threshold, best_acc, best_margin = t, acc, margin
-
-    fp = [s for s in scored if s.label == "out" and s.best >= best_threshold]
-    fn = [s for s in scored if s.label == "in" and s.best < best_threshold]
+    threshold, fitted_cost = sweep(cal_scored)
 
     print("\n" + "=" * 76)
-    print(f"  chosen threshold : {best_threshold:.4f}")
-    print(f"  accuracy         : {best_acc:.3f} ({len(scored) - len(fp) - len(fn)}/{len(scored)})")
-    print(f"  nearest sample   : {best_margin:.4f} away")
-    print(f"  false positives  : {len(fp)}  (out-of-scope wrongly allowed)")
-    for s in fp:
-        print(f"      {s.best:.4f}  {s.message[:60]}")
-    print(f"  false negatives  : {len(fn)}  (in-scope wrongly flagged)")
-    for s in fn:
-        print(f"      {s.best:.4f}  {s.message[:60]}")
+    print(f"  chosen threshold : {threshold:.4f}")
     print("=" * 76)
 
+    print(f"  objective        : minimise {FALSE_NEGATIVE_WEIGHT:g} x false_negatives "
+          f"+ false_positives  (cost {fitted_cost:g})")
+
+    report("FITTED (calibration contracts -- the sweep saw these)", cal_scored, threshold)
+    held = report("HELD OUT (contracts the sweep never saw -- this is the estimate)",
+                  held_scored, threshold)
+
+    print("\n  Worst held-out misses:")
+    misses = [s for s in held_scored
+              if (s.label == "in" and s.best < threshold)
+              or (s.label == "out" and s.best >= threshold)]
+    for s in sorted(misses, key=lambda s: abs(s.best - threshold), reverse=True)[:6]:
+        kind = "in-scope BLOCKED " if s.label == "in" else "out-scope ALLOWED"
+        print(f"    {kind}  {s.best:.4f}  [{s.contract}] {s.message[:52]}")
+    if not misses:
+        print("    none")
+
     print(
-        "\n  This threshold is calibrated on a single hand-labelled contract and is\n"
-        "  specific to this embedding model. It is a starting value, not a result:\n"
-        "  a defensible number needs the labelled corpus, and any reported accuracy\n"
-        "  must come from data the threshold was NOT selected on."
+        "\n  Read this before quoting it. The corpus is authored in-repo and is not\n"
+        "  dual-annotated, so the held-out row above is an optimistic estimate and\n"
+        "  not a measurement of production traffic. What it does establish is a\n"
+        "  generalisation gap, which the previous single-contract fitting score\n"
+        "  could not show at all."
     )
 
     if args.set:
@@ -182,16 +263,16 @@ def main() -> int:
         out, replaced = [], False
         for line in lines:
             if line.startswith(f"{key}="):
-                out.append(f"{key}={best_threshold:.4f}")
+                out.append(f"{key}={threshold:.4f}")
                 replaced = True
             else:
                 out.append(line)
         if not replaced:
-            out.append(f"{key}={best_threshold:.4f}")
+            out.append(f"{key}={threshold:.4f}")
         env_path.write_text("\n".join(out), encoding="utf-8")
-        print(f"\n  wrote {key}={best_threshold:.4f} to .env")
+        print(f"\n  wrote {key}={threshold:.4f} to .env")
 
-    return 0
+    return 0 if held["accuracy"] > 0.5 else 1
 
 
 if __name__ == "__main__":

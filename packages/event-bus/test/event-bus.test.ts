@@ -136,6 +136,116 @@ describe('KafkaBus — publish must never silently drop', () => {
   });
 });
 
+describe('KafkaBus — Bounded Retries & DLQ', () => {
+  // KafkaBus previously caught every handler error, logged it, and returned.
+  // kafkajs auto-commits the offset once eachMessage resolves, so that catch
+  // committed past the message: a poison event was dropped from the topic with
+  // no DLQ copy and no failing anything. RedisStreamsBus had parked it. These
+  // tests pin the two buses to the same behaviour. No broker is needed — the
+  // consumer's eachMessage callback is captured and driven directly.
+
+  /** Build a bus whose producer/admin/consumer are inert, and hand back the
+   *  `eachMessage` callback `subscribe()` registered plus everything it sent. */
+  async function harness(handler: (e: any) => Promise<void>) {
+    const bus = new KafkaBus(['localhost:9092']);
+    const sent: any[] = [];
+
+    (bus as any).isConnected = true;
+    (bus as any).producer.send = async (payload: any) => {
+      sent.push(payload);
+      return [];
+    };
+    // ensureTopics short-circuits on a populated set, so no admin client is
+    // constructed and no connect() is attempted.
+    (bus as any).ensuredTopics.add('test.poison');
+    (bus as any).ensuredTopics.add('test.poison.dlq');
+    // Collapse the retry backoff; this suite asserts attempt counts, not timing.
+    (bus as any).initialBackoffMs = 0;
+
+    let eachMessage: any;
+    (bus as any).kafka.consumer = () => ({
+      connect: async () => {},
+      subscribe: async () => {},
+      run: async (cfg: any) => {
+        eachMessage = cfg.eachMessage;
+      },
+      disconnect: async () => {},
+    });
+
+    await bus.subscribe('test.poison', handler);
+    return { bus, sent, deliver: (message: any, partition = 0) => eachMessage({ partition, message }) };
+  }
+
+  const envelope = {
+    id: 'evt-123',
+    topic: 'test.poison',
+    timestamp: new Date().toISOString(),
+    correlationId: 'corr-123',
+    payload: { bad: true },
+  };
+
+  it('retries a failing handler 3 times, then forwards to *.dlq', async () => {
+    let attempts = 0;
+    const { sent, deliver } = await harness(async () => {
+      attempts++;
+      throw new Error('Poison message test failure');
+    });
+
+    await deliver({ value: Buffer.from(JSON.stringify(envelope)), offset: '42' });
+
+    expect(attempts).toBe(3);
+
+    const dlq = sent.find((s) => s.topic === 'test.poison.dlq');
+    expect(dlq).toBeDefined();
+    expect(JSON.parse(dlq.messages[0].value)).toEqual(envelope);
+
+    const headers = dlq.messages[0].headers;
+    expect(headers.attempts).toBe('3');
+    expect(headers.originalStream).toBe('test.poison');
+    expect(headers.originalId).toBe('0:42');
+    expect(headers.error).toBe('Poison message test failure');
+  });
+
+  it('does not touch the DLQ when the handler succeeds', async () => {
+    const { sent, deliver } = await harness(async () => {});
+    await deliver({ value: Buffer.from(JSON.stringify(envelope)), offset: '7' });
+    expect(sent.find((s) => s.topic === 'test.poison.dlq')).toBeUndefined();
+  });
+
+  it('parks an unparseable message immediately, without retrying', async () => {
+    let called = 0;
+    const { sent, deliver } = await harness(async () => {
+      called++;
+    });
+
+    await deliver({ value: Buffer.from('{not json'), offset: '9' });
+
+    // No retry can fix malformed bytes, so the handler must never see them.
+    expect(called).toBe(0);
+    const dlq = sent.find((s) => s.topic === 'test.poison.dlq');
+    expect(dlq).toBeDefined();
+    // The raw bytes survive: discarding them for lacking the expected shape is
+    // exactly the drop the DLQ exists to prevent.
+    expect(dlq.messages[0].value).toBe('{not json');
+    expect(dlq.messages[0].headers.attempts).toBe('0');
+  });
+
+  it('rejects when the DLQ send itself fails, so the offset is not committed', async () => {
+    // The load-bearing case. Swallowing this would commit past a message that
+    // was neither handled nor parked — gone from both the topic and the DLQ.
+    const { bus, deliver } = await harness(async () => {
+      throw new Error('handler down');
+    });
+    (bus as any).producer.send = async () => {
+      throw new Error('dlq broker unreachable');
+    };
+
+    await expect(
+      deliver({ value: Buffer.from(JSON.stringify(envelope)), offset: '1' }),
+    ).rejects.toThrow('dlq broker unreachable');
+  });
+});
+
 describe.skipIf(!REDIS_UP)('RedisStreamsBus — Bounded Retries & DLQ', () => {
   it('retries failing handlers up to 3 times before sending to *.dlq and ACKing', async () => {
     const { RedisStreamsBus } = await import('../src/index.js');

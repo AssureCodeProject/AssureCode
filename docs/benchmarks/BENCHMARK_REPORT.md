@@ -81,7 +81,7 @@ Blocked by guard          FN = 32              TN = 10
 Precision of 100.00% with recall of 20.00%
 is not a good result. It means the guard almost never allows an out-of-scope
 request — and also blocks most in-scope ones. The similarity threshold
-(`SCOPE_SIMILARITY_THRESHOLD`, calibrated at 0.2731) was selected on a 16-message
+(`SCOPE_SIMILARITY_THRESHOLD`, calibrated at 0.3056) was selected on a multi-contract
 hand-labelled set and scored 14/16 **on that same set**, which is a fitting
 figure. These numbers are what it does on messages it was not selected against,
 and the gap between the two is the finding.

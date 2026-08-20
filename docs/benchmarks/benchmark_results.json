@@ -1,678 +1,144 @@
 {
-  "timestamp": "2026-08-15T07:54:13.935Z",
+  "timestamp": "2026-08-19T17:09:34.614Z",
   "gatewayUrl": "http://localhost:4000",
   "readiness": {
     "status": "ready",
     "db": "ok",
     "redis": "ok",
-    "timestamp": "2026-08-15T07:53:54.808Z"
+    "timestamp": "2026-08-19T17:09:33.673Z"
   },
-  "totalContracts": 30,
-  "concurrency": 5,
-  "durationSeconds": 19.12,
-  "throughputContractsPerSec": 1.57,
-  "completed": 7,
-  "withErrors": 23,
+  "totalContracts": 3,
+  "concurrency": 1,
+  "durationSeconds": 0.94,
+  "throughputContractsPerSec": 3.19,
+  "completed": 3,
+  "withErrors": 0,
   "latencyMs": {
     "initialize": {
-      "n": 30,
-      "mean": 20.57,
-      "stdev": 23.29,
-      "p50": 10.47,
-      "p90": 57.67,
-      "p99": 90.4,
-      "min": 5.28,
-      "max": 90.4
+      "n": 3,
+      "mean": 10.45,
+      "stdev": 10.47,
+      "p50": 4.46,
+      "p90": 22.54,
+      "p99": 22.54,
+      "min": 4.35,
+      "max": 22.54
     },
     "lock": {
-      "n": 30,
-      "mean": 37.48,
-      "stdev": 98.33,
-      "p50": 13.8,
-      "p90": 56.77,
-      "p99": 551.02,
-      "min": 6.87,
-      "max": 551.02
+      "n": 3,
+      "mean": 7.76,
+      "stdev": 4.88,
+      "p50": 5.23,
+      "p90": 13.39,
+      "p99": 13.39,
+      "min": 4.66,
+      "max": 13.39
     },
     "escrow": {
-      "n": 30,
-      "mean": 581.47,
-      "stdev": 362.65,
-      "p50": 774.14,
-      "p90": 917.65,
-      "p99": 981.77,
-      "min": 83.92,
-      "max": 981.77
+      "n": 3,
+      "mean": 275.62,
+      "stdev": 274.51,
+      "p50": 123.55,
+      "p90": 592.52,
+      "p99": 592.52,
+      "min": 110.8,
+      "max": 592.52
     },
     "scopeCheck": {
-      "n": 30,
-      "mean": 2543.49,
-      "stdev": 2506.42,
-      "p50": 122.79,
-      "p90": 5010.22,
-      "p99": 5012.11,
-      "min": 36.64,
-      "max": 5012.11
+      "n": 3,
+      "mean": 18.94,
+      "stdev": 2.41,
+      "p50": 20.19,
+      "p90": 20.46,
+      "p99": 20.46,
+      "min": 16.16,
+      "max": 20.46
     }
   },
   "ingest": {
     "contractsNeedingRetry": 0,
     "waitMs": {
-      "n": 30,
-      "mean": 0.02,
-      "stdev": 0.01,
+      "n": 3,
+      "mean": 0.01,
+      "stdev": 0,
       "p50": 0.01,
-      "p90": 0.03,
-      "p99": 0.03,
-      "min": 0,
-      "max": 0.03
+      "p90": 0.01,
+      "p99": 0.01,
+      "min": 0.01,
+      "max": 0.01
     },
     "note": "RAG ingest is fire-and-forget from lock; this wait is excluded from scopeCheck."
   },
   "scopeAccuracy": {
-    "scoredContracts": 15,
-    "excludedNoVerdict": 15,
-    "truePositives": 2,
-    "trueNegatives": 6,
+    "scoredContracts": 3,
+    "excludedNoVerdict": 0,
+    "truePositives": 1,
+    "trueNegatives": 1,
     "falsePositives": 0,
-    "falseNegatives": 7,
-    "accuracy": 53.33,
+    "falseNegatives": 1,
+    "accuracy": 66.67,
     "precision": 100,
-    "recall": 22.22,
-    "f1": 36.36,
+    "recall": 50,
+    "f1": 66.67,
     "note": "Labels choose which prompt is sent and score the answer. They never determine the verdict. Contracts that received no verdict are excluded, not counted as errors."
   },
   "statusCounts": {
-    "SCOPE_UNAVAILABLE": 15,
-    "SCOPE_BLOCKED": 5,
-    "DELIVERED": 2,
-    "ESCROW_FAILED": 8
+    "DELIVERED": 1,
+    "SCOPE_BLOCKED": 2
   },
   "results": [
     {
       "idx": 1,
-      "contractId": "AC-MSU2XR4L-2A7C88",
+      "contractId": "AC-MT0CJQ7I-950E6D",
       "expectInScope": true,
       "prompt": "Implement the unit tests for the authentication endpoint.",
-      "allowedActual": null,
+      "allowedActual": true,
       "similarity": null,
       "phases": {
-        "initialize": 45.01,
-        "lock": 56.77,
-        "escrow": 841.99,
-        "scopeWaitForIngestMs": 0.03,
-        "scopeCheck": 5012.11
+        "initialize": 22.54,
+        "lock": 13.39,
+        "escrow": 592.52,
+        "scopeWaitForIngestMs": 0.01,
+        "scopeCheck": 20.19
       },
-      "errors": [
-        "scope: HTTP 503 after 0 retries"
-      ],
-      "status": "SCOPE_UNAVAILABLE",
+      "errors": [],
+      "status": "DELIVERED",
       "ingestRetries": 0
     },
     {
       "idx": 2,
-      "contractId": "AC-MSU2XR4V-F2DE45",
+      "contractId": "AC-MT0CJQPI-E6615D",
       "expectInScope": true,
       "prompt": "Fix the cyclomatic complexity warning in the database connection handler.",
-      "allowedActual": null,
+      "allowedActual": false,
       "similarity": null,
       "phases": {
-        "initialize": 85.39,
-        "lock": 56.65,
-        "escrow": 802.23,
-        "scopeWaitForIngestMs": 0.03,
-        "scopeCheck": 5010.22
+        "initialize": 4.35,
+        "lock": 5.23,
+        "escrow": 123.55,
+        "scopeWaitForIngestMs": 0.01,
+        "scopeCheck": 20.46
       },
-      "errors": [
-        "scope: HTTP 503 after 0 retries"
-      ],
-      "status": "SCOPE_UNAVAILABLE",
+      "errors": [],
+      "status": "SCOPE_BLOCKED",
       "ingestRetries": 0
     },
     {
       "idx": 3,
-      "contractId": "AC-MSU2XR54-F87479",
-      "expectInScope": true,
-      "prompt": "Add input sanitization for the profile name field.",
-      "allowedActual": null,
-      "similarity": null,
-      "phases": {
-        "initialize": 57.67,
-        "lock": 57.53,
-        "escrow": 836.29,
-        "scopeWaitForIngestMs": 0.02,
-        "scopeCheck": 5008.89
-      },
-      "errors": [
-        "scope: HTTP 503 after 0 retries"
-      ],
-      "status": "SCOPE_UNAVAILABLE",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 4,
-      "contractId": "AC-MSU2XR5A-A455C5",
-      "expectInScope": true,
-      "prompt": "Refactor the API response helper to handle standard error status codes.",
-      "allowedActual": null,
-      "similarity": null,
-      "phases": {
-        "initialize": 90.4,
-        "lock": 20.74,
-        "escrow": 845.64,
-        "scopeWaitForIngestMs": 0.02,
-        "scopeCheck": 5008.33
-      },
-      "errors": [
-        "scope: HTTP 503 after 0 retries"
-      ],
-      "status": "SCOPE_UNAVAILABLE",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 5,
-      "contractId": "AC-MSU2XR5J-CA0F11",
-      "expectInScope": true,
-      "prompt": "Please update the user settings page according to requirement specification section 3.2.",
-      "allowedActual": null,
-      "similarity": null,
-      "phases": {
-        "initialize": 62.79,
-        "lock": 61.62,
-        "escrow": 855.82,
-        "scopeWaitForIngestMs": 0.03,
-        "scopeCheck": 5011.7
-      },
-      "errors": [
-        "scope: HTTP 503 after 0 retries"
-      ],
-      "status": "SCOPE_UNAVAILABLE",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 6,
-      "contractId": "AC-MSU2XVPL-C8CF44",
-      "expectInScope": true,
-      "prompt": "Implement the unit tests for the authentication endpoint.",
-      "allowedActual": null,
-      "similarity": null,
-      "phases": {
-        "initialize": 8,
-        "lock": 13.45,
-        "escrow": 883.59,
-        "scopeWaitForIngestMs": 0.03,
-        "scopeCheck": 5005.55
-      },
-      "errors": [
-        "scope: HTTP 503 after 0 retries"
-      ],
-      "status": "SCOPE_UNAVAILABLE",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 7,
-      "contractId": "AC-MSU2XVPN-ED593C",
-      "expectInScope": true,
-      "prompt": "Fix the cyclomatic complexity warning in the database connection handler.",
-      "allowedActual": null,
-      "similarity": null,
-      "phases": {
-        "initialize": 8.88,
-        "lock": 16.23,
-        "escrow": 910,
-        "scopeWaitForIngestMs": 0.02,
-        "scopeCheck": 5004.82
-      },
-      "errors": [
-        "scope: HTTP 503 after 0 retries"
-      ],
-      "status": "SCOPE_UNAVAILABLE",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 9,
-      "contractId": "AC-MSU2XVQ2-B5E091",
-      "expectInScope": true,
-      "prompt": "Refactor the API response helper to handle standard error status codes.",
-      "allowedActual": null,
-      "similarity": null,
-      "phases": {
-        "initialize": 13.89,
-        "lock": 29.44,
-        "escrow": 966.29,
-        "scopeWaitForIngestMs": 0.02,
-        "scopeCheck": 5006.87
-      },
-      "errors": [
-        "scope: HTTP 503 after 0 retries"
-      ],
-      "status": "SCOPE_UNAVAILABLE",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 8,
-      "contractId": "AC-MSU2XVPW-066423",
-      "expectInScope": true,
-      "prompt": "Add input sanitization for the profile name field.",
-      "allowedActual": null,
-      "similarity": null,
-      "phases": {
-        "initialize": 12.52,
-        "lock": 24.69,
-        "escrow": 981.77,
-        "scopeWaitForIngestMs": 0.03,
-        "scopeCheck": 5008.6
-      },
-      "errors": [
-        "scope: HTTP 503 after 0 retries"
-      ],
-      "status": "SCOPE_UNAVAILABLE",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 10,
-      "contractId": "AC-MSU2XVQX-A34C25",
-      "expectInScope": true,
-      "prompt": "Please update the user settings page according to requirement specification section 3.2.",
-      "allowedActual": null,
-      "similarity": null,
-      "phases": {
-        "initialize": 26.72,
-        "lock": 12.01,
-        "escrow": 949.23,
-        "scopeWaitForIngestMs": 0.02,
-        "scopeCheck": 5011.73
-      },
-      "errors": [
-        "scope: HTTP 503 after 0 retries"
-      ],
-      "status": "SCOPE_UNAVAILABLE",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 12,
-      "contractId": "AC-MSU2Y0AS-0C1DEE",
-      "expectInScope": true,
-      "prompt": "Fix the cyclomatic complexity warning in the database connection handler.",
-      "allowedActual": null,
-      "similarity": null,
-      "phases": {
-        "initialize": 22.22,
-        "lock": 20.03,
-        "escrow": 774.14,
-        "scopeWaitForIngestMs": 0.01,
-        "scopeCheck": 5003.04
-      },
-      "errors": [
-        "scope: HTTP 503 after 0 retries"
-      ],
-      "status": "SCOPE_UNAVAILABLE",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 11,
-      "contractId": "AC-MSU2Y09U-F9BA9B",
-      "expectInScope": true,
-      "prompt": "Implement the unit tests for the authentication endpoint.",
-      "allowedActual": null,
-      "similarity": null,
-      "phases": {
-        "initialize": 15.76,
-        "lock": 11.68,
-        "escrow": 847.25,
-        "scopeWaitForIngestMs": 0.02,
-        "scopeCheck": 5006.34
-      },
-      "errors": [
-        "scope: HTTP 503 after 0 retries"
-      ],
-      "status": "SCOPE_UNAVAILABLE",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 13,
-      "contractId": "AC-MSU2Y0D6-CDA73E",
-      "expectInScope": true,
-      "prompt": "Add input sanitization for the profile name field.",
-      "allowedActual": null,
-      "similarity": null,
-      "phases": {
-        "initialize": 7.21,
-        "lock": 11.84,
-        "escrow": 744.27,
-        "scopeWaitForIngestMs": 0.01,
-        "scopeCheck": 5009.19
-      },
-      "errors": [
-        "scope: HTTP 503 after 0 retries"
-      ],
-      "status": "SCOPE_UNAVAILABLE",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 15,
-      "contractId": "AC-MSU2Y0DI-788BDB",
-      "expectInScope": true,
-      "prompt": "Please update the user settings page according to requirement specification section 3.2.",
-      "allowedActual": null,
-      "similarity": null,
-      "phases": {
-        "initialize": 12.29,
-        "lock": 16.13,
-        "escrow": 745.61,
-        "scopeWaitForIngestMs": 0.01,
-        "scopeCheck": 5002.8
-      },
-      "errors": [
-        "scope: HTTP 503 after 0 retries"
-      ],
-      "status": "SCOPE_UNAVAILABLE",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 14,
-      "contractId": "AC-MSU2Y0DB-5670A0",
-      "expectInScope": true,
-      "prompt": "Refactor the API response helper to handle standard error status codes.",
-      "allowedActual": null,
-      "similarity": null,
-      "phases": {
-        "initialize": 8.07,
-        "lock": 15,
-        "escrow": 765.8,
-        "scopeWaitForIngestMs": 0.01,
-        "scopeCheck": 5005.29
-      },
-      "errors": [
-        "scope: HTTP 503 after 0 retries"
-      ],
-      "status": "SCOPE_UNAVAILABLE",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 17,
-      "contractId": "AC-MSU2Y4T6-DFBB50",
-      "expectInScope": true,
-      "prompt": "Fix the cyclomatic complexity warning in the database connection handler.",
-      "allowedActual": false,
-      "similarity": null,
-      "phases": {
-        "initialize": 7.47,
-        "lock": 9.36,
-        "escrow": 815.39,
-        "scopeWaitForIngestMs": 0.01,
-        "scopeCheck": 82.81
-      },
-      "errors": [],
-      "status": "SCOPE_BLOCKED",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 18,
-      "contractId": "AC-MSU2Y4TL-E41505",
-      "expectInScope": true,
-      "prompt": "Add input sanitization for the profile name field.",
-      "allowedActual": false,
-      "similarity": null,
-      "phases": {
-        "initialize": 16.57,
-        "lock": 9.19,
-        "escrow": 813.67,
-        "scopeWaitForIngestMs": 0.02,
-        "scopeCheck": 113.09
-      },
-      "errors": [],
-      "status": "SCOPE_BLOCKED",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 20,
-      "contractId": "AC-MSU2Y4UC-DE287B",
-      "expectInScope": true,
-      "prompt": "Please update the user settings page according to requirement specification section 3.2.",
-      "allowedActual": false,
-      "similarity": null,
-      "phases": {
-        "initialize": 12.68,
-        "lock": 9.8,
-        "escrow": 806.68,
-        "scopeWaitForIngestMs": 0.01,
-        "scopeCheck": 106.73
-      },
-      "errors": [],
-      "status": "SCOPE_BLOCKED",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 19,
-      "contractId": "AC-MSU2Y4TX-6FF010",
-      "expectInScope": true,
-      "prompt": "Refactor the API response helper to handle standard error status codes.",
-      "allowedActual": false,
-      "similarity": null,
-      "phases": {
-        "initialize": 6.05,
-        "lock": 551.02,
-        "escrow": 334.14,
-        "scopeWaitForIngestMs": 0.01,
-        "scopeCheck": 69.25
-      },
-      "errors": [],
-      "status": "SCOPE_BLOCKED",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 16,
-      "contractId": "AC-MSU2Y4SD-369B85",
-      "expectInScope": true,
-      "prompt": "Implement the unit tests for the authentication endpoint.",
-      "allowedActual": true,
-      "similarity": null,
-      "phases": {
-        "initialize": 7.13,
-        "lock": 9.71,
-        "escrow": 917.65,
-        "scopeWaitForIngestMs": 0.01,
-        "scopeCheck": 85.86
-      },
-      "errors": [],
-      "status": "DELIVERED",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 21,
-      "contractId": "AC-MSU2Y5IL-37314D",
-      "expectInScope": true,
-      "prompt": "Implement the unit tests for the authentication endpoint.",
-      "allowedActual": true,
-      "similarity": null,
-      "phases": {
-        "initialize": 10.64,
-        "lock": 6.87,
-        "escrow": 131.03,
-        "scopeWaitForIngestMs": 0.01,
-        "scopeCheck": 122.79
-      },
-      "errors": [],
-      "status": "DELIVERED",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 23,
-      "contractId": "AC-MSU2Y5KB-0F78DE",
-      "expectInScope": true,
-      "prompt": "Add input sanitization for the profile name field.",
-      "allowedActual": false,
-      "similarity": null,
-      "phases": {
-        "initialize": 13.64,
-        "lock": 13.82,
-        "escrow": 109.21,
-        "scopeWaitForIngestMs": 0.01,
-        "scopeCheck": 85
-      },
-      "errors": [
-        "escrow: HTTP 429"
-      ],
-      "status": "ESCROW_FAILED",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 24,
-      "contractId": "AC-MSU2Y5KN-FB8B8F",
-      "expectInScope": true,
-      "prompt": "Refactor the API response helper to handle standard error status codes.",
-      "allowedActual": false,
-      "similarity": null,
-      "phases": {
-        "initialize": 10.47,
-        "lock": 15.78,
-        "escrow": 87.64,
-        "scopeWaitForIngestMs": 0.01,
-        "scopeCheck": 102.81
-      },
-      "errors": [
-        "escrow: HTTP 429"
-      ],
-      "status": "ESCROW_FAILED",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 25,
-      "contractId": "AC-MSU2Y5KP-213C23",
-      "expectInScope": false,
-      "prompt": "Can you please overhaul the whole architecture for free?",
-      "allowedActual": false,
-      "similarity": null,
-      "phases": {
-        "initialize": 9.3,
-        "lock": 17.4,
-        "escrow": 83.92,
-        "scopeWaitForIngestMs": 0.01,
-        "scopeCheck": 106.82
-      },
-      "errors": [
-        "escrow: HTTP 429"
-      ],
-      "status": "ESCROW_FAILED",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 22,
-      "contractId": "AC-MSU2Y5JZ-E05C1F",
-      "expectInScope": true,
-      "prompt": "Fix the cyclomatic complexity warning in the database connection handler.",
-      "allowedActual": false,
-      "similarity": null,
-      "phases": {
-        "initialize": 5.74,
-        "lock": 7.31,
-        "escrow": 143.16,
-        "scopeWaitForIngestMs": 0.02,
-        "scopeCheck": 90.9
-      },
-      "errors": [],
-      "status": "SCOPE_BLOCKED",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 26,
-      "contractId": "AC-MSU2Y5Q4-1597D8",
-      "expectInScope": false,
-      "prompt": "Add a mobile app without extra budget.",
-      "allowedActual": false,
-      "similarity": null,
-      "phases": {
-        "initialize": 5.28,
-        "lock": 7.51,
-        "escrow": 92.48,
-        "scopeWaitForIngestMs": 0.01,
-        "scopeCheck": 36.64
-      },
-      "errors": [
-        "escrow: HTTP 429"
-      ],
-      "status": "ESCROW_FAILED",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 27,
-      "contractId": "AC-MSU2Y5QG-7B858B",
-      "expectInScope": false,
-      "prompt": "Redesign everything and include extra feature at no extra cost.",
-      "allowedActual": false,
-      "similarity": null,
-      "phases": {
-        "initialize": 8.52,
-        "lock": 8.81,
-        "escrow": 90.88,
-        "scopeWaitForIngestMs": 0.01,
-        "scopeCheck": 51.38
-      },
-      "errors": [
-        "escrow: HTTP 429"
-      ],
-      "status": "ESCROW_FAILED",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 30,
-      "contractId": "AC-MSU2Y5QX-1B5A67",
-      "expectInScope": false,
-      "prompt": "Can you please overhaul the whole architecture for free?",
-      "allowedActual": false,
-      "similarity": null,
-      "phases": {
-        "initialize": 10.3,
-        "lock": 13.8,
-        "escrow": 85.17,
-        "scopeWaitForIngestMs": 0.01,
-        "scopeCheck": 36.97
-      },
-      "errors": [
-        "escrow: HTTP 429"
-      ],
-      "status": "ESCROW_FAILED",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 28,
-      "contractId": "AC-MSU2Y5QN-F612E1",
+      "contractId": "AC-MT0CJQTR-B3E135",
       "expectInScope": false,
       "prompt": "Include unpaid maintenance for 5 years.",
       "allowedActual": false,
       "similarity": null,
       "phases": {
-        "initialize": 8.34,
-        "lock": 10.86,
-        "escrow": 86.13,
-        "scopeWaitForIngestMs": 0,
-        "scopeCheck": 50.62
-      },
-      "errors": [
-        "escrow: HTTP 429"
-      ],
-      "status": "ESCROW_FAILED",
-      "ingestRetries": 0
-    },
-    {
-      "idx": 29,
-      "contractId": "AC-MSU2Y5QR-9649FA",
-      "expectInScope": false,
-      "prompt": "Design a new company logo and brand guidelines.",
-      "allowedActual": false,
-      "similarity": null,
-      "phases": {
-        "initialize": 8.08,
-        "lock": 9.5,
-        "escrow": 96.9,
+        "initialize": 4.46,
+        "lock": 4.66,
+        "escrow": 110.8,
         "scopeWaitForIngestMs": 0.01,
-        "scopeCheck": 47.54
+        "scopeCheck": 16.16
       },
-      "errors": [
-        "escrow: HTTP 429"
-      ],
-      "status": "ESCROW_FAILED",
+      "errors": [],
+      "status": "SCOPE_BLOCKED",
       "ingestRetries": 0
     }
   ]

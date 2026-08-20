@@ -43,7 +43,7 @@ the 99.98% figure could not have come from running it.
 
 Scope decisions retrieve the contract's own text from a pgvector HNSW index and
 compare the best cosine similarity against a threshold calibrated by sweep
-(`tools/calibrate_scope_threshold.py`, $\tau = 0.2731$). Every decision is
+(`tools/calibrate_scope_threshold.py`, $\tau = 0.3056$). Every decision is
 anchored to the contract's genesis ledger hash $H_0$.
 
 Cumulative drift is handled separately: a CUSUM statistic over per-message

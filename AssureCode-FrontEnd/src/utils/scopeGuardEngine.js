@@ -1,9 +1,9 @@
 /**
  * Scope Guard Engine
- * Autonomous RAG Scope Mediation based on pgvector Top-5 Chunks and Cosine Similarity Threshold (0.2731)
+ * Autonomous RAG Scope Mediation based on pgvector Top-5 Chunks and Cosine Similarity Threshold (0.3056)
  */
 
-export const SCOPE_THRESHOLD = 0.2731;
+export const SCOPE_THRESHOLD = 0.3056;
 
 // Domain keywords and semantic mappings to simulate Sentence-BERT embeddings
 const SEMANTIC_CLUSTERS = {

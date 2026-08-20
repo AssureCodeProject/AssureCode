@@ -25,11 +25,20 @@
  * manifest ships (infra/k8s/01-configmap-secrets.yaml) — the base manifest is
  * applyable so the CI dry-run passes, and this is what stops it from also
  * being *runnable* if someone forgets the secrets overlay.
+ *
+ * `assurecode_dev_hook` is the conventional local GITHUB_WEBHOOK_SECRET: short
+ * enough to retype into GitHub's webhook form and to compare by eye when
+ * debugging a 401, which is exactly why it is worth writing down here. This
+ * list is a denylist of known-public strings, not an entropy test, so a
+ * low-entropy value that is *not* listed passes silently — and a secret chosen
+ * for how easy it is to share is the kind most likely to be copied into a
+ * deploy. Listing it restores the guard.
  */
 export const PLACEHOLDER_SECRET_VALUES: ReadonlySet<string> = new Set([
   'dev_insecure_jwt_secret_change_me',
   'dev_insecure_service_token_change_me',
   'assurecode_github_secret',
+  'assurecode_dev_hook',
   'REPLACE_ME',
   'changeme',
   'change_me',

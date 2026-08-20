@@ -224,20 +224,20 @@ export async function processCodePush(
 }
 
 /**
- * Known gap: the GitHub webhook path cannot produce an audit.
+ * How a real GitHub push reaches this pipeline.
  *
- * apps/webhook-ingest publishes CODE_PUSH_RECEIVED with `contractId`,
- * `commitHash`, `repoUrl` and `ref` — but no `code`, because it never fetches
- * the repository. processCodePush therefore refuses with "No code supplied",
- * which is the right refusal for a push it cannot see the contents of. Only
- * the gateway's /simulate-push route, which carries the code inline, reaches
- * the pipeline today.
+ * apps/webhook-ingest resolves the contract from the pushed repository —
+ * `contracts.github_repo_full_name`, linked via
+ * PATCH /api/contracts/:contractId/github-repo — and publishes
+ * CODE_PUSH_RECEIVED with `contractId`, `commitHash`, `repoUrl` and `ref`, but
+ * no `code`: a push webhook carries no file contents. processCodePush fetches
+ * the source itself, pinned to `commitHash` (see source-fetcher.ts for why the
+ * SHA and not the ref).
  *
- * Closing it means cloning `repoUrl` at `commitHash` into the workspace.
- * DockerSandbox already implements the clone; NodePermissionSandbox cannot
- * (git is a child process, which the sandbox denies by design), so the clone
- * belongs in the workspace builder rather than in an adapter. Stated here
- * rather than left to be discovered from a silent absence of audits.
+ * That fetch is gated on ENABLE_GITHUB_SOURCE_FETCH. With it off, the fetcher
+ * below is null and a webhook-originated push is refused with an explanation
+ * rather than audited against something other than what was pushed; only the
+ * gateway's /simulate-push, which carries code inline, reaches the pipeline.
  */
 async function main(): Promise<void> {
   logger.info('CI Worker starting...');

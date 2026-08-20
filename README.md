@@ -113,12 +113,16 @@ Measured results, the honest versions, are in
 [docs/FINAL_PROJECT_REPORT.md](docs/FINAL_PROJECT_REPORT.md). The load-bearing
 caveats:
 
-- **The drift detector is not calibrated.** `configs/c1_rules.json` ships with
-  `kappa` and `h` null and `status: PRE_DATA`; `/drift/status` returns 503
-  rather than invent a false-alarm rate. No T2 calibration set exists yet.
-- **The scope threshold does not generalise.** 0.2731 was fit on the same
-  16-message set it was evaluated on. Over 50 live contracts: accuracy 36%,
-  precision 100%, recall 20%, F1 33%.
+- **The drift detector runs on a synthetic calibration set.** `/scope/drift`
+  answers instead of returning 503, but the residuals it compares against are
+  random floats, not measured traffic. Every response carries
+  `calibration_is_synthetic: true` and a note saying the delta is not a measured
+  false-alarm rate. No real T2 set exists yet.
+- **Scope-guard recall is the weak side.** Over 50 live contracts: accuracy
+  68%, precision 100%, recall 60%, F1 75% (was 36% / 100% / 20% / 33% before
+  the chunker fix and threshold recalibration). It still blocks legitimate
+  requests more often than it should; it has never allowed an out-of-scope one
+  in this fixture.
 - **Matchmaking is closer to a keyword matcher than a semantic one.** P@1 0.750
   on tech-named queries, 0.375 on outcome-only queries (N=1000). The shipped
   weights rank 66th of 231 in the ablation.

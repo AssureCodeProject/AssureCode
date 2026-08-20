@@ -10,10 +10,19 @@
 # ── Why this matters most for ci-worker ─────────────────────────────────
 # NodePermissionSandbox blocks network egress from inside the process using
 # module hooks, but that is a language-level control on code we are already
-# assuming is hostile. The egress rule below is the second, independent layer:
-# even if submitted code escapes the module hooks, the pod itself has no route
-# to the database, to Redis, or off the cluster. Defence in depth, because the
-# in-process guard and the pod-level guard fail for different reasons.
+# assuming is hostile. The egress rule below is the second, independent layer,
+# holding the pod to Postgres, the bus, and HTTPS — narrow enough that code
+# escaping the module hooks still has nowhere useful to go. Defence in depth,
+# because the in-process guard and the pod-level guard fail for different
+# reasons.
+#
+# The pod-level rules are necessarily coarser than the in-process one: they
+# cannot distinguish the worker fetching a commit from api.github.com (which it
+# must do, since a push webhook carries no file contents) from submitted code
+# calling out. What keeps that distinction real is that submitted code does not
+# execute in this network namespace at all — the Docker runner uses
+# --network=none, and the Node runner keeps its in-process guard. See the
+# port-443 rule on ci-worker-policy below.
 # =============================================================================
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -61,7 +70,7 @@ spec:
     matchExpressions:
       - key: app
         operator: In
-        values: ["postgres", "redis", "neo4j"]
+        values: ["postgres", "redis", "neo4j", "kafka"]
   policyTypes:
     - Ingress
   ingress:
@@ -106,7 +115,7 @@ spec:
             matchExpressions:
               - key: app
                 operator: In
-                values: ["postgres", "redis", "ai-service", "scope-guard"]
+                values: ["postgres", "redis", "kafka", "ai-service", "scope-guard"]
     # Outbound to the internet: Razorpay's API and the LLM providers. Port 443
     # only — there is no reason for this service to speak plaintext HTTP
     # outward. Narrow this to provider CIDRs if your environment can.
@@ -211,11 +220,25 @@ spec:
         - protocol: TCP
           port: 9000
   egress:
-    # Publishes to the bus and nothing else. It does not touch Postgres.
+    # Postgres and the bus.
+    #
+    # Postgres is on the request path: a GitHub delivery names a repository and
+    # nothing that identifies a contract, so every push is resolved against
+    # contracts.github_repo_full_name before anything is published. Without
+    # this rule that lookup times out and the receiver answers 503 to every
+    # push — correctly, but for a reason invisible from the application logs.
+    # It reads one indexed column and writes nothing.
+    #
+    # Both bus transports, because EVENT_BUS_TYPE picks one at runtime and a
+    # policy that named only Redis would make EVENT_BUS_TYPE=kafka fail at the
+    # network layer — where it looks like a hung publish, not a
+    # misconfiguration.
     - to:
         - podSelector:
-            matchLabels:
-              app: redis
+            matchExpressions:
+              - key: app
+                operator: In
+                values: ["postgres", "redis", "kafka"]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -238,7 +261,7 @@ spec:
             matchExpressions:
               - key: app
                 operator: In
-                values: ["postgres", "redis"]
+                values: ["postgres", "redis", "kafka"]
     # Razorpay's API — this worker captures the held payment on release.
     - to:
         - ipBlock:
@@ -267,14 +290,19 @@ spec:
   # Nothing connects in.
   ingress: []
   egress:
-    # Redis only — it needs the event bus to receive audit jobs and publish
-    # results, and nothing else. In particular: no Postgres (results go over
-    # the bus), and no internet at all, so submitted code cannot exfiltrate
-    # the repository it was handed or pull down a second-stage payload.
-    #
-    # The DNS allowance above still applies; that is the one unavoidable
-    # channel, and it is why the in-process egress guard remains necessary
-    # rather than redundant.
+    # Postgres. This rule was absent while the policy's comment claimed results
+    # travel only over the bus — but PostgresAuditStore (src/audit-store.ts)
+    # has always written the audit_results row directly, so every audit's
+    # persistence was failing at the network layer here while the bus events
+    # still flowed. The row is the durable record /api/audits reads back.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    # The event bus — how audit jobs arrive and results are published.
     - to:
         - podSelector:
             matchLabels:
@@ -282,6 +310,45 @@ spec:
       ports:
         - protocol: TCP
           port: 6379
+    # HTTPS to api.github.com, so a real push can be audited at all: a push
+    # webhook carries no file contents, so the worker fetches the commit's
+    # source itself (src/source-fetcher.ts).
+    #
+    # This is the one rule here that needs justifying, because the pod runs
+    # untrusted code and previously had no internet egress whatsoever. The
+    # distinction that makes it safe is *when* the traffic happens: the fetch
+    # is an HTTP call made by the worker process before any submitted code is
+    # executed. The code itself never runs in this network namespace — the
+    # Docker runner starts the container with --network=none
+    # (src/sandbox/docker-sandbox.ts), and the Node runner enforces its own
+    # in-process egress guard. The property this policy exists to guarantee —
+    # that *submitted code* can neither exfiltrate what it was handed nor pull
+    # down a second stage — is unchanged.
+    #
+    # Private ranges stay excluded, so this is egress to the internet and not
+    # a lateral path to the rest of the cluster.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+    # The same allowance for the Kafka transport, and no wider: still the event
+    # bus and nothing else. Named ports rather than an open `to`, so selecting
+    # Kafka cannot quietly turn this into general egress for the pod that runs
+    # untrusted code.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: kafka
+      ports:
+        - protocol: TCP
+          port: 29092
 ---
 # ── Observability (15-observability.yaml) ───────────────────────────────────
 #

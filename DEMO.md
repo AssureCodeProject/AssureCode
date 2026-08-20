@@ -89,10 +89,11 @@ against the exact contract text it was compared to. A rejected check also blocks
 settlement in phase 5 — the scope signal is derived from `scope_checks` on every
 read rather than stored, so it cannot disagree with the decisions it summarises.
 
-**Be honest.** Over 50 live contracts this classifier scores accuracy 36%,
-precision 100%, recall 20%, F1 33%. It rarely blocks something it shouldn't, and
-it misses most of what it should block. The 0.2731 threshold was fit on the same
-16 messages it was evaluated on. Expect the demo to show a miss if you push it.
+**Be honest.** Over 50 live contracts this classifier scores accuracy 68%,
+precision 100%, recall 60%, F1 75%. It has never allowed an out-of-scope request
+in this fixture, but it still blocks about 4 in 10 legitimate ones. Expect the
+demo to show a false block if you push it. (Before the chunker fix and the
+threshold recalibration it was 36% / 100% / 20% / 33%.)
 
 ## Phase 4 — Verification and scoring
 

@@ -21,6 +21,14 @@ describe('isPlaceholderSecret', () => {
     expect(isPlaceholderSecret('assurecode_github_secret')).toBe(true);
   });
 
+  it('rejects the conventional local webhook secret', () => {
+    // Not a schema default — a value chosen by hand because it is short enough
+    // to retype into GitHub's webhook form. That convenience is exactly what
+    // makes it likely to be pasted into a deploy, and the denylist is the only
+    // thing that would notice: it matches known strings, not weak ones.
+    expect(isPlaceholderSecret('assurecode_dev_hook')).toBe(true);
+  });
+
   it('rejects the REPLACE_ME the tracked k8s manifest ships', () => {
     expect(isPlaceholderSecret('REPLACE_ME')).toBe(true);
     // Surrounding whitespace should not smuggle it past the check.

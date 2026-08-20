@@ -248,21 +248,41 @@ $$\text{MI} = \max\left(0, \frac{171 - 5.2\ln V - 0.23 M - 16.2\ln L}{171} \time
 
 A message is in scope when its best retrieved similarity clears a threshold:
 
-$$\text{allowed} \iff \max_{r \in R_c} \text{cos}\big(e(m), r\big) \ge \tau, \qquad \tau = 0.2731$$
+$$\text{allowed} \iff \max_{r \in R_c} \text{cos}\big(e(m), r\big) \ge \tau, \qquad \tau = 0.3056$$
 
-$\tau$ was **measured, not chosen**: `tools/calibrate_scope_threshold.py` sweeps
-it against `all-MiniLM-L6-v2` on a hand-labelled contract. On that set, in-scope
-similarities span 0.324–0.970 and out-of-scope 0.055–0.341. **The classes
-overlap in [0.324, 0.341]**, so no threshold separates them perfectly; 0.2731
-maximises accuracy at 14/16, with 2 false positives and 0 false negatives.
+$\tau$ is **measured, not chosen**: `tools/calibrate_scope_threshold.py` sweeps
+it against `all-MiniLM-L6-v2` over
+`infra/calibration/scope_threshold_corpus.json` — 6 contracts across 6 domains,
+100 labelled messages — running the **real ingestion and retrieval path**
+(`chunk_text` → `RagStore.search(k=5)`) rather than embedding each requirement
+in isolation.
 
-Erring toward false positives is deliberate: wrongly allowing an out-of-scope
-request costs a scope amendment, while wrongly flagging an in-scope one blocks
-legitimate work and holds a payment.
+The corpus is **split by contract**, not by message: the sweep sees 3 contracts
+and the reported figures come from 3 it never saw. Splitting by message would
+leak a contract's similarity scale into its own test rows.
 
-**That 14/16 is accuracy on the set the threshold was selected from.** It is a
-fitting figure, not a generalisation estimate. Held-out behaviour is in §11 and
-is substantially worse.
+The sweep minimises $3 \cdot \text{FN} + \text{FP}$ rather than maximising
+accuracy. Erring toward false positives is deliberate — wrongly allowing an
+out-of-scope request costs a scope amendment, while wrongly flagging an in-scope
+one blocks legitimate work and holds a payment — and the objective now says so.
+The exact weight is not load-bearing: every value in $[1.5, 5.0]$ selects the
+same $\tau$. Maximising plain accuracy instead selects 0.4029, which blocks 8
+legitimate requests on the held-out contracts to avoid 3 amendments.
+
+| | accuracy | precision | recall | F1 |
+|---|---|---|---|---|
+| calibration contracts (fitted) | 0.808 | 0.722 | 1.000 | 0.839 |
+| **held-out contracts** | **0.792** | **0.733** | **0.917** | **0.815** |
+
+The held-out row is the estimate. It is measured against an **in-repo authored**
+corpus that is **not dual-annotated**, so it is optimistic and is not the T2 set
+(`configs/c1_rules.json`); what it establishes that the previous single-contract
+figure could not is a generalisation gap at all.
+
+**Previous revision:** $\tau = 0.2731$, reported as 14/16. Both halves were
+wrong. It was fitted on 16 messages from one contract and scored on those same
+16 messages, and it was fitted against a retrieval path the product does not
+use. Measured behaviour is in §11.
 
 ### 4.5 Cumulative scope-drift detection
 
@@ -679,28 +699,48 @@ never been measured against either goal.
 
 ### Scope guard — `node tools/benchmark.js`
 
-Over 50 contracts against live services:
+Over 50 contracts against live services, `--concurrency 1`:
 
-| Metric | Value |
-|---|---|
-| Accuracy | 36% |
-| Precision | 100% |
-| Recall | 20% |
-| F1 | 33.33% |
+| Metric | Before | After |
+|---|---|---|
+| Accuracy | 36% | **68%** |
+| Precision | 100% | **100%** |
+| Recall | 20% | **60%** |
+| F1 | 33.33% | **75%** |
+| Confusion | TP 8, TN 10, FP 0, FN 32 | TP 24, TN 10, FP 0, FN 16 |
 
-Perfect precision with collapsed recall means the guard almost never allows an
-out-of-scope request and also blocks most in-scope ones. **The threshold does
-not generalize from the 16-message set it was selected on** (§4.4). The failure
-direction is the safer one for a payment system, but it is still a failure.
+Two changes produced this, and the first mattered more than the threshold:
+
+1. **`chunk_text` was collapsing a contract into one chunk.** It split the
+   requirements into units and then greedily packed them back up to
+   `target_chars`; a five-requirement contract is ~340 characters, so all five
+   became a single blended vector. Retrieval had one candidate, which made
+   top-$k$ ranking a no-op, and a message about any one requirement was scored
+   against the average of five. It now emits one chunk per semantic unit.
+2. **The threshold was re-derived** on the real ingestion path, split by
+   contract, against a policy-weighted objective (§4.4).
+
+**16 false negatives remain, and recall is still the weak side.** Some are the
+fixture's own labelling — `"Fix the cyclomatic complexity warning in the
+database connection handler"` is labelled in-scope against a contract about
+login sessions and scores 0.089, which no threshold rescues without destroying
+precision. That is a reason to distrust the fixture, not evidence the guard is
+fine. The failure direction remains the safer one for a payment system.
 
 ### Known limitations
 
-1. **The drift detector is implemented and tested, but not calibrated.** The
-   conformal guarantee needs a labelled in-scope residual set, which does not
-   exist in this repository. The endpoint returns 503 rather than substituting a
-   default; any calibration supplied for testing is flagged
-   `calibration_is_synthetic`, and that flag travels into the ledger record.
-   **No false-alarm rate is claimed.**
+1. **The drift detector is implemented and tested, and wired to a synthetic
+   calibration set.** The conformal guarantee needs a labelled in-scope residual
+   set from real traffic, which does not exist in this repository. The shipped
+   default (`infra/calibration/scope_drift_synthetic_t2.json`, wired through
+   compose and the k8s ConfigMap) is **random floats, not measured residuals**;
+   it makes the endpoint answerable instead of returning 503 to every caller.
+   `SCOPE_DRIFT_CALIBRATION_SYNTHETIC=1` marks it as such, and that flag travels
+   into the drift response *and* the ledger record. With the variable unset the
+   detector still refuses to construct rather than invent a default.
+   **No false-alarm rate is claimed, and none may be derived from this file.**
+   Building the real set is `tools/eval/build_t2_calibration.py`, gated on the
+   annotator-agreement threshold frozen in `configs/c1_rules.json`.
 2. **Legacy ledger rows predate V009** and are reported `unverifiable`, not
    `verified` (17 rows at the last verification run).
 3. **Redis was unavailable for the recorded benchmark run.** Latencies come from

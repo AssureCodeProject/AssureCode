@@ -3,7 +3,14 @@ initTracing('webhook-ingest');
 
 import crypto from 'node:crypto';
 import Fastify from 'fastify';
-import { loadConfig, runWithCorrelationId, assertProductionSecrets } from '@assurecode/config';
+import pg from 'pg';
+import {
+  loadConfig,
+  runWithCorrelationId,
+  assertProductionSecrets,
+  getDatabaseUrl,
+  buildDbConfig,
+} from '@assurecode/config';
 import { createEventBus, eventBusOptionsFromConfig } from '@assurecode/event-bus';
 import { EVENT_TOPICS } from '@assurecode/shared';
 
@@ -22,6 +29,12 @@ assertProductionSecrets(config as unknown as Record<string, string | undefined>,
 
 const eventBus = createEventBus(eventBusOptionsFromConfig(config));
 const GITHUB_WEBHOOK_SECRET = config.GITHUB_WEBHOOK_SECRET;
+
+// A delivery from GitHub identifies a repository and nothing else — it has no
+// idea this platform exists — so the contract it belongs to has to be looked
+// up. pg.Pool connects lazily, so constructing it here costs nothing until the
+// first push arrives and does not make the process depend on Postgres to boot.
+const dbPool = new pg.Pool(buildDbConfig(getDatabaseUrl(config)));
 
 // Correlation ID hook
 fastify.addHook('onRequest', (request, reply, done) => {
@@ -54,6 +67,48 @@ export function verifyGitHubSignature(payload: string | Buffer, signatureHeader:
   }
 }
 
+/**
+ * The minimum of `pg.Pool` that {@link resolveContractId} uses, so the lookup's
+ * ordering rule can be tested without a live database.
+ */
+export interface ContractQueryable {
+  query(
+    sql: string,
+    params: unknown[],
+  ): Promise<{ rows: Array<{ contract_id: string }>; rowCount?: number | null }>;
+}
+
+/** GitHub's sentinel for "there is no commit here" — a deleted branch. */
+const NULL_SHA = '0'.repeat(40);
+
+/**
+ * Find the contract a repository's pushes belong to, or null.
+ *
+ * `github_repo_full_name` is deliberately not unique (see V015): the same
+ * repository is commonly reused for a follow-on contract with the same client.
+ * That makes "which contract" a real question rather than a lookup, and the
+ * answer has to be deterministic — resolving it differently on two pushes of
+ * the same commit would file the audits under different contracts.
+ *
+ * Work in progress wins over history, most recent wins over older. A push
+ * belongs to the engagement that is currently running, and when none is
+ * running it belongs to the newest one rather than to whichever row Postgres
+ * happened to return first.
+ */
+export async function resolveContractId(
+  pool: ContractQueryable,
+  repoFullName: string,
+): Promise<string | null> {
+  const result = await pool.query(
+    `SELECT contract_id FROM contracts
+      WHERE github_repo_full_name = $1
+      ORDER BY (status IN ('LOCKED','IN_PROGRESS')) DESC, created_at DESC
+      LIMIT 1`,
+    [repoFullName],
+  );
+  return result.rows[0]?.contract_id ?? null;
+}
+
 // Add raw body parser for signature verification
 fastify.addContentTypeParser('application/json', { parseAs: 'buffer' }, (req, body: Buffer, done) => {
   try {
@@ -82,9 +137,70 @@ fastify.post('/webhooks/github', async (request, reply) => {
     return reply.status(401).send({ error: 'Unauthorized', message: 'Invalid HMAC signature' });
   }
 
+  // Only pushes carry code to audit. GitHub sends a `ping` the moment a
+  // webhook is created and will disable a hook that answers it with anything
+  // other than a 2xx, so an unknown event type is acknowledged rather than
+  // rejected — but nothing is published for it. Previously every event type
+  // was processed as a push, so creating the webhook immediately queued an
+  // audit for a payload with no commit in it.
+  //
+  // Deliberately after the signature check: an unsigned request is still a 401
+  // whatever it claims to be.
+  const eventType = (request.headers['x-github-event'] as string) || '';
+  if (eventType !== 'push') {
+    request.log.info({ eventType }, 'Ignoring non-push GitHub event');
+    return reply.status(200).send({ status: 'ignored', ignored: true, event: eventType });
+  }
+
   const payload = request.body as Record<string, any>;
-  const contractId = payload.contract_id || payload.repository?.name || 'unknown-contract';
-  const commitHash = payload.after || payload.head_commit?.id || '0000000000000000000000000000000000000000';
+
+  // A branch deletion is a push whose `after` is the null SHA. That is 40 hex
+  // characters, so it satisfies ci-worker's commit-SHA check and would send it
+  // to the GitHub API for a commit that does not exist — a fetch failure
+  // reported as if the audit had been attempted.
+  const commitHash = payload.after || payload.head_commit?.id || NULL_SHA;
+  if (payload.deleted === true || commitHash === NULL_SHA) {
+    request.log.info({ ref: payload.ref }, 'Ignoring branch deletion push');
+    return reply
+      .status(200)
+      .send({ status: 'ignored', ignored: true, reason: 'branch deleted' });
+  }
+
+  // The repository is the only handle on identity a real delivery gives us.
+  const repoFullName = payload.repository?.full_name;
+  if (!repoFullName) {
+    return reply.status(400).send({
+      error: 'Bad Request',
+      message: 'push payload has no repository.full_name',
+    });
+  }
+
+  let contractId: string | null;
+  try {
+    contractId = await resolveContractId(dbPool, repoFullName);
+  } catch (err) {
+    // Fail closed. Publishing with a guessed contract id is precisely the
+    // failure this lookup exists to remove, and GitHub retries a 5xx.
+    request.log.error({ err, repoFullName }, 'Contract lookup failed');
+    return reply.status(503).send({
+      error: 'Service Unavailable',
+      message: 'Could not resolve the contract for this repository; retry later',
+    });
+  }
+
+  if (!contractId) {
+    // An honest rejection rather than the old 'unknown-contract' fallback,
+    // which published an event that could only ever fail downstream on the
+    // audit_results foreign key — invisibly, long after the 202.
+    request.log.warn({ repoFullName }, 'Push for a repository no contract is linked to');
+    return reply.status(404).send({
+      error: 'Not Found',
+      message:
+        `No contract is linked to ${repoFullName}. ` +
+        'Link it with PATCH /api/contracts/:contractId/github-repo.',
+    });
+  }
+
   const repoUrl = payload.repository?.clone_url || payload.repository?.html_url || '';
 
   const eventPayload = {
@@ -128,4 +244,10 @@ if (process.env.NODE_ENV !== 'test') {
   start();
 }
 
-export { fastify };
+// `eventBus` is exported for tests. createEventBus() hands back a *new*
+// InMemoryBus on every call under NODE_ENV=test, so a test that builds its own
+// and subscribes to it observes nothing this server publishes — and, since the
+// usual assertion is that an event did or did not arrive, it fails or passes
+// for a reason unrelated to the code under test. Subscribing to this instance
+// is the only way to actually watch what the handler emits.
+export { fastify, eventBus };

@@ -53,7 +53,7 @@ from app.ports.scope_log import PostgresScopeLog, ScopeDecisionRecord  # noqa: E
 from app.services.drift_detector import ConformalDriftDetector  # noqa: E402
 
 CA_BUNDLE = REPO_ROOT / "infra" / "certs" / "supabase-ca-bundle.crt"
-THRESHOLD = float(os.environ.get("SCOPE_SIMILARITY_THRESHOLD", "0.2731"))
+THRESHOLD = float(os.environ.get("SCOPE_SIMILARITY_THRESHOLD", "0.3056"))
 DELTA = 0.05
 EPSILON = 0.92
 

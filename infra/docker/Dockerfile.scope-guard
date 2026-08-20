@@ -44,5 +44,14 @@ COPY apps/scope-guard/ ./
 # apps/scope-guard/app/__init__.py.
 COPY apps/ai-service/app/ /srv/apps/ai-service/app/
 
+# Drift calibration residuals. get_drift_calibration() resolves a relative
+# SCOPE_DRIFT_CALIBRATION_PATH against the repo root, which is /srv here, so
+# these land where the compose and k8s env vars already point.
+#
+# Baked in rather than mounted: without them GET /scope/drift/{id} answers 503
+# for every contract, and a bind mount would make whether the endpoint works at
+# all depend on the operator remembering a volume. The file is 2 KB.
+COPY infra/calibration/ /srv/infra/calibration/
+
 EXPOSE 8001
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001", "--workers", "2"]

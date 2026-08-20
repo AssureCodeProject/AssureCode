@@ -40,9 +40,21 @@ x-datastore-env: &datastore-env
   # connect unencrypted. The traffic never leaves the compose bridge network.
   DATABASE_URL: postgresql://${POSTGRES_USER:-assurecode}:${POSTGRES_PASSWORD:-assurecode_local_dev}@postgres:5432/${POSTGRES_DB:-assurecode}?sslmode=disable
   REDIS_URL: redis://redis:6379
-  NEO4J_URI: bolt://neo4j:7687
+  # Overridable, unlike the deliberate EVENT_BUS_TYPE pin below: pointing at a
+  # hosted Neo4j (Aura) is a supported configuration, whereas EVENT_BUS_TYPE
+  # exists to stop this file promising a broker it does not ship. The default
+  # keeps the compose-internal service name for anyone without an override, and
+  # the two lines below already read from the environment this way — only the
+  # URI was pinned, which made a NEO4J_URI in .env look effective while every
+  # container silently kept using the local one.
+  NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
   NEO4J_USER: ${NEO4J_USER:-neo4j}
   NEO4J_PASSWORD: ${NEO4J_PASSWORD:-assurecode_local_dev}
+  # Without this the Neo4j settings above are unreachable in practice: the
+  # adapter is opt-in (deps.py:52) and this file forwarded every NEO4J_* value
+  # but not the switch that selects them, so a GRAPH_BACKEND=neo4j in .env left
+  # every container on Postgres while looking configured for Neo4j.
+  GRAPH_BACKEND: ${GRAPH_BACKEND:-postgres}
   S3_ENDPOINT: http://localstack:4566
   S3_BUCKET_NAME: ${S3_BUCKET_NAME:-assurecode-artifacts}
   AWS_REGION: ${AWS_REGION:-us-east-1}
@@ -72,6 +84,16 @@ x-datastore-env: &datastore-env
   JWT_SECRET: ${JWT_SECRET:-dev_insecure_jwt_secret_change_me}
   SERVICE_TOKEN: ${SERVICE_TOKEN:-dev_insecure_service_token_change_me}
   GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-assurecode_github_secret}
+  # A push webhook carries repository coordinates but no file contents, so with
+  # this off a real push is refused (with an explanation) and only the
+  # gateway's /simulate-push reaches the pipeline. On, ci-worker fetches the
+  # commit's source from the GitHub API pinned to the SHA the webhook reported.
+  # Off by default because an unconfigured stack should not make outbound calls
+  # to github.com on a schedule an attacker controls.
+  ENABLE_GITHUB_SOURCE_FETCH: ${ENABLE_GITHUB_SOURCE_FETCH:-false}
+  # Required for private repos. Public repos work without it at 60 requests per
+  # hour per IP, which one audit of a small repository can exhaust on its own.
+  GITHUB_TOKEN: ${GITHUB_TOKEN:-}
   # Razorpay. The default key id is deliberately not a real `rzp_` key, so an
   # unconfigured stack runs on FakeRazorpayAdapter and the full escrow flow
   # still works offline. Put real rzp_test_ credentials in .env to move money.
@@ -133,12 +155,21 @@ services:
       - "${NEO4J_HTTP_PORT:-7474}:7474"
       - "${NEO4J_BOLT_PORT:-7687}:7687"
     environment:
-      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-assurecode_local_dev}
+      # This container's OWN credentials, deliberately fixed rather than read
+      # from NEO4J_USER/NEO4J_PASSWORD. Those two are *client* settings and may
+      # point at a hosted instance (Aura), whose username is an instance id —
+      # feeding that here configured the local server with an account Neo4j will
+      # not create (the initial user must be `neo4j`) and, worse, made the
+      # healthcheck below authenticate to localhost with the remote password, so
+      # the container went unhealthy and blocked everything gated on it.
+      # Also matches reality: NEO4J_AUTH is only honoured on first init, and the
+      # neo4j-data volume already holds these.
+      NEO4J_AUTH: neo4j/assurecode_local_dev
       NEO4J_PLUGINS: '["apoc"]'
     volumes:
       - neo4j-data:/data
     healthcheck:
-      test: ["CMD", "cypher-shell", "-u", "${NEO4J_USER:-neo4j}", "-p", "${NEO4J_PASSWORD:-assurecode_local_dev}", "RETURN 1"]
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "assurecode_local_dev", "RETURN 1"]
       interval: 8s
       timeout: 5s
       retries: 10
@@ -386,6 +417,10 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      # Every push is resolved to a contract by a Postgres lookup before it is
+      # published, so the database is on the request path now, not optional.
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:9000/healthz"]
       interval: 10s
@@ -441,6 +476,19 @@ services:
       <<: *datastore-env
       NODE_ENV: ${NODE_ENV:-development}
       HF_HOME: /home/appuser/.cache/huggingface
+      # Without this GET /scope/drift/{id} is a 503 on every contract: the
+      # detector refuses to construct without calibration residuals rather than
+      # quote a false-alarm rate against a distribution nobody measured. The
+      # file is baked into the image (see Dockerfile.scope-guard); the path is
+      # relative to the repo root, which is /srv there.
+      SCOPE_DRIFT_CALIBRATION_PATH: ${SCOPE_DRIFT_CALIBRATION_PATH:-infra/calibration/scope_drift_synthetic_t2.json}
+      # 1 means "these residuals are not a real measurement", and the flag
+      # travels into the drift response and the ledger record. It stays 1 until
+      # the dual-annotated T2 set exists (configs/c1_rules.json). Shipping the
+      # synthetic set with the flag off would be the actual dishonesty here —
+      # shipping it with the flag on just makes the endpoint answerable.
+      SCOPE_DRIFT_CALIBRATION_SYNTHETIC: ${SCOPE_DRIFT_CALIBRATION_SYNTHETIC:-1}
+      SCOPE_SIMILARITY_THRESHOLD: ${SCOPE_SIMILARITY_THRESHOLD:-0.3056}
     volumes:
       - hf-cache:/home/appuser/.cache/huggingface
     depends_on:

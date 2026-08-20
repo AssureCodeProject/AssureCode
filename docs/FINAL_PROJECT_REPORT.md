@@ -112,15 +112,18 @@ gateway is unreachable**; it does not fall through to simulation.
 | Escrow funding | 462 ms / 1072 ms |
 | RAG scope check | 494 ms / 556 ms |
 
-**Scope-guard accuracy: 36%** — precision 100%, recall 20%, F1 33.33%
+**Scope-guard accuracy: 68%** — precision 100%, recall 60%, F1 75%
+(TP 24, TN 10, FP 0, FN 16). Previously 36% / 100% / 20% / 33.33%
 (TP 8, TN 10, FP 0, FN 32).
 
-Perfect precision with collapsed recall means the guard almost never allows an
-out-of-scope request and also blocks most in-scope ones. The threshold (0.2731)
-was selected on a 16-message hand-labelled set, where it scores 14/16 — a
-fitting figure, not a generalisation estimate. **It does not generalize.** The
-classes genuinely overlap in the similarity range [0.324, 0.341], so no single
-threshold separates them.
+The gain came mostly from `chunk_text`, which was packing a whole contract's
+requirements back into one chunk after splitting them — so retrieval ranked a
+single blended vector and top-k was a no-op. The threshold was then re-derived
+on the real ingestion path against a held-out contract split (0.2731 -> 0.3056).
+
+Recall remains the weak side: 16 in-scope requests are still blocked. Some of
+those are the fixture's own labels rather than the guard's fault, which is a
+reason to distrust the fixture, not to call the guard finished.
 
 The failure direction is the safer one for a payment system — a false block
 costs a scope amendment, a false allow releases uncontracted work — but it

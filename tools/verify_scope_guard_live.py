@@ -196,7 +196,7 @@ def main() -> int:
 
         # ── 4. decisions through the real retrieval path ────────
         print("\n[5] scope decisions via PostgresRagStore.search")
-        threshold = float(os.environ.get("SCOPE_SIMILARITY_THRESHOLD", "0.2731"))
+        threshold = float(os.environ.get("SCOPE_SIMILARITY_THRESHOLD", "0.3056"))
 
         hits_in = store.search(contract_id, embedder.embed(IN_SCOPE).tolist(), k=5)
         best_in = max(r.similarity for r in hits_in)

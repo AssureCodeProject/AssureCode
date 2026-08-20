@@ -102,19 +102,26 @@ class Settings:
         self.retrieval_k = int(os.environ.get("SCOPE_RETRIEVAL_K", "5"))
         # Threshold on the best retrieved similarity, measured rather than
         # chosen: tools/calibrate_scope_threshold.py sweeps it against
-        # all-MiniLM-L6-v2 on a hand-labelled contract.
+        # all-MiniLM-L6-v2 over infra/calibration/scope_threshold_corpus.json.
         #
-        # Measured 2026-08-04 — in-scope 0.324-0.970, out-of-scope 0.055-0.341.
-        # The classes OVERLAP in [0.324, 0.341], so no threshold separates them
-        # perfectly; 0.2731 maximises accuracy at 14/16 with 2 false positives
-        # and 0 false negatives. Erring toward false positives is deliberate:
-        # wrongly allowing an out-of-scope request costs a scope amendment,
-        # while wrongly flagging an in-scope one blocks legitimate work and
-        # holds a payment.
+        # Recalibrated 2026-08-19 — 0.2731 -> 0.3056. Both parts of the old
+        # number were wrong. It was fitted on 16 messages from one contract and
+        # reported against those same 16 (0.875, a fitting score); and it was
+        # fitted against each requirement embedded on its own, which is not the
+        # path production takes. Held-out it measured 36% accuracy at 20%
+        # recall, so the guard was blocking most legitimate work.
         #
-        # That 0.875 is accuracy on the set the threshold was selected from, so
-        # it is a fitting figure and not a generalisation estimate.
-        self.scope_threshold = float(os.environ.get("SCOPE_SIMILARITY_THRESHOLD", "0.2731"))
+        # The sweep now minimises 3*false_negatives + false_positives rather
+        # than maximising accuracy, which is what the stated policy has always
+        # implied: wrongly allowing an out-of-scope request costs a scope
+        # amendment, while wrongly flagging an in-scope one blocks legitimate
+        # work and holds a payment. Every weight in [1.5, 5.0] picks 0.3056.
+        #
+        # On three contracts the sweep never saw: accuracy 0.792, precision
+        # 0.733, recall 0.917, F1 0.815. That is a generalisation estimate, but
+        # against an in-repo authored corpus rather than production traffic —
+        # optimistic, and not the dual-annotated T2 set (configs/c1_rules.json).
+        self.scope_threshold = float(os.environ.get("SCOPE_SIMILARITY_THRESHOLD", "0.3056"))
         # C1 drift detector. These match configs/c1_rules.json, which was frozen
         # before any statistic was computed; changing either after the fact is a
         # post-hoc adjustment and has to be reported as one.

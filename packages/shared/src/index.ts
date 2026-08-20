@@ -61,6 +61,23 @@ export const InitializeContractSchema = z.object({
 });
 export type InitializeContract = z.infer<typeof InitializeContractSchema>;
 
+/**
+ * Body of PATCH /api/contracts/:contractId/github-repo.
+ *
+ * The value is matched verbatim against a push webhook's
+ * `repository.full_name`, so it must be exactly "owner/repo" — a pasted clone
+ * URL stored here would simply never match any delivery, and the failure would
+ * surface much later as "no contract is linked to this repository" on a push
+ * the client believed was wired up. Rejecting it at the boundary makes the
+ * mistake visible where it is made.
+ */
+export const LinkGithubRepoSchema = z.object({
+  githubRepoFullName: z
+    .string()
+    .regex(/^[\w.-]+\/[\w.-]+$/, 'must be exactly "owner/repo", not a URL'),
+});
+export type LinkGithubRepo = z.infer<typeof LinkGithubRepoSchema>;
+
 export const ContractSchema = z.object({
   contractId: z.string(),
   clientId: z.string(),

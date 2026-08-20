@@ -459,14 +459,14 @@ export async function runBenchmark(opts) {
   if (a.f1 === 100 && a.scoredContracts > 0) {
     console.log(
       '\nNOTE: a perfect F1 on this fixture is suspicious rather than good. The scope threshold\n' +
-        'was calibrated at 14/16 on its own selection set with two false positives, so 100% here\n' +
+        'measures 79% accuracy on a held-out split of its calibration corpus, so 100% here\n' +
         'suggests the prompts are too easy to separate, not that the classifier is flawless.',
     );
   } else if (a.recall !== null && a.recall < 60) {
     console.log(
       `\nNOTE: recall is ${a.recall}% — ${a.falseNegatives} in-scope requests were blocked. The\n` +
-        'threshold (SCOPE_SIMILARITY_THRESHOLD, default 0.2731) was selected on a different,\n' +
-        'hand-labelled contract, and this measures how far that choice generalises. It is a\n' +
+        'threshold (SCOPE_SIMILARITY_THRESHOLD, default 0.3056) was selected on a different\n' +
+        'set of contracts, and this measures how far that choice generalises. It is a\n' +
         'property of the calibration, not a transient fault: precision is ' +
         `${a.precision}%, so the guard is not\nmisfiring at random, it is simply too strict for this contract text.`,
     );

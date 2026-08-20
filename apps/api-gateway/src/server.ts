@@ -41,9 +41,10 @@ import {
   type PaymentPort,
 } from '@assurecode/razorpay-adapter';
 import { createKycAdapter, type KycPort } from '@assurecode/kyc-adapter';
-import { createEventBus, OutboxRelay, eventBusOptionsFromConfig, type EventBus } from '@assurecode/event-bus';
+import { createEventBus, OutboxRelay, eventBusOptionsFromConfig, provisionTopics, type EventBus } from '@assurecode/event-bus';
 import {
   InitializeContractSchema,
+  LinkGithubRepoSchema,
   ContractLockedSchema,
   TestsGeneratedSchema,
   EVENT_TOPICS,
@@ -138,6 +139,16 @@ async function pingRedis(): Promise<'ok' | 'error' | 'not_configured'> {
 // the factory only ever resolves to RedisStreamsBus/InMemoryBus — Kafka was
 // unreachable from here regardless of what any env var said.
 const eventBus: EventBus = createEventBus(eventBusOptionsFromConfig(config));
+
+// Kafka only: create every topic (and its .dlq partner) up front. The gateway
+// is the system's first publisher, and under Kafka a publish to a topic nobody
+// created yet either fails or silently makes a 1-partition topic that caps the
+// consumer group at one worker. Awaited nowhere — a broker that is slow to
+// answer must not hold up the listener — but started before the outbox relay,
+// which is what begins publishing.
+void provisionTopics(eventBus, Object.values(EVENT_TOPICS)).catch((err) => {
+  logger.error({ err }, 'event topic provisioning failed; publishes may hit missing topics');
+});
 
 // Outbox Relay background daemon for zero-loss transactional outbox pumping
 const outboxRelay = new OutboxRelay({ databaseUrl, eventBus });
@@ -714,6 +725,62 @@ server.post<{
       statusCode: 200,
       contractId,
       body: { contractId, freelancerId, status: 'ASSIGNED' },
+    };
+  });
+});
+
+/**
+ * Link a contract to the GitHub repository the freelancer pushes to.
+ *
+ * This is what makes a real push auditable. apps/webhook-ingest receives a
+ * delivery carrying `repository.full_name` and nothing that identifies a
+ * contract — GitHub has no idea this platform exists — so without a stored
+ * mapping it cannot name the contract the push belongs to, and the audit it
+ * would produce has no valid `contract_id` to be filed under.
+ *
+ * Separate from /assign rather than a field on it, because the two facts change
+ * independently: a repository can be re-pointed mid-contract (wrong repo linked,
+ * work moved) without re-assigning the freelancer, and a freelancer can be
+ * assigned before the repository exists.
+ */
+server.patch<{
+  Params: { contractId: string };
+  Body: { githubRepoFullName: string };
+}>('/api/contracts/:contractId/github-repo', clientOnly, async (request, reply) => {
+  return withIdempotency(dbPool, request, reply, async () => {
+    const { contractId } = request.params;
+    // Throws ZodError on a URL or a bare repo name, which the global error
+    // handler renders as a 400 naming the field.
+    const { githubRepoFullName } = LinkGithubRepoSchema.parse(request.body);
+
+    const result = await dbPool.query(
+      `UPDATE contracts SET github_repo_full_name = $1 WHERE contract_id = $2
+       RETURNING contract_id`,
+      [githubRepoFullName, contractId],
+    );
+
+    // An UPDATE that matches nothing is not an error to Postgres, so without
+    // this a typo'd contract id reports success and the failure only surfaces
+    // on a push weeks later, as a repository that appears linked but is not.
+    if (result.rowCount === 0) {
+      return {
+        statusCode: 404,
+        contractId,
+        body: { error: 'Not Found', message: `No contract ${contractId}` } as any,
+      };
+    }
+
+    logger.info({ contractId, githubRepoFullName }, 'GitHub repository linked to contract');
+
+    await ledgerClient.append(contractId, 'CONTRACT_REPO_LINKED', {
+      contractId,
+      githubRepoFullName,
+    });
+
+    return {
+      statusCode: 200,
+      contractId,
+      body: { contractId, githubRepoFullName },
     };
   });
 });

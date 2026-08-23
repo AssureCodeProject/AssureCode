@@ -83,9 +83,14 @@ spec:
               port: 8001
             failureThreshold: 30
             periodSeconds: 10
+          # /readyz, not /healthz. Readiness and liveness pointed at the same
+          # dependency-free endpoint, so a replica whose database was
+          # unreachable still passed readiness and kept receiving traffic it
+          # could only fail. Liveness stays on /healthz deliberately: a
+          # database outage must not make the orchestrator restart every pod.
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: 8001
             periodSeconds: 10
           livenessProbe:

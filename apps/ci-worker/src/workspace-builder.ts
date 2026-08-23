@@ -295,7 +295,14 @@ export async function buildWorkspace(options: WorkspaceBuildOptions): Promise<Wo
     return {
       dir,
       entrypoint: 'harness.cjs',
-      entryArgs: [path.join('tests', 'generated.test.js')],
+      // path.posix, not path.join. This argument is consumed *inside* the
+      // sandbox container, which is Linux regardless of the host: on Windows
+      // path.join produces "tests\\generated.test.js", the harness cannot find
+      // that file, and the run reports 0 of 0 tests. 0/0 is deliberately read
+      // as indeterminate rather than as a failure, so the whole pipeline stayed
+      // green while never executing a single test — on Windows only, which is
+      // why CI never saw it.
+      entryArgs: [path.posix.join('tests', 'generated.test.js')],
       bundleSource,
       cleanup,
     };

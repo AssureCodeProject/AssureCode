@@ -183,6 +183,40 @@ Fixed — `infra/seed/neo4j/` was previously matched by the bare `neo4j/` patter
 in `.gitignore`, so the seed was never committed. If you are on an older clone,
 pull and confirm the file exists.
 
+### Auditing real GitHub pushes
+
+The GitHub path is gated **twice**, and turning on only one of the two leaves
+the same symptom. Both are required:
+
+**1. Link the repository to a contract.** `webhook-ingest` resolves an inbound
+push to a contract by `contracts.github_repo_full_name`; with no link it answers
+404 and the event never reaches the bus. Set it on the contract initialization
+form ("GitHub repository", `owner/repo` — not a URL), or directly:
+
+```bash
+curl -X PATCH http://localhost:4000/api/contracts/AC-123/github-repo   -H "x-service-token: $SERVICE_TOKEN" -H 'content-type: application/json'   -d '{"githubRepoFullName":"acme/widgets"}'
+```
+
+**2. Turn on source fetching.** A GitHub push webhook carries commit metadata
+but no file contents, so `ci-worker` has to fetch the source from the API,
+pinned to the reported SHA. That is off by default because it means outbound
+requests to github.com on a schedule an attacker partly controls:
+
+```bash
+ENABLE_GITHUB_SOURCE_FETCH=true
+GITHUB_TOKEN=ghp_...        # required for private repos; public repos are
+                            # limited to 60 requests/hour/IP shared across
+                            # every replica, which one audit can exhaust
+```
+
+With either missing, `ci-worker` refuses the run rather than auditing substitute
+code, and the thrown error names **which** of the two is absent. Until you want
+the real path, use **Simulate Push** on the verification tab — it injects a demo
+snippet and exercises the rest of the pipeline identically.
+
+Also set the webhook secret (`GITHUB_WEBHOOK_SECRET`) to the value configured on
+the webhook in GitHub, or every delivery fails HMAC verification at ingest.
+
 ### Switching the matchmaking graph to Neo4j
 
 Postgres is the default. Neo4j needs **two** seeds, in order:

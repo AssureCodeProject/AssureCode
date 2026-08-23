@@ -262,6 +262,26 @@ spec:
               - key: app
                 operator: In
                 values: ["postgres", "redis", "kafka"]
+    # The gateway's /api/contracts/{id}/score route. On AUDIT_COMPLETED this
+    # worker asks the gateway to score the contract, which is what publishes
+    # XAI_SCORED and satisfies the trust-score half of the settlement gate.
+    # Calling the gateway rather than ai-service directly keeps the /score
+    # route's contract resolution and telemetry shaping in one place — see the
+    # comment beside GATEWAY_URL in infra/docker-compose.yml.
+    #
+    # Without this rule the call is dropped and the pipeline stalls in a way
+    # that is invisible locally: compose has no network policies, so every test
+    # passes and the cluster silently logs a timeout on every audit.
+    #
+    # Scoped to the gateway pod on port 4000, not widened to general egress —
+    # this is the process that releases money.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: api-gateway
+      ports:
+        - protocol: TCP
+          port: 4000
     # Razorpay's API — this worker captures the held payment on release.
     - to:
         - ipBlock:

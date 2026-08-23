@@ -73,10 +73,31 @@ describe("{contract_id}", () => {{
 }});
 '''
 
+    #: What the OWASP Layer 2 scan asks for: a JSON array of findings.
+    #:
+    #: Empty, and that is the honest answer. This fake has no detection logic,
+    #: so the only report it can truthfully return is "I found nothing" — which
+    #: still exercises the parse-and-merge path in routes/security_scan.py and
+    #: still lets `layersRun` include "llm".
+    _FIXTURE_SECURITY_REPORT = "[]"
+
     def generate(self, prompt: str, max_tokens: int = 2048) -> str:
         import os
         if os.getenv("LLM_UNAVAILABLE") == "true" or "trigger-503" in prompt or "simulate_503" in prompt:
             raise LlmUnavailableError("LLM provider overloaded or unavailable", retry_after=5)
+
+        # The security scan and the test generator share one `generate` method,
+        # so the fake has to tell them apart from the prompt.
+        #
+        # It did not, and returned a Jest fixture for both. The scanner then
+        # failed to parse a test file as a findings array and answered 502, so
+        # ci-worker recorded `securityScanComplete: false`, the oracle read that
+        # as `securityPassed: false`, and **no contract could settle in any
+        # configuration without a live Cloudflare key** — including every
+        # offline demo and the whole integration suite. The failure surfaced
+        # three services away from its cause.
+        if self._looks_like_a_security_scan(prompt):
+            return self._FIXTURE_SECURITY_REPORT
 
         # Extract contract_id from the prompt if present, otherwise use placeholder.
         contract_id = "UNKNOWN"
@@ -87,6 +108,19 @@ describe("{contract_id}", () => {{
                         contract_id = token.strip().rstrip(".,;")
                         break
         return self._FIXTURE_TEST.format(contract_id=contract_id)
+
+    @staticmethod
+    def _looks_like_a_security_scan(prompt: str) -> bool:
+        """Distinguish the OWASP Layer 2 prompt from the test-generation one.
+
+        Matched on two phrases from PROMPT_TEMPLATE in routes/security_scan.py
+        that are load-bearing there — the reviewer role and the JSON-array
+        instruction — rather than on one incidental word. Both must appear, so
+        a contract whose requirements happen to mention "security" does not
+        get an empty findings array instead of its tests.
+        """
+        lowered = prompt.lower()
+        return "application security reviewer" in lowered and "json array" in lowered
 
 
 class CloudflareWorkersAiClient:

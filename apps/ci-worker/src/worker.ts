@@ -71,11 +71,24 @@ export async function processCodePush(
   // code still produced complexity and security numbers — for a snippet the
   // freelancer never wrote.
   if (!sampleCode || sampleCode.trim() === '') {
+    // Name which of the two preconditions is missing. The GitHub path is gated
+    // twice — ENABLE_GITHUB_SOURCE_FETCH must be on, *and* the contract must
+    // have a linked repository for webhook-ingest to have resolved it at all —
+    // and a single message covering both left an operator turning the flag on
+    // and still seeing the same failure, with nothing to say why.
+    const cause = options?.pushRef
+      ? options.sourceFetcher
+        ? 'the source fetch produced nothing for the pushed commit'
+        : 'ENABLE_GITHUB_SOURCE_FETCH is not "true", so ci-worker did not fetch the pushed source'
+      : 'the event carried no inline code and no push reference (nothing identifies a commit to fetch)';
+
     throw new Error(
-      `No code supplied for contract ${contractId}, and no source could be fetched. ` +
+      `No code supplied for contract ${contractId}, and no source could be fetched: ${cause}. ` +
         'Refusing to emit audit telemetry for code that was never submitted. ' +
-        '(A GitHub push carries no file contents; set ENABLE_GITHUB_SOURCE_FETCH=true ' +
-        'to have ci-worker fetch the commit.)',
+        'A GitHub push carries no file contents, so the real path needs both ' +
+        'ENABLE_GITHUB_SOURCE_FETCH=true and a repository linked to the contract ' +
+        '(PATCH /api/contracts/:id/github-repo, or the "GitHub repository" field on ' +
+        'the contract initialization form).',
     );
   }
 
@@ -308,3 +321,7 @@ if (process.env.NODE_ENV !== 'test') {
     process.exit(1);
   });
 }
+
+// Exported so the golden-path suite can start the real subscriptions in-process
+// rather than reimplementing them. Mirrors settlement-worker's `start`.
+export { main as start, eventBus };

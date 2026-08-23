@@ -15,12 +15,19 @@ export function KycVerificationModal({ isOpen, onClose, currentUser, onKycComple
     setIsSubmitting(true);
 
     try {
+      // currentUser.userId, with no fallback. The previous default was the
+      // literal 'client-acme', a seeded demo account: for any real signed-in
+      // user that either verified somebody else or, once the ownership guard
+      // landed, failed with a 403 that named an account they had never heard
+      // of. An absent user is a bug in the caller, not something to paper over.
+      const userId = currentUser?.userId;
+      if (!userId) {
+        throw new Error('No signed-in user to verify. Sign in and try again.');
+      }
+
       const { ok, status, payload } = await apiRequest('/api/kyc/verify', {
         method: 'POST',
-        body: {
-          userId: currentUser?.id || 'client-acme',
-          idType,
-        },
+        body: { userId, idType },
       });
 
       if (!ok) {

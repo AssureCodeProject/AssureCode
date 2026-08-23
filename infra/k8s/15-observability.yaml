@@ -83,6 +83,10 @@ data:
     global:
       scrape_interval: 15s
       evaluation_interval: 15s
+    # Mirrors infra/observability/prometheus.yml. No Alertmanager is deployed,
+    # so these evaluate into Prometheus's own Alerts tab rather than paging.
+    rule_files:
+      - /etc/prometheus/rules/alert-rules.yml
     scrape_configs:
       - job_name: prometheus
         static_configs:
@@ -356,6 +360,11 @@ spec:
             - name: config
               mountPath: /etc/prometheus
               readOnly: true
+            # Separate mount: /etc/prometheus is a ConfigMap mount, so writing
+            # a second key into it is not possible without replacing the first.
+            - name: rules
+              mountPath: /etc/prometheus/rules
+              readOnly: true
             - name: data
               mountPath: /prometheus
           securityContext:
@@ -388,6 +397,9 @@ spec:
         - name: config
           configMap:
             name: prometheus-config
+        - name: rules
+          configMap:
+            name: prometheus-rules
         - name: data
           persistentVolumeClaim:
             claimName: prometheus-data
@@ -456,6 +468,16 @@ spec:
             - name: datasources
               mountPath: /etc/grafana/provisioning/datasources
               readOnly: true
+            # Two mounts at deliberately different paths: the provider file
+            # lives in provisioning/dashboards and points Grafana at
+            # /etc/assurecode/dashboards for the JSON. Mounting both at the same
+            # path would have them shadow each other.
+            - name: dashboard-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+              readOnly: true
+            - name: dashboards
+              mountPath: /etc/assurecode/dashboards
+              readOnly: true
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -483,3 +505,414 @@ spec:
         - name: datasources
           configMap:
             name: grafana-datasources
+        - name: dashboard-provider
+          configMap:
+            name: grafana-dashboard-provider
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
+---
+# Alerting rules, kept in step with infra/observability/alert-rules.yml so the
+# compose stack and the cluster evaluate the same conditions.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-rules
+  namespace: assurecode
+data:
+  alert-rules.yml: |
+    # Prometheus alerting rules.
+    #
+    # Every rule here fires on a metric that already exists and is already scraped —
+    # none of them needed new instrumentation. That is the reason they are the first
+    # rules in the repository: before this there was no `rule_files:` stanza at all,
+    # so a poison message could sit in a DLQ indefinitely with a counter faithfully
+    # recording it and nobody looking.
+    #
+    # There is no Alertmanager deployed yet, so these evaluate and show up in
+    # Prometheus's own Alerts tab rather than paging anyone. That is still strictly
+    # better than a metric nobody queries: the state is named, has a threshold
+    # somebody chose, and carries the reason in the annotation.
+    #
+    # Deliberately few. A starting set that is all true positives is worth more than
+    # a comprehensive set that trains people to ignore the tab.
+
+    groups:
+      - name: assurecode-delivery
+        interval: 30s
+        rules:
+          # A message reaches the DLQ only after the bus has already retried it, so
+          # any value above zero means a payload was dropped from the pipeline —
+          # an audit that never scored, or a settlement request that never ran.
+          # `> 0` rather than a rate: one lost settlement is worth knowing about.
+          - alert: DeadLetterQueueNotEmpty
+            expr: increase(assurecode_dlq_messages_total[15m]) > 0
+            for: 0m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Messages are being dead-lettered on {{ $labels.stream }}"
+              description: >-
+                {{ $value | printf "%.0f" }} message(s) moved to {{ $labels.stream }}.dlq in the
+                last 15 minutes. The bus retried each one and gave up. Nothing drains
+                the DLQ automatically, so these events are lost until someone replays
+                them. Check the consumer's logs for the handler that threw.
+
+          # Consumer lag is the difference between when an event was published and
+          # when a handler picked it up. Sustained lag means a worker is falling
+          # behind or has stopped consuming without crashing — the failure mode a
+          # liveness probe cannot see.
+          - alert: EventConsumerLagHigh
+            expr: histogram_quantile(0.95, sum by (le, topic) (rate(assurecode_event_lag_seconds_bucket[5m]))) > 60
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "p95 consumer lag on {{ $labels.topic }} is above 60s"
+              description: >-
+                Events on {{ $labels.topic }} are taking over a minute to be consumed at
+                p95, sustained for 10 minutes. A worker is behind or wedged. Note that
+                settlement-worker holds the AUDIT_COMPLETED handler open while it
+                triggers scoring, so a degraded gateway shows up here first.
+
+      - name: assurecode-availability
+        interval: 30s
+        rules:
+          # The cheapest alert in the file and the one most likely to fire first.
+          # A service that stops being scraped is invisible to every other rule
+          # here, so this has to exist or the rest silently stop meaning anything.
+          - alert: ServiceDown
+            expr: up == 0
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: "{{ $labels.job }} has not been scrapeable for 2 minutes"
+              description: >-
+                Prometheus cannot reach {{ $labels.instance }}. Every other alert that
+                depends on this target is now blind, not quiet.
+
+          # ci-worker and settlement-worker expose no /metrics at all, so they are
+          # absent from `up` entirely and this rule cannot cover them. Recorded here
+          # rather than left as a surprise: see ARCHITECTURE.md, and the compose
+          # healthchecks are currently the only signal those two produce.
+
+      - name: assurecode-dependencies
+        interval: 30s
+        rules:
+          # Cloudflare is the only LLM provider. When it is unreachable, the OWASP
+          # Layer 2 scan cannot run, and ci-worker correctly refuses to call a
+          # half-completed scan a pass — which means securityPassed stays false and
+          # nothing can settle. That chain is not obvious from the symptom, so the
+          # annotation states it.
+          - alert: LlmProviderFailing
+            expr: >-
+              sum(rate(assurecode_llm_calls_total{outcome!="ok"}[10m]))
+              / clamp_min(sum(rate(assurecode_llm_calls_total[10m])), 0.001) > 0.5
+            for: 10m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Over half of LLM calls are failing"
+              description: >-
+                The LLM provider is failing more than 50% of calls over 10 minutes.
+                Consequence: the OWASP Layer 2 scan cannot complete, ci-worker reports
+                securityScanComplete=false, and the oracle's securityPassed signal is
+                permanently false — so no contract can settle until this recovers.
+
+          # The scope guard has measured 100% precision and 60% recall: it does not
+          # let out-of-scope work through, it blocks legitimate requests. A sudden
+          # jump in block rate is therefore much more likely to be a broken
+          # embedding path or a bad threshold than a wave of scope violations.
+          - alert: ScopeGuardBlockingMostRequests
+            expr: >-
+              sum(rate(assurecode_scope_decisions_total{allowed="false"}[15m]))
+              / clamp_min(sum(rate(assurecode_scope_decisions_total[15m])), 0.001) > 0.8
+            for: 15m
+            labels:
+              severity: warning
+            annotations:
+              summary: "scope-guard is blocking over 80% of requests"
+              description: >-
+                Sustained block rate above 80%. Given the guard's measured behaviour
+                (100% precision, 60% recall — it over-blocks rather than under-blocks),
+                suspect the retrieval path or the similarity threshold before
+                suspecting the requests.
+---
+# Tells Grafana where to find dashboard JSON. Mirrors
+# infra/observability/grafana-dashboards.yml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: assurecode
+data:
+  dashboards.yml: |
+    # Grafana dashboard provisioning.
+    #
+    # Grafana previously mounted only a datasource provider, so it booted connected
+    # to Prometheus and Jaeger with nothing to show. The metrics had existed and
+    # been scraped the whole time; there was simply no dashboard to read them —
+    # which is why "observability" looked done from the compose file and was not.
+    apiVersion: 1
+
+    providers:
+      - name: assurecode
+        orgId: 1
+        folder: AssureCode
+        type: file
+        disableDeletion: false
+        # Picks up edits to the JSON without a restart, so a panel can be iterated
+        # on against a running stack.
+        updateIntervalSeconds: 30
+        allowUiUpdates: true
+        options:
+          # Deliberately NOT /etc/grafana/provisioning/dashboards — that directory
+          # holds this provider file, and mounting the JSON there too would have
+          # the two mounts shadow each other.
+          path: /etc/assurecode/dashboards
+          foldersFromFilesStructure: false
+---
+# The dashboard itself. Grafana previously had a datasource provider and no
+# dashboards at all, so it came up connected to Prometheus with nothing to show.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: assurecode
+data:
+  pipeline.json: |
+    {
+      "uid": "assurecode-pipeline",
+      "title": "AssureCode — Pipeline",
+      "description": "The contract lifecycle as the running system reports it: events moving, the LLM the security scan depends on, the scope guard's block rate, and the sandbox that executes submitted code. Every panel reads a metric that was already being scraped before this dashboard existed.",
+      "tags": ["assurecode"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "30s",
+      "time": { "from": "now-6h", "to": "now" },
+      "templating": {
+        "list": [
+          {
+            "name": "DS",
+            "type": "datasource",
+            "query": "prometheus",
+            "current": { "text": "Prometheus", "value": "Prometheus" },
+            "hide": 0
+          }
+        ]
+      },
+      "panels": [
+        {
+          "type": "row",
+          "title": "Delivery",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+          "collapsed": false
+        },
+        {
+          "type": "stat",
+          "title": "Services up",
+          "description": "ci-worker and settlement-worker expose no /metrics and are absent from this count entirely — they are not down, they are unmeasured.",
+          "datasource": { "type": "prometheus", "uid": "${DS}" },
+          "gridPos": { "h": 5, "w": 4, "x": 0, "y": 1 },
+          "targets": [{ "expr": "sum(up)", "refId": "A", "legendFormat": "up" }],
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "auto"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "orange", "value": 3 },
+                  { "color": "green", "value": 4 }
+                ]
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Dead-lettered (1h)",
+          "description": "Anything above zero is a payload the bus retried and gave up on. Nothing drains the DLQ automatically, so these are lost until replayed by hand.",
+          "datasource": { "type": "prometheus", "uid": "${DS}" },
+          "gridPos": { "h": 5, "w": 5, "x": 4, "y": 1 },
+          "targets": [
+            { "expr": "sum(increase(assurecode_dlq_messages_total[1h])) or vector(0)", "refId": "A", "legendFormat": "messages" }
+          ],
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "colorMode": "background",
+            "graphMode": "area",
+            "textMode": "auto"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "decimals": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red", "value": 1 }
+                ]
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Ledger appends / sec",
+          "description": "Every state change a contract goes through is an append. A flat line during activity means the ledger write path is stuck.",
+          "datasource": { "type": "prometheus", "uid": "${DS}" },
+          "gridPos": { "h": 5, "w": 7, "x": 9, "y": 1 },
+          "targets": [
+            { "expr": "sum by (action_type) (rate(assurecode_ledger_appends_total[5m]))", "refId": "A", "legendFormat": "{{action_type}}" }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "ops", "custom": { "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" } },
+            "overrides": []
+          },
+          "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+        },
+        {
+          "type": "timeseries",
+          "title": "Event consumer lag (p95)",
+          "description": "Time between publish and handler pickup. settlement-worker holds the AUDIT_COMPLETED handler open while it triggers scoring, so a degraded gateway shows up here before anywhere else.",
+          "datasource": { "type": "prometheus", "uid": "${DS}" },
+          "gridPos": { "h": 5, "w": 8, "x": 16, "y": 1 },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum by (le, topic) (rate(assurecode_event_lag_seconds_bucket[5m])))",
+              "refId": "A",
+              "legendFormat": "{{topic}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": { "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 30 },
+                  { "color": "red", "value": 60 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+        },
+
+        {
+          "type": "row",
+          "title": "Verification",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 },
+          "collapsed": false
+        },
+        {
+          "type": "timeseries",
+          "title": "Sandbox duration (p50 / p95)",
+          "description": "Wall-clock time executing submitted code. The runner label distinguishes the Docker sandbox from the weaker Node permission fallback.",
+          "datasource": { "type": "prometheus", "uid": "${DS}" },
+          "gridPos": { "h": 7, "w": 8, "x": 0, "y": 7 },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum by (le, runner) (rate(assurecode_ci_sandbox_duration_seconds_bucket[10m])))",
+              "refId": "A",
+              "legendFormat": "p50 {{runner}}"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum by (le, runner) (rate(assurecode_ci_sandbox_duration_seconds_bucket[10m])))",
+              "refId": "B",
+              "legendFormat": "p95 {{runner}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "s", "custom": { "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" } },
+            "overrides": []
+          },
+          "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+        },
+        {
+          "type": "timeseries",
+          "title": "LLM call outcomes",
+          "description": "Cloudflare is the only provider. When these go non-ok the OWASP Layer 2 scan cannot complete, ci-worker reports securityScanComplete=false, and no contract can settle — the symptom appears three services away from the cause.",
+          "datasource": { "type": "prometheus", "uid": "${DS}" },
+          "gridPos": { "h": 7, "w": 8, "x": 8, "y": 7 },
+          "targets": [
+            { "expr": "sum by (outcome) (rate(assurecode_llm_calls_total[5m]))", "refId": "A", "legendFormat": "{{outcome}}" }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "ops", "custom": { "lineWidth": 2, "fillOpacity": 20, "stacking": { "mode": "normal" }, "showPoints": "never" } },
+            "overrides": [
+              { "matcher": { "id": "byName", "options": "ok" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] },
+              { "matcher": { "id": "byName", "options": "unavailable" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }
+            ]
+          },
+          "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+        },
+        {
+          "type": "timeseries",
+          "title": "Scope decisions",
+          "description": "The guard measures 100% precision and 60% recall — it over-blocks rather than under-blocks. A spike in blocked is more likely a broken retrieval path than a wave of violations.",
+          "datasource": { "type": "prometheus", "uid": "${DS}" },
+          "gridPos": { "h": 7, "w": 8, "x": 16, "y": 7 },
+          "targets": [
+            { "expr": "sum by (allowed) (rate(assurecode_scope_decisions_total[15m]))", "refId": "A", "legendFormat": "allowed={{allowed}}" }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "ops", "custom": { "lineWidth": 2, "fillOpacity": 20, "stacking": { "mode": "normal" }, "showPoints": "never" } },
+            "overrides": []
+          },
+          "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+        },
+
+        {
+          "type": "row",
+          "title": "Settlement",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+          "collapsed": false
+        },
+        {
+          "type": "timeseries",
+          "title": "Settlement operations",
+          "description": "By status. Capture moves money from the client to the platform; there is no payout leg, so a completed settlement here does not mean the freelancer has been paid.",
+          "datasource": { "type": "prometheus", "uid": "${DS}" },
+          "gridPos": { "h": 7, "w": 12, "x": 0, "y": 15 },
+          "targets": [
+            { "expr": "sum by (status) (increase(assurecode_settlement_operations_total[1h]))", "refId": "A", "legendFormat": "{{status}}" }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 20, "showPoints": "never" } },
+            "overrides": []
+          },
+          "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+        },
+        {
+          "type": "timeseries",
+          "title": "Escrow captured (INR)",
+          "description": "assurecode_settlement_amount_cents_total holds minor units (paise) despite the name, so this divides by 100.",
+          "datasource": { "type": "prometheus", "uid": "${DS}" },
+          "gridPos": { "h": 7, "w": 12, "x": 12, "y": 15 },
+          "targets": [
+            { "expr": "sum(increase(assurecode_settlement_amount_cents_total[1h])) / 100", "refId": "A", "legendFormat": "INR/hour" }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "currencyINR", "custom": { "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" } },
+            "overrides": []
+          },
+          "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+        }
+      ]
+    }

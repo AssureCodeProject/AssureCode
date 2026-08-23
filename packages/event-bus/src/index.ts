@@ -717,7 +717,19 @@ export async function provisionTopics(bus: EventBus, topics: readonly string[]):
 }
 
 export function createEventBus(redisUrlOrOptions?: string | EventBusOptions): EventBus {
-  if (process.env.NODE_ENV === 'test') {
+  // NODE_ENV=test means an in-memory bus, so unit suites need no broker.
+  //
+  // EVENT_BUS_FORCE_REAL is the one exception, and it exists for exactly one
+  // caller: the golden-path suite, which imports the gateway *and* both workers
+  // into a single process and needs them on the same bus. Without it each
+  // createEventBus() call hands back a *fresh* InMemoryBus, so the gateway
+  // would publish into a bus the workers were not listening on and the test
+  // would pass or fail for reasons unrelated to the pipeline.
+  //
+  // Deliberately an opt-in rather than inferring from EVENT_BUS_TYPE: every
+  // existing suite sets that variable through scripts/e2e.mjs and must keep
+  // getting the in-memory bus.
+  if (process.env.NODE_ENV === 'test' && process.env.EVENT_BUS_FORCE_REAL !== 'true') {
     return new InMemoryBus();
   }
   if (typeof redisUrlOrOptions === 'string') {

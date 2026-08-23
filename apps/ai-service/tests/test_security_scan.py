@@ -14,12 +14,12 @@ Two properties matter more than raw detection here:
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
+from support import service_client
 
 from app.main import app
 from app.services import owasp_static
 
-client = TestClient(app)
+client = service_client(app)
 
 
 # ── Layer 1: static detection ──────────────────────────────────────

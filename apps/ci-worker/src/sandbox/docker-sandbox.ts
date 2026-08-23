@@ -170,9 +170,53 @@ export class DockerSandbox implements SandboxRunner {
         '--cpus=1',
         '--read-only',
         '--tmpfs',
-        '/tmp:rw,size=64m',
+        // exec is required: `npm ci` installs binaries under /tmp/app and the
+        // test harness runs them. Docker's tmpfs default is noexec, so this is
+        // stated explicitly rather than inherited.
+        '/tmp:rw,exec,size=64m',
         '-v',
         `${codeDir}:/workspace:ro`,
+
+        // ── Containment beyond the resource limits above ──────────────────
+        //
+        // memory and cpus bound how much a submission can consume; these bound
+        // what it can *do*. Untrusted code from a stranger's repository runs
+        // here, so the container gets no capabilities, no route to acquiring
+        // any, no ability to fork the host into the ground, and no root.
+
+        // A memory cap does not stop a fork bomb: each child is cheap, and the
+        // pressure lands on the host's process table rather than on this
+        // container's cgroup. 256 is far above anything `npm test` needs.
+        '--pids-limit=256',
+
+        // node:20-alpine ships uid/gid 1000 as `node`. Without this the
+        // submission runs as root inside the container — and root inside a
+        // container is one namespace escape away from root outside it.
+        '--user=1000:1000',
+
+        // Nothing here needs CAP_CHOWN, CAP_NET_RAW or the rest. Dropping all
+        // of them is cheaper to reason about than auditing which are harmless.
+        '--cap-drop=ALL',
+
+        // Makes setuid binaries unable to gain privileges, which closes the
+        // path back to root that --user alone leaves open.
+        '--security-opt=no-new-privileges',
+
+        // File-descriptor and process ceilings, so exhaustion inside the
+        // sandbox stays inside it.
+        '--ulimit',
+        'nofile=1024:1024',
+        '--ulimit',
+        'nproc=256:256',
+
+        // uid 1000's home is /home/node, which --read-only makes unwritable.
+        // npm would fall back to writing a cache there and fail the install.
+        // Both point at the tmpfs, which is the only writable path in the
+        // container and is discarded when it exits.
+        '--env',
+        'HOME=/tmp',
+        '--env',
+        'npm_config_cache=/tmp/.npm',
       ];
 
       if (options.hiddenTestsPath) {

@@ -78,7 +78,7 @@ Defenses were found in place for all 5 vectors (details below). This is evidence
 ### 🛡️ Vector 3: Merkle Ledger Tampering Audit
 
 - **Audit Findings**:
-  - Every contract state change executes `append_ledger_and_outbox` stored procedure in PostgreSQL under `pg_advisory_xact_lock`.
+  - Every contract state change executes the `append_ledger_and_outbox` stored procedure in PostgreSQL under `pg_advisory_lock(hashtext(contract_id))` — a *session*-level advisory lock taken inside the procedure, which serialises appends per contract. (Earlier revisions named `pg_advisory_xact_lock`; that function is not used anywhere in this repository. Settlement single-fire is enforced separately, by an atomic claim on the `settlements` primary key.)
   - Ledger entries are chained via `hash = SHA256(payload || previous_hash)`.
   - Re-running `verifyChain()` traverses the full history and verifies every hash. Any direct database row modification breaks the cryptographic link and returns `{ valid: false }`, blocking all subsequent contract actions.
 

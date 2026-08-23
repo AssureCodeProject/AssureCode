@@ -343,6 +343,48 @@ export class LedgerClient {
     return { root, leafCount: leaves.length, maxLedgerId };
   }
 
+  /**
+   * Attach an ML-DSA signature to a stored root.
+   *
+   * Guarded on (root_hash, leaf_count) for the same reason
+   * tools/sign_merkle_root.py is: signing is a read of the root, a round trip
+   * to the signer, and then this write. If the tree grew in between, the
+   * signature covers a root that is no longer stored, and writing it would
+   * present a stale signature as the current one — the exact failure the
+   * signature-clearing in computeAndStoreRoot above exists to prevent.
+   *
+   * Returns false rather than throwing when nothing matched. "The tree moved
+   * on" is an expected outcome of a concurrent append, not a fault, and the
+   * caller's answer to it is to recompute and re-sign, not to alarm.
+   */
+  async storeRootSignature(args: {
+    contractId: string;
+    rootHash: string;
+    leafCount: number;
+    signature: Buffer;
+    publicKey: Buffer;
+    algorithm: string;
+  }): Promise<boolean> {
+    const res = await this.pool.query(
+      `UPDATE merkle_roots
+          SET signature = $1,
+              public_key = $2,
+              signature_alg = $3,
+              signed_at = now(),
+              updated_at = now()
+        WHERE contract_id = $4 AND root_hash = $5 AND leaf_count = $6`,
+      [
+        args.signature,
+        args.publicKey,
+        args.algorithm,
+        args.contractId,
+        args.rootHash,
+        args.leafCount,
+      ],
+    );
+    return res.rowCount === 1;
+  }
+
   /** The stored root for a contract, with its signature if one exists. */
   async getRoot(contractId: string): Promise<{
     rootHash: string;

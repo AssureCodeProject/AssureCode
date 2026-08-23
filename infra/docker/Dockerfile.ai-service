@@ -44,5 +44,12 @@ COPY apps/ai-service/ ./
 # Read by app/services/owasp_static.py at import time, via parents[4].
 COPY packages/shared/src/owasp-2025-rules.json /srv/packages/shared/src/
 
+# The ML-DSA-87 signer, imported by app/ports/ledger_signer.py at import time
+# via the same parents[4] walk. Copied rather than vendored so a root signed by
+# this service is byte-identical to one signed by tools/sign_merkle_root.py and
+# verifies under the same command. Without this line the route imports fine in a
+# checkout and ModuleNotFoundErrors in the image.
+COPY packages/ledger-client/src/ml_dsa.py /srv/packages/ledger-client/src/
+
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]

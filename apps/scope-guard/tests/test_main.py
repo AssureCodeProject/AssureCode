@@ -10,7 +10,7 @@ and "this is in scope" are opposite conclusions.
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
+from support import service_client
 
 from app.deps import (
     InMemoryLedgerAnchor,
@@ -58,7 +58,7 @@ def client():
     app.dependency_overrides[get_rag_store] = lambda: store
     app.dependency_overrides[get_ledger_anchor] = lambda: anchor
     try:
-        yield TestClient(app)
+        yield service_client(app)
     finally:
         app.dependency_overrides.clear()
 

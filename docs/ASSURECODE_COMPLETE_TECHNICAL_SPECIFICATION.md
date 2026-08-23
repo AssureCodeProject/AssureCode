@@ -193,9 +193,29 @@ calibration set is configured**, which is the current state (§11).
 
 1. **Oracle evaluation.** `packages/oracle` requires `trustScore >= 85` **and**
    `criticalVulns === 0`.
-2. **Single-fire lock.** `pg_advisory_xact_lock` inside the settlement
-   transaction prevents duplicate release. Oracle state lives in Postgres
-   (`oracle_state`), not an in-process `Map`.
+2. **Single-fire claim.** Duplicate release is prevented by an atomic claim on
+   the `settlements` primary key, not by an advisory lock:
+
+   ```sql
+   INSERT INTO settlements (contract_id, status) VALUES ($1, 'PROCESSING')
+   ON CONFLICT (contract_id) DO UPDATE SET status = 'PROCESSING', updated_at = NOW()
+     WHERE settlements.status = 'FAILED'
+   RETURNING contract_id
+   ```
+
+   A caller that gets `rowCount !== 1` is not the claimant and returns. The
+   `WHERE` clause is what allows a retry after a genuine failure without
+   allowing a second concurrent release.
+
+   *Correction:* earlier revisions of this document described
+   `pg_advisory_xact_lock` here. That function appears in no `.ts` or `.sql`
+   file in the repository. The advisory locks that do exist are **session**
+   level — `pg_advisory_lock(hashtext(p_contract_id))` in the ledger stored
+   procedures (`V002__ledger.sql`, `V009__canonical_hash_and_merkle.sql`) —
+   and they serialise *ledger appends*, not settlement. The claim upsert above
+   is sound; the mechanism previously described was not the one implemented.
+
+   Oracle state lives in Postgres (`oracle_state`), not an in-process `Map`.
 3. **Razorpay capture.** The order is created with `payment_capture: 0`
    (authorize now, capture later); capture *is* the release. Note that capture
    moves funds from the client to the *platform* — there is no transfer onward

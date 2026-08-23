@@ -18,7 +18,7 @@ import fastifyCors from '@fastify/cors';
 import fastifyWebsocket from '@fastify/websocket';
 import fastifyMultipart from '@fastify/multipart';
 import fastifyRateLimit from '@fastify/rate-limit';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import net from 'node:net';
 import pg from 'pg';
 import { ZodError } from 'zod';
@@ -1011,12 +1011,7 @@ server.post<{
     testCount: number;
     generatedAt: string;
   }
-  | {
-    jobId: string;
-    status: string;
-    retryAfter: number;
-    pollUrl: string;
-  };
+  | { error: string; retryAfter: number };
 }>('/api/contracts/:contractId/generate-tests', async (request, reply) => {
   return withIdempotency(dbPool, request, reply, async () => {
     const { contractId } = request.params;
@@ -1042,27 +1037,26 @@ server.post<{
         const retryAfterHeader = aiRes.headers.get('retry-after');
         const retryAfter = retryAfterHeader ? parseInt(retryAfterHeader, 10) || 5 : 5;
 
-        let jobId = randomUUID();
-        try {
-          const jobRes = await dbPool.query(
-            `INSERT INTO jobs (contract_id, job_type, status, retry_after)
-             VALUES ($1, 'GENERATE_TESTS', 'queued', $2)
-             RETURNING job_id`,
-            [contractId, retryAfter],
-          );
-          jobId = jobRes.rows[0].job_id;
-        } catch (err) {
-          logger.error({ contractId, err }, 'Failed to record queued job in database');
-        }
-
+        // 503 and a Retry-After, not 202 and a job id.
+        //
+        // This branch used to insert a row into `jobs` with status 'queued' and
+        // hand back a pollUrl. No worker ever transitioned those rows — there
+        // was no `UPDATE jobs` anywhere in the repo — so the poll endpoint
+        // answered 'queued' forever and the caller waited on work that was
+        // never going to start. Saying "unavailable, try again" is the truth;
+        // saying "queued" was not.
+        logger.warn(
+          { contractId, retryAfter },
+          'ai-service has no LLM available for test generation; asking the caller to retry',
+        );
         return {
-          statusCode: 202,
+          statusCode: 503,
           contractId,
           body: {
-            jobId,
-            status: 'queued',
+            error:
+              'Test generation is temporarily unavailable: the AI service has no LLM ' +
+              'provider configured or reachable. Retry after the interval below.',
             retryAfter,
-            pollUrl: `/api/jobs/${jobId}`,
           },
         };
       }
@@ -1545,7 +1539,35 @@ server.post<{
 }>('/api/contracts/:contractId/settle', settlementGuards, async (request, reply) => {
   return withIdempotency(dbPool, request, reply, async () => {
     const { contractId } = request.params;
-    const { freelancerId, amountCents } = request.body;
+    const { freelancerId, amountCents } = request.body ?? ({} as typeof request.body);
+
+    // Validate before publishing, because the failure lands somewhere far worse
+    // than here.
+    //
+    // This route took both fields on trust. A request with an empty body
+    // published `freelancerId: undefined` onto the bus; the settlement worker
+    // approved the oracle verdict, captured the client's payment, and only then
+    // failed inside commitSettlement — where the RFC 8785 canonicalizer
+    // correctly refuses `undefined` because JSON.stringify would silently drop
+    // it and the hashed payload would not be the payload that was passed.
+    //
+    // The result was money captured, no ledger entry, and a settlement row left
+    // FAILED. A 400 here costs nothing; discovering it after the capture costs
+    // a reconciliation.
+    if (typeof freelancerId !== 'string' || freelancerId.trim() === '') {
+      return {
+        statusCode: 400,
+        contractId,
+        body: { error: 'freelancerId is required and must be a non-empty string' },
+      };
+    }
+    if (!Number.isInteger(amountCents) || (amountCents as number) <= 0) {
+      return {
+        statusCode: 400,
+        contractId,
+        body: { error: 'amountCents is required and must be a positive integer' },
+      };
+    }
 
     // Idempotency check: has it already been settled?
     //
@@ -1795,52 +1817,181 @@ server.get<{
   return reply.status(200).send({ contractId, valid: true });
 });
 
-// ── Job Polling & Ledger Verification Endpoints ─────────────────────────
+// ── Merkle root: read and post-quantum signing ──────────────────────────
+//
+// Until these routes existed, merkle_roots.signature was written only by
+// tools/sign_merkle_root.py, run by hand. No service signed anything, so in
+// normal operation every root the system produced had a NULL signature while
+// the UI footer asserted "NIST ML-DSA POST-QUANTUM SIGNED" for all of them.
+// GET /root is what lets the UI make that claim only when it is true.
 
 server.get<{
-  Params: { jobId: string };
+  Params: { contractId: string };
   Reply:
-  | {
-    jobId: string;
-    contractId: string;
-    status: string;
-    result: Record<string, unknown> | null;
-    error: string | null;
-    retryAfter: number;
-    createdAt: string;
-  }
-  | { error: string };
-}>('/api/jobs/:jobId', async (request, reply) => {
-  const { jobId } = request.params;
-  const pool = (ledgerClient as any).pool;
+    | {
+        contractId: string;
+        rootHash: string;
+        leafCount: number;
+        maxLedgerId: number | null;
+        chainValid: boolean | null;
+        signature: {
+          signed: boolean;
+          algorithm: string | null;
+          signedAt: string | null;
+          publicKeyFingerprint: string | null;
+        };
+      }
+    | { error: string; reason: 'no-root' | 'no-contract' | 'unavailable' };
+}>('/api/contracts/:contractId/root', async (request, reply) => {
+  const { contractId } = request.params;
 
+  let chain: Awaited<ReturnType<typeof ledgerClient.getChain>>;
+  let root: Awaited<ReturnType<typeof ledgerClient.getRoot>>;
   try {
-    const result = await pool.query(
-      'SELECT job_id, contract_id, job_type, status, result, error, retry_after, created_at FROM jobs WHERE job_id = $1',
-      [jobId],
-    );
+    chain = await ledgerClient.getChain(contractId);
+    root = chain.length === 0 ? null : await ledgerClient.getRoot(contractId);
+  } catch (err) {
+    // A failed read means we could not establish whether a root exists. Every
+    // other answer this route can give — 404, or a signature verdict — is a
+    // claim about the ledger, and we have not learned one. Reporting absence
+    // from a failed lookup is the specific mistake this catch exists to
+    // prevent, and it is the one the UI would render as "ROOT UNSIGNED".
+    request.log.error({ err, contractId }, 'Merkle root lookup failed');
+    return reply.status(503).send({ error: 'Ledger lookup unavailable', reason: 'unavailable' });
+  }
 
-    if (result.rows.length === 0) {
-      return reply.status(404).send({ error: 'Job not found' });
+  if (chain.length === 0) {
+    return reply
+      .status(404)
+      .send({ error: `Contract ${contractId} not found`, reason: 'no-contract' });
+  }
+
+  if (!root) {
+    // Distinct from "unsigned": a contract that has never settled has no root
+    // to sign at all, and the UI must be able to tell those apart rather than
+    // rendering both as a missing signature.
+    return reply.status(404).send({
+      error: `No Merkle root sealed for ${contractId} yet. Roots are computed on settlement.`,
+      reason: 'no-root',
+    });
+  }
+
+  const signed = root.signature !== null && root.signature.length > 0;
+
+  return reply.status(200).send({
+    contractId,
+    rootHash: root.rootHash,
+    leafCount: root.leafCount,
+    maxLedgerId: root.maxLedgerId,
+    chainValid: await ledgerClient.verifyChain(contractId),
+    signature: {
+      // Derived from the column, never from the fact that a row exists. It must
+      // not be possible for this to answer true without signature bytes.
+      signed,
+      algorithm: signed ? root.signatureAlg : null,
+      signedAt: signed ? root.signedAt : null,
+      publicKeyFingerprint:
+        signed && root.publicKey
+          ? createHash('sha256').update(root.publicKey).digest('hex').slice(0, 32)
+          : null,
+    },
+  });
+});
+
+server.post<{
+  Params: { contractId: string };
+  Reply:
+    | { contractId: string; signed: true; alreadySigned: boolean; algorithm: string | null; signedAt: string | null }
+    | { error: string };
+}>('/api/contracts/:contractId/root/sign', async (request, reply) => {
+  // Service callers only. A signature is an assertion by the platform about its
+  // own ledger; there is no user whose session should be able to mint one.
+  if (!(request as unknown as { isServiceCaller?: boolean }).isServiceCaller) {
+    return reply.status(403).send({ error: 'Service callers only' });
+  }
+
+  const { contractId } = request.params;
+
+  const root = await ledgerClient.getRoot(contractId);
+  if (!root) {
+    return reply.status(409).send({
+      error:
+        `No Merkle root recorded for ${contractId}. Compute one first. ` +
+        `Refusing to sign a root that does not exist.`,
+    });
+  }
+
+  if (root.signature && root.signature.length > 0) {
+    // computeAndStoreRoot clears the signature whenever the tree changes, so a
+    // signature that is still present necessarily covers the current root.
+    // Re-signing would be deterministic anyway; skipping the round trip keeps
+    // the retry path from paying for a pure-Python ML-DSA signature each time.
+    return reply.status(200).send({
+      contractId,
+      signed: true,
+      alreadySigned: true,
+      algorithm: root.signatureAlg,
+      signedAt: root.signedAt,
+    });
+  }
+
+  let signed: { algorithm: string; signature_b64: string; public_key_b64: string };
+  try {
+    const res = await fetch(`${aiServiceUrl}/ledger/sign-root`, {
+      method: 'POST',
+      headers: serviceCallHeaders(),
+      body: JSON.stringify({
+        contract_id: contractId,
+        root_hash: root.rootHash,
+        leaf_count: root.leafCount,
+      }),
+      // Generous: dilithium-py is pure Python by design (it installs without a
+      // toolchain), and ML-DSA-87 signing there is not fast.
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      // 503 is propagated verbatim. "No signing key configured" is a distinct
+      // operational answer from "the signer failed", and collapsing them is
+      // what lets a permanently unsigned ledger read as a transient blip.
+      return reply
+        .status(res.status === 503 ? 503 : 502)
+        .send({ error: `Root signing unavailable: signer returned ${res.status}. ${detail}` });
     }
 
-    const job = result.rows[0];
-    return reply.status(200).send({
-      jobId: job.job_id,
-      contractId: job.contract_id,
-      status: job.status,
-      result: job.result,
-      error: job.error,
-      retryAfter: job.retry_after,
-      createdAt: job.created_at,
-    });
+    signed = (await res.json()) as typeof signed;
   } catch (err) {
-    // A query failure means we could not determine whether the job exists.
-    // Reporting 404 here would assert a fact we have not established — the
-    // caller would treat "database unreachable" as "job definitively absent".
-    request.log.error({ err, jobId }, 'Job lookup failed');
-    return reply.status(503).send({ error: 'Job lookup unavailable' });
+    request.log.error({ contractId, err }, 'ML-DSA signer unreachable');
+    return reply.status(502).send({ error: 'Root signing unavailable: signer unreachable' });
   }
+
+  const stored = await ledgerClient.storeRootSignature({
+    contractId,
+    rootHash: root.rootHash,
+    leafCount: root.leafCount,
+    signature: Buffer.from(signed.signature_b64, 'base64'),
+    publicKey: Buffer.from(signed.public_key_b64, 'base64'),
+    algorithm: signed.algorithm,
+  });
+
+  if (!stored) {
+    // The tree moved between the read and the write. Same refusal as
+    // tools/sign_merkle_root.py: never write a signature that covers a root the
+    // ledger no longer holds.
+    return reply.status(409).send({
+      error: 'The root changed while it was being signed; nothing was written. Recompute and retry.',
+    });
+  }
+
+  const after = await ledgerClient.getRoot(contractId);
+  return reply.status(200).send({
+    contractId,
+    signed: true,
+    alreadySigned: false,
+    algorithm: signed.algorithm,
+    signedAt: after?.signedAt ?? null,
+  });
 });
 
 // ── Audit / CI Endpoints ────────────────────────────────────────────────

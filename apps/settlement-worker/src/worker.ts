@@ -26,6 +26,12 @@ import { EVENT_TOPICS, EventEnvelope, SettlementRequested } from '@assurecode/sh
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { OracleStore } from '@assurecode/oracle';
+import {
+  triggerScoring,
+  requestRootSignature,
+  logTriggerOutcome,
+  type TriggerDeps,
+} from './gateway-client.js';
 
 const config = loadConfig();
 const logger = createLogger('settlement-worker', config.LOG_LEVEL);
@@ -41,6 +47,12 @@ const payments = createRazorpayAdapter({
 
 const eventBus = createEventBus(eventBusOptionsFromConfig(config));
 const oracle = new OracleStore(dbPool);
+
+const scoreTriggerDeps: TriggerDeps = {
+  gatewayUrl: config.GATEWAY_URL,
+  serviceToken: config.SERVICE_TOKEN,
+  enabled: config.ENABLE_AUTO_SCORING === 'true',
+};
 
 /** Mark the contract's settlement row failed. Callers decide whether to swallow. */
 function markSettlementFailed(contractId: string): Promise<unknown> {
@@ -91,7 +103,23 @@ function subscribeAuditSignals(): void {
       logger.info({ contractId, signals }, 'Oracle recorded AUDIT_COMPLETED signals');
     } catch (err: any) {
       logger.error({ contractId, err: err.message }, 'Failed to persist audit signals');
+      // Do not go on to trigger scoring off state we failed to record. Scoring
+      // a contract whose CI signals are missing produces a trust score the
+      // oracle will then evaluate against three false booleans, which reads as
+      // "scored and blocked" rather than "not recorded".
+      return;
     }
+
+    // Ask the gateway to score the contract, which makes it publish XAI_SCORED,
+    // which subscribeTrustScore (below) turns into the other half of the gate.
+    //
+    // This does not loop. The only producer of AUDIT_COMPLETED is
+    // apps/ci-worker/src/worker.ts, and the only producer of XAI_SCORED is the
+    // gateway's /score route; neither publishes the topic that reaches it, so
+    // the chain is two hops and terminates at oracle.recordScore. Keep it that
+    // way -- a /score that republished AUDIT_COMPLETED would loop unbounded
+    // with a real HTTP call and an LLM narrative per iteration.
+    logTriggerOutcome(logger, contractId, await triggerScoring(contractId, scoreTriggerDeps));
   });
 }
 
@@ -114,7 +142,10 @@ function subscribeTrustScore(): void {
     }
 
     try {
-      await oracle.recordScore(contractId, trustScore, criticalVulns);
+      // scoredAt is the gateway's stamp from when it read the telemetry. Passed
+      // through so recordScore can refuse a score that arrives after a newer
+      // one -- see the monotonicity note there.
+      await oracle.recordScore(contractId, trustScore, criticalVulns, payload.scoredAt ?? null);
       logger.info({ contractId, trustScore, criticalVulns }, 'Oracle recorded XAI_SCORED');
     } catch (err: any) {
       logger.error({ contractId, err: err.message }, 'Failed to persist trust score');
@@ -330,13 +361,42 @@ async function commitSettlement(args: {
  * that already committed: the money moved for real, and this is a summary over
  * an already-committed chain, not a condition of moving it.
  */
-async function sealMerkleRoot(contractId: string): Promise<void> {
+async function sealAndSignMerkleRoot(contractId: string): Promise<void> {
   try {
     const { root, leafCount } = await ledgerClient.computeAndStoreRoot(contractId);
     logger.info({ contractId, root, leafCount }, 'Merkle root computed and stored');
   } catch (rootErr: any) {
     logger.error({ contractId, err: rootErr.message }, 'Failed to compute/store Merkle root after settlement');
+    // No root, nothing to sign. Returning here rather than falling through
+    // keeps the log from carrying a signing failure whose real cause was that
+    // the root never existed.
+    return;
   }
+
+  // Signing is a separate call because the signer is Python and every service
+  // that seals is TypeScript — see gateway-client.ts. Until this ran, the
+  // signature columns on merkle_roots were populated only by a manual CLI, so
+  // every root produced in normal operation was unsigned while the UI claimed
+  // otherwise.
+  const outcome = await requestRootSignature(contractId, scoreTriggerDeps);
+  if (outcome.kind === 'signed') {
+    logger.info(
+      { contractId, algorithm: outcome.algorithm, alreadySigned: outcome.alreadySigned },
+      'Merkle root signed',
+    );
+    return;
+  }
+
+  // Loud, but not fatal, and deliberately not rethrown: the settlement has
+  // committed and the money has moved. An unsigned root is a weaker claim about
+  // an already-true fact, and GET /api/contracts/:id/root reports it as
+  // unsigned rather than letting the UI assert a signature that isn't there.
+  // Re-drive with POST /api/contracts/:id/root/sign; it is idempotent.
+  logger.error(
+    { contractId, status: outcome.status, detail: outcome.detail },
+    'Merkle root is sealed but UNSIGNED. The post-quantum signature was not written; ' +
+      're-drive POST /api/contracts/:id/root/sign once the signer is available.',
+  );
 }
 
 function subscribeSettlementRequests(): void {
@@ -431,7 +491,7 @@ function subscribeSettlementRequests(): void {
         'Settlement complete, escrow released',
       );
 
-      await sealMerkleRoot(contractId);
+      await sealAndSignMerkleRoot(contractId);
     } catch (err: any) {
       logger.error({ contractId, err: err.message }, 'Settlement execution failed');
       await markSettlementFailed(contractId).catch(() => undefined);
@@ -446,6 +506,22 @@ function subscribeSettlementRequests(): void {
 
 async function start(): Promise<void> {
   logger.info('Starting settlement oracle...');
+
+  // Announced once at startup rather than per event. With auto-scoring off,
+  // every audit still records its CI signals but no contract ever acquires a
+  // trust score unless a human opens the XAI tab, so a stalled pipeline has a
+  // stated cause in the log rather than looking like a bug.
+  if (scoreTriggerDeps.enabled) {
+    logger.info(
+      { gatewayUrl: scoreTriggerDeps.gatewayUrl },
+      'Automatic XAI scoring enabled: audits will trigger GET /score on the gateway',
+    );
+  } else {
+    logger.warn(
+      'ENABLE_AUTO_SCORING=false. Contracts will not be scored automatically and ' +
+        'cannot settle until /score is called for them by hand.',
+    );
+  }
 
   subscribeAuditSignals();
   subscribeTrustScore();
@@ -463,4 +539,15 @@ if (process.env.NODE_ENV !== 'test') {
   });
 }
 
-export { start, oracle };
+// eventBus is exported for the integration test that proves the audit ->
+// scoring -> gate chain closes. Under NODE_ENV=test createEventBus() hands back
+// a fresh InMemoryBus per call, so a test that built its own would be talking
+// to a different bus than the subscriptions are listening on and would pass
+// while the chain was broken.
+// claimSettlement is exported so the concurrency suite can exercise the shipped
+// guard rather than a copy of its SQL. The previous test re-typed the statement
+// inline as `ON CONFLICT DO NOTHING`, which is not what this does — so it
+// asserted single-fire against a query the worker had already moved on from,
+// and could never have covered the FAILED re-claim path the WHERE clause exists
+// for.
+export { start, oracle, eventBus, claimSettlement };

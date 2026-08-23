@@ -63,17 +63,40 @@ export class OracleStore {
     );
   }
 
-  /** Record the trust score from an XAI_SCORED event. */
-  async recordScore(contractId: string, trustScore: number, criticalVulns: number): Promise<void> {
+  /**
+   * Record the trust score from an XAI_SCORED event.
+   *
+   * The write is monotonic in `scored_at`: a score is only applied if it is at
+   * least as recent as the one already stored. Two audits in quick succession
+   * produce two XAI_SCORED events, and under Redis Streams that is harmless
+   * because a stream is FIFO and the poll loop is sequential. Under Kafka,
+   * publish() supplies no partition key, so the two can land on different
+   * partitions and be consumed out of order -- leaving oracle_state holding the
+   * older score while the newer one is silently discarded. This is the same
+   * shape as the escrow status guard in apps/settlement-worker: an event that
+   * arrives late must not drag state backwards.
+   *
+   * `scoredAt` comes from the event payload rather than the clock here, so the
+   * comparison is between two producer timestamps and does not depend on when
+   * each consumer happened to run.
+   */
+  async recordScore(
+    contractId: string,
+    trustScore: number,
+    criticalVulns: number,
+    scoredAt?: string | Date | null,
+  ): Promise<void> {
     await this.pool.query(
       `INSERT INTO oracle_state (contract_id, trust_score, critical_vulns, scored_at, updated_at)
-       VALUES ($1, $2, $3, now(), now())
+       VALUES ($1, $2, $3, COALESCE($4::timestamptz, now()), now())
        ON CONFLICT (contract_id) DO UPDATE
          SET trust_score = EXCLUDED.trust_score,
              critical_vulns = EXCLUDED.critical_vulns,
-             scored_at = now(),
-             updated_at = now()`,
-      [contractId, trustScore, criticalVulns],
+             scored_at = EXCLUDED.scored_at,
+             updated_at = now()
+         WHERE oracle_state.scored_at IS NULL
+            OR oracle_state.scored_at <= EXCLUDED.scored_at`,
+      [contractId, trustScore, criticalVulns, scoredAt ?? null],
     );
   }
 

@@ -1,0 +1,234 @@
+{
+  "uid": "assurecode-pipeline",
+  "title": "AssureCode — Pipeline",
+  "description": "The contract lifecycle as the running system reports it: events moving, the LLM the security scan depends on, the scope guard's block rate, and the sandbox that executes submitted code. Every panel reads a metric that was already being scraped before this dashboard existed.",
+  "tags": ["assurecode"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "DS",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": { "text": "Prometheus", "value": "Prometheus" },
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Delivery",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "type": "stat",
+      "title": "Services up",
+      "description": "ci-worker and settlement-worker expose no /metrics and are absent from this count entirely — they are not down, they are unmeasured.",
+      "datasource": { "type": "prometheus", "uid": "${DS}" },
+      "gridPos": { "h": 5, "w": 4, "x": 0, "y": 1 },
+      "targets": [{ "expr": "sum(up)", "refId": "A", "legendFormat": "up" }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 3 },
+              { "color": "green", "value": 4 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Dead-lettered (1h)",
+      "description": "Anything above zero is a payload the bus retried and gave up on. Nothing drains the DLQ automatically, so these are lost until replayed by hand.",
+      "datasource": { "type": "prometheus", "uid": "${DS}" },
+      "gridPos": { "h": 5, "w": 5, "x": 4, "y": 1 },
+      "targets": [
+        { "expr": "sum(increase(assurecode_dlq_messages_total[1h])) or vector(0)", "refId": "A", "legendFormat": "messages" }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Ledger appends / sec",
+      "description": "Every state change a contract goes through is an append. A flat line during activity means the ledger write path is stuck.",
+      "datasource": { "type": "prometheus", "uid": "${DS}" },
+      "gridPos": { "h": 5, "w": 7, "x": 9, "y": 1 },
+      "targets": [
+        { "expr": "sum by (action_type) (rate(assurecode_ledger_appends_total[5m]))", "refId": "A", "legendFormat": "{{action_type}}" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "custom": { "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Event consumer lag (p95)",
+      "description": "Time between publish and handler pickup. settlement-worker holds the AUDIT_COMPLETED handler open while it triggers scoring, so a degraded gateway shows up here before anywhere else.",
+      "datasource": { "type": "prometheus", "uid": "${DS}" },
+      "gridPos": { "h": 5, "w": 8, "x": 16, "y": 1 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, topic) (rate(assurecode_event_lag_seconds_bucket[5m])))",
+          "refId": "A",
+          "legendFormat": "{{topic}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 30 },
+              { "color": "red", "value": 60 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+
+    {
+      "type": "row",
+      "title": "Verification",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "Sandbox duration (p50 / p95)",
+      "description": "Wall-clock time executing submitted code. The runner label distinguishes the Docker sandbox from the weaker Node permission fallback.",
+      "datasource": { "type": "prometheus", "uid": "${DS}" },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 7 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, runner) (rate(assurecode_ci_sandbox_duration_seconds_bucket[10m])))",
+          "refId": "A",
+          "legendFormat": "p50 {{runner}}"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, runner) (rate(assurecode_ci_sandbox_duration_seconds_bucket[10m])))",
+          "refId": "B",
+          "legendFormat": "p95 {{runner}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "LLM call outcomes",
+      "description": "Cloudflare is the only provider. When these go non-ok the OWASP Layer 2 scan cannot complete, ci-worker reports securityScanComplete=false, and no contract can settle — the symptom appears three services away from the cause.",
+      "datasource": { "type": "prometheus", "uid": "${DS}" },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 7 },
+      "targets": [
+        { "expr": "sum by (outcome) (rate(assurecode_llm_calls_total[5m]))", "refId": "A", "legendFormat": "{{outcome}}" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "custom": { "lineWidth": 2, "fillOpacity": 20, "stacking": { "mode": "normal" }, "showPoints": "never" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "ok" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] },
+          { "matcher": { "id": "byName", "options": "unavailable" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Scope decisions",
+      "description": "The guard measures 100% precision and 60% recall — it over-blocks rather than under-blocks. A spike in blocked is more likely a broken retrieval path than a wave of violations.",
+      "datasource": { "type": "prometheus", "uid": "${DS}" },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 7 },
+      "targets": [
+        { "expr": "sum by (allowed) (rate(assurecode_scope_decisions_total[15m]))", "refId": "A", "legendFormat": "allowed={{allowed}}" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "custom": { "lineWidth": 2, "fillOpacity": 20, "stacking": { "mode": "normal" }, "showPoints": "never" } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+
+    {
+      "type": "row",
+      "title": "Settlement",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "Settlement operations",
+      "description": "By status. Capture moves money from the client to the platform; there is no payout leg, so a completed settlement here does not mean the freelancer has been paid.",
+      "datasource": { "type": "prometheus", "uid": "${DS}" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 15 },
+      "targets": [
+        { "expr": "sum by (status) (increase(assurecode_settlement_operations_total[1h]))", "refId": "A", "legendFormat": "{{status}}" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 20, "showPoints": "never" } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Escrow captured (INR)",
+      "description": "assurecode_settlement_amount_cents_total holds minor units (paise) despite the name, so this divides by 100.",
+      "datasource": { "type": "prometheus", "uid": "${DS}" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 15 },
+      "targets": [
+        { "expr": "sum(increase(assurecode_settlement_amount_cents_total[1h])) / 100", "refId": "A", "legendFormat": "INR/hour" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "currencyINR", "custom": { "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    }
+  ]
+}

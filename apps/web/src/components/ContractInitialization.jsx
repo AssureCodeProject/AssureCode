@@ -351,7 +351,14 @@ export function ContractInitialization({
     requirements: '',
     budget: '',
     deadline: '',
+    // Optional. The only writer of contracts.github_repo_full_name, which
+    // webhook-ingest needs to resolve a push back to a contract. Before this
+    // field existed the column could only be set by calling
+    // PATCH /api/contracts/:id/github-repo by hand, so the GitHub ingest path
+    // was unreachable from the application entirely.
+    githubRepo: '',
   });
+  const [repoLinkError, setRepoLinkError] = useState(null);
 
   // Selected scenario state
   const [selectedPreset, setSelectedPreset] = useState(null);
@@ -404,7 +411,9 @@ export function ContractInitialization({
 
   const handlePresetSelect = (preset) => {
     setSelectedPreset(preset.id);
-    setFormData({ ...preset.formData });
+    // githubRepo first, so a preset that predates the field (none of them
+    // define one) leaves a controlled empty string rather than undefined.
+    setFormData({ githubRepo: '', ...preset.formData });
   };
 
   const handlePdfSelect = async (e) => {
@@ -471,6 +480,27 @@ export function ContractInitialization({
         deadline: formData.deadline,
         ...(pdfRawText ? { pdfRawText } : {}),
       });
+
+      // Link the repository before matching, so a failure here surfaces while
+      // the user is still on this screen. Non-fatal: an unlinked contract is
+      // fully usable through /simulate-push, it just cannot receive real
+      // pushes, and losing the whole initialization over an optional field
+      // would be the wrong trade.
+      if (formData.githubRepo.trim()) {
+        try {
+          await callApi(
+            `/api/contracts/${initResponse.contractId}/github-repo`,
+            'PATCH',
+            { githubRepoFullName: formData.githubRepo.trim() }
+          );
+        } catch (repoErr) {
+          setRepoLinkError(
+            `The contract was created, but the repository could not be linked: ` +
+            `${repoErr instanceof Error ? repoErr.message : String(repoErr)}. ` +
+            `Real GitHub pushes will not reach this contract until it is linked.`
+          );
+        }
+      }
 
       const matchResponse = await callApi(
         `/api/contracts/${initResponse.contractId}/match`,
@@ -782,6 +812,31 @@ export function ContractInitialization({
                                  focus:border-signal outline-none transition-colors disabled:opacity-40 [color-scheme:dark]"
                     />
                   </div>
+                </div>
+
+                <div>
+                  <label htmlFor="input-github-repo" className="block text-xs font-mono text-prose-muted uppercase tracking-wider mb-2">
+                    GitHub repository <span className="text-prose-dim normal-case tracking-normal">(optional)</span>
+                  </label>
+                  <input
+                    id="input-github-repo"
+                    name="githubRepo"
+                    type="text"
+                    placeholder="owner/repo"
+                    value={formData.githubRepo}
+                    onChange={handleChange}
+                    disabled={isMatching}
+                    className="w-full bg-ink px-4 py-3 border-b border-rule text-prose font-mono placeholder:text-prose-dim text-sm
+                               focus:border-signal outline-none transition-colors disabled:opacity-40"
+                  />
+                  <p className="mt-2 text-xs font-mono text-prose-dim">
+                    Exactly <span className="text-prose-muted">owner/repo</span>, not a URL. Links pushes to this
+                    contract. The audit pipeline additionally needs ENABLE_GITHUB_SOURCE_FETCH=true on ci-worker;
+                    without both, use Simulate Push on the verification tab.
+                  </p>
+                  {repoLinkError && (
+                    <p className="mt-2 text-xs font-mono text-warn">{repoLinkError}</p>
+                  )}
                 </div>
 
                 {/* Matching Console */}

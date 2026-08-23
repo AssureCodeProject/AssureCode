@@ -31,6 +31,49 @@
 >   but only under an explicit `GRAPH_BACKEND=neo4j` and only once
 >   `tools/seed-neo4j-vectors.py` has created the vector index. Postgres is
 >   still the default.
+>
+> ---
+>
+> **⛔ THIRD CORRECTION, added 2026-08-21 — Sections 3 and 5 of this report are
+> retracted in full. Do not cite them.**
+>
+> Sections 3 ("Detailed Hardening Sprint Audit Status") and 5 ("Master Definition
+> of Done Verification Checklist") mark **every** Sprint 6–11 objective and **all
+> eight** DoD criteria as `PASSED`/`COMPLETED`. That was never verified against
+> the filesystem. A re-derivation on 2026-08-21 found the two tables cite at
+> least **nine artifacts that have never existed in this repository**:
+>
+> | Cited as evidence of "PASSED" | Reality |
+> |---|---|
+> | `infra/grafana/dashboards/assurecode.json` | No dashboard JSON exists anywhere; Grafana boots with zero panels |
+> | `tools/secrets-scan.ts` / `npm run secrets:scan` | Neither ever existed. **Resolved 2026-08-24** by a different route: a `gitleaks` step in the `security` job of `.github/workflows/production-ci-cd.yml`, scanning full history (`fetch-depth: 0`). No bespoke script — the finding was the absence of scanning, not of that particular file. |
+> | `packages/event-bus/test/contract.spec.ts` | Does not exist; `event-bus.test.ts` is the package's only test file |
+> | `tools/load/soak.js` | Does not exist; `tools/load/` is not a directory. No k6 script in the repo |
+> | "chaos engineering recovery test" | Does not exist; no test kills or restarts a worker |
+> | `docker-compose.prod.yml` | Does not exist; there is no prod overlay |
+> | `.github/workflows/release.yml` | Does not exist; `production-ci-cd.yml` is the only workflow, and it sets `push: false` |
+> | `docs/RELEASE.md` | Does not exist; no rollback or blue-green procedure is documented anywhere |
+> | `infra/seed/demo/` | Does not exist; no seed path creates a contract, so the UI starts empty |
+> | Tag `v1.0.0` "validated" | `git tag -l` is empty. No tag has ever been cut |
+>
+> Four further claims in those sections are wrong in substance rather than by
+> citation: the coverage gate is real but set at **48%, not ≥70%**, and excludes
+> every suite under `apps/`; the container scan runs but is **report-only**
+> (`exit-code: '0'`); `npm run test:e2e` exists but its compose stack starts **no
+> application services**, so the golden path it is credited with proving is not
+> exercised; and DoD #6 credits "exactly 1 Stripe payout" when **Stripe was
+> removed entirely** (replaced by `packages/razorpay-adapter`) and **there is no
+> payout leg at all** — settlement captures to the platform and nothing transfers
+> onward.
+>
+> The report's own composite score of **75.0%** is coincidentally near the
+> re-derived figure (~80% overall, ~63% for Sprints 6–11) but is arrived at
+> against the retracted spec and should not be quoted.
+>
+> **For current status, read [`plan2.md`](./plan2.md) § "Status audit —
+> 2026-08-21", which is re-derived from the filesystem and records its evidence
+> inline.** This document is retained for audit-trail purposes only: read it as
+> "what an earlier audit believed," not as current fact.
 
 ---
 
@@ -225,11 +268,21 @@ The post-functional hardening phase (Sprints 6 through 11) focused on enterprise
 
 ### Detailed Hardening Sprint Audit Status
 
+> **⛔ RETRACTED 2026-08-21.** Every row below reads `PASSED`. None was verified
+> against the filesystem, and the evidence columns cite artifacts that do not
+> exist — no Grafana dashboard JSON, no `tools/secrets-scan.ts`, no
+> `contract.spec.ts`, no `tools/load/soak.js`, no `docker-compose.prod.yml`,
+> no `release.yml`, no `docs/RELEASE.md`, no `infra/seed/demo/`. Sprint 8 also
+> credits Stripe HMAC verification; Stripe was removed and replaced by
+> `packages/razorpay-adapter`. Current status:
+> [`plan2.md`](./plan2.md) § "Status audit — 2026-08-21" (13 `[x]` / 17 `[~]` /
+> 8 `[ ]` of 38).
+
 | Sprint | Objective & Focus | Verification Command / Target | Status | Implementation Evidence |
 |---|---|---|---|---|
 | **Sprint 6** | **Resilience & Failure Modes** | `Replay request with same Idempotency-Key` | **PASSED** | `V003__idempotency.sql` table, `withIdempotency` gateway middleware (`apps/api-gateway/src/middleware/idempotency.ts`), Redis DLQ poison queues (`packages/event-bus`), single-fire `settlements` guard table (`V004__settlements.sql`), `GET /api/contracts/:id/verify` cryptographic ledger verification API, and transactional Outbox pattern (`V005__outbox.sql`). |
 | **Sprint 7** | **Observability & Operations** | `grep correlation ID across logs & view Grafana` | **PASSED** | Context-propagating `x-correlation-id` middleware (`packages/config/src/correlation.ts`), OpenTelemetry OTLP tracing (`packages/telemetry`), Prometheus `/metrics` scraping endpoint, `/healthz` (liveness) vs `/readyz` (readiness) splits across services, `payment_events` table for financial auditing, and Grafana dashboard (`infra/grafana/dashboards/assurecode.json`). |
-| **Sprint 8** | **Security Hardening & Audit** | `npm run secrets:scan & trivy container scan` | **PASSED** | Constant-time HMAC SHA-256 verification on GitHub & Stripe webhooks (`apps/webhook-ingest`, `apps/api-gateway`), secret scanner script (`tools/secrets-scan.ts`), sandbox egress lockdown (`--network=none`, `--memory=512m`), prompt injection firewall (`apps/ci-worker/src/security-auditor.ts`), `@fastify/rate-limit` rate limiting, and threat model (`docs/THREAT_MODEL.md`). |
+| **Sprint 8** | **Security Hardening & Audit** | `gitleaks & trivy container scan` | **PASSED** | Constant-time HMAC SHA-256 verification on GitHub & Razorpay webhooks (`apps/webhook-ingest`, `apps/api-gateway`), secret scanning via `gitleaks` in CI (there is no `tools/secrets-scan.ts` — that file was cited here before it, or any scanning, existed), sandbox lockdown (`--network=none`, `--read-only`, `--memory`, `--cpus`, `--pids-limit`, `--user=1000:1000`, `--cap-drop=ALL`, `--security-opt=no-new-privileges`), prompt injection firewall (`apps/ci-worker/src/security-auditor.ts`), `@fastify/rate-limit` rate limiting, and threat model (`docs/THREAT_MODEL.md`). |
 | **Sprint 9** | **Test & Quality Gates** | `npm run test:e2e & coverage check` | **PASSED** | Integration test harness (`infra/docker-compose.test.yml`, `npm run test:e2e`), cross-adapter event bus contract tests (`packages/event-bus/test/contract.spec.ts`), mandatory test coverage gate ($\ge 70\%$), load soak testing script (`tools/load/soak.js`), and chaos engineering recovery test. |
 | **Sprint 10** | **Deployment & Release** | `docker compose up --build` | **PASSED** | Multi-stage Dockerfiles for all Node.js and Python microservices, production Compose overlay (`docker-compose.prod.yml`), automated database migrations and Neo4j graph seeding on startup, environment fail-fast checks, release pipeline (`.github/workflows/release.yml`), and rollback strategy (`docs/RELEASE.md`). |
 | **Sprint 11** | **Demo & Documentation** | `Fresh clone & setup verification` | **PASSED** | Seeded demo dataset (`infra/seed/demo/`), complete `README.md`, `ARCHITECTURE.md`, operational runbook (`RUNBOOK.md`), step-by-step demo script (`docs/DEMO.md`), `CHANGELOG.md`, and production release tag `v1.0.0`. |
@@ -316,6 +369,15 @@ To elevate AssureCode from its current composite score of **75.0%** (Minimum Via
 
 ## Section 5: Master Definition of Done (DoD) Verification Checklist
 
+> **⛔ RETRACTED 2026-08-21.** All eight criteria below read `COMPLETED`/`PASSED`.
+> Re-derived against the filesystem, **one** is true (#7, documentation), five are
+> partial, and two are false: no sprint set is fully `[x]` (#1) and **no
+> `v1.0.0` tag has ever been cut** (#8 — `git tag -l` is empty, and the
+> `release.yml` it claims to have validated does not exist). #6 credits "exactly
+> 1 Stripe payout"; Stripe was removed, and **there is no payout leg at all** —
+> settlement captures to the platform and nothing transfers onward. See
+> [`plan2.md`](./plan2.md) § "Definition of Done" for the current derivation.
+
 The table below evaluates the current repository state against the 8 core Definition of Done criteria specified in `ORIGINAL_REQUEST.md`, `plan.md`, and `plan2.md`:
 
 | # | DoD Requirement | Target Verification Command / Criteria | Audit Result | Status | Audit Findings & Verification Details |
@@ -323,7 +385,7 @@ The table below evaluates the current repository state against the 8 core Defini
 | 1 | **Sprint Task Completion** | `[x]` across Sprints 0–11 task items in `plan.md` & `plan2.md` | **COMPLETED** | **PASSED** | All 11 sprint specifications fully defined; core Web2 microservices and hardening tasks completed. |
 | 2 | **One-Command Bootstrap** | `docker compose -f infra/docker-compose.yml up --build` | **COMPLETED** | **PASSED** | Multi-container stack boots 7 microservices healthy; database migrations auto-apply; `/readyz` endpoints return 200 OK. |
 | 3 | **E2E Integration Test Suite** | `npm run test:e2e` against live stack | **COMPLETED** | **PASSED** | Golden path E2E integration test green; validates contract initialization, locking, CI push, XAI scoring, and settlement. |
-| 4 | **Quality & Security Gates** | Code coverage $\ge 70\%$; secretlint & container scan clean | **COMPLETED** | **PASSED** | Monorepo test suites pass coverage threshold; `tools/secrets-scan.ts` returns zero tracked secrets; container security scan clean. |
+| 4 | **Quality & Security Gates** | Code coverage $\ge 70\%$; secretlint & container scan clean | **PARTIAL** | **MIXED** | Python coverage gates added 2026-08-24 and passing (ai-service 76% against a 70% floor, scope-guard 81% against 75%). The Node gate remains **48%** in `vitest.coverage.config.ts` and covers `packages/*` only — every suite under `apps/` is excluded by its `include` globs — so the $\ge 70\%$ criterion is **not** met on the Node side. Secret scanning is `gitleaks` in CI (`tools/secrets-scan.ts` never existed). Trivy runs at `exit-code: '0'`, so it reports rather than gates. |
 | 5 | **Cryptographic Ledger Integrity** | `GET /api/contracts/:id/verify` on tampered row | **COMPLETED** | **PASSED** | `merkle_ledger` SHA-256 chain verifies end-to-end; tampering test confirms immediate HTTP 409 (`{ valid: false }`) rejection. |
 | 6 | **Single-Fire Idempotent Payouts** | Concurrent `POST /settle` requests | **COMPLETED** | **PASSED** | Transactional `settlements` guard table with `ON CONFLICT DO NOTHING` guarantees exactly 1 Stripe payout and 1 `INVOICE` ledger block. |
 | 7 | **Documentation Complete** | `README.md`, `ARCHITECTURE.md`, `RUNBOOK.md`, `DEMO.md` | **COMPLETED** | **PASSED** | Complete documentation suite present in repository root and `docs/`, including system architecture, runbooks, threat model, and demo guides. |
@@ -332,6 +394,20 @@ The table below evaluates the current repository state against the 8 core Defini
 ---
 
 ## Conclusion & Next Steps
+
+> **⛔ RETRACTED 2026-08-21.** The paragraph below calls the stack "fully
+> realized" including "automated Stripe Connect settlement". **Stripe was removed
+> from this repository entirely** (replaced by `packages/razorpay-adapter` +
+> `packages/kyc-adapter`), and the settlement leg it describes was never built in
+> either provider: settlement *captures* the client's authorised payment to the
+> platform and **nothing transfers it onward to the freelancer**. "OpenTelemetry
+> observability" is also overstated — the two worker services emit no spans and no
+> metrics, and the Python services emit no spans. The Section 4 remediation list
+> below is likewise stale: its P0 "Playwright browser harness" was **withdrawn from
+> scope**, not deferred (see `docs/NEXTGEN_RESEARCH_PARADIGM.md`), and its P1
+> "Stripe Connect application fee splitting" targets a provider no longer in use.
+> For what is actually left, see [`plan2.md`](./plan2.md) § "Suggested order" and
+> § "Known functional gaps".
 
 AssureCode (Trust-Code 2.0) presents an **exceptionally strong, production-grade event-driven microservices baseline** with complete Web2 / Web2.5 operational capabilities. The infrastructure for AI matchmaking, automated test generation, isolated CI worker execution, AST security analysis, SHA-256 Merkle ledger auditability, OpenTelemetry observability, zero-trust idempotency, and automated Stripe Connect settlement is fully realized.
 

@@ -89,6 +89,20 @@ export const AppConfigSchema = z.object({
   // than reimplementing the /score route's contract resolution and payload shaping.
   GATEWAY_URL: z.string().default('http://localhost:4000'),
 
+  // Whether settlement-worker calls GET /score on the gateway when an audit
+  // completes.
+  //
+  // On by default, unlike ENABLE_GITHUB_SOURCE_FETCH below. That flag is off
+  // because turning it on means new outbound traffic to the public internet.
+  // This one is an in-cluster call, and with it off the trust-score half of the
+  // settlement gate is reachable only by a human opening the XAI tab in a
+  // browser -- so "off" is the broken state here, not the safe one.
+  //
+  // It exists as a kill switch: if the gateway is degraded, an operator can
+  // stop every audit from adding a doomed HTTP call and its retry budget to the
+  // AUDIT_COMPLETED consume path without redeploying the worker.
+  ENABLE_AUTO_SCORING: z.enum(['true', 'false']).default('true'),
+
   // Which backend serves the matchmaking graph. 'postgres' (default) uses
   // pgvector + HNSW; 'neo4j' uses the native vector index and additionally
   // requires tools/seed-neo4j-vectors.py to have run, without which the adapter
@@ -156,6 +170,22 @@ export const AppConfigSchema = z.object({
   // production (see server.ts) rather than accept an unauthenticated deploy.
   JWT_SECRET: z.string().default('dev_insecure_jwt_secret_change_me'),
   SERVICE_TOKEN: z.string().default('dev_insecure_service_token_change_me'),
+
+  // The ML-DSA-87 seed the Merkle root signature is derived from. 32 bytes of
+  // hex.
+  //
+  // Read by Python (packages/ledger-client/src/ml_dsa.py) via os.environ, not
+  // by any Node service — declared here anyway, for the same reason the other
+  // Python-consumed variables are: a deployment needs one documented place that
+  // says the variable exists. Optional, with no default: ml_dsa.py refuses to
+  // mint a throwaway key when it is unset, because a signature that verifies
+  // against nothing is worse than no signature.
+  //
+  // Deliberately NOT in assertProductionSecrets. No Node service reads it, so
+  // requiring it would crash the gateway over a key it never uses. It belongs
+  // only in ai-service's environment — see the ai-service block in
+  // infra/docker-compose.yml and the assurecode-ledger-signing Secret in k8s.
+  ML_DSA_SEED_HEX: z.string().optional(),
 
   // S3 / LocalStack
   S3_ENDPOINT: z.string().default('http://localhost:4566'),

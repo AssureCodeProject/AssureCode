@@ -23,6 +23,10 @@ name: AssureCode Production CI/CD Pipeline
 on:
   push:
     branches: [ main, release/* ]
+    # A version tag is what promotes a build to a release: the container-build
+    # job pushes to the registry only on this trigger (see `Build Image`), so
+    # `main` keeps proving images build without publishing every commit.
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
 
@@ -118,7 +122,7 @@ jobs:
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install psycopg2-binary pytest
+          pip install psycopg2-binary pytest pytest-cov
           pip install -e apps/ai-service
           # scope-guard was never installed, which is why its 29 tests could
           # not run here.
@@ -130,7 +134,7 @@ jobs:
       - name: Run Node Unit & Integration Tests
         run: npm run test
 
-      # Enforces the thresholds in vitest.config.ts over the pure-logic
+      # Enforces the thresholds in vitest.coverage.config.ts over the pure-logic
       # packages. Separate from the step above because that one runs each
       # workspace's own vitest; coverage has to be measured in one pass to
       # produce a single number. packages/oracle — the settlement gate — is
@@ -142,13 +146,20 @@ jobs:
       # Both services define a top-level package called `app`, so collecting
       # them together resolves ai-service's imports against scope-guard's
       # `app` and dies with ImportError during collection.
+      # Thresholds set from the first measured run, not aspirationally: a
+      # threshold nobody can meet gets lowered on the first red build, which is
+      # the same as having none. Measured 2026-08-24 — ai-service 77% over 224
+      # tests, scope-guard 83% over 29 — so each gate sits a few points below
+      # with room for an honest refactor. Node's gate lives in
+      # vitest.coverage.config.ts; the Python side had no coverage measurement
+      # of any kind before this.
       - name: Run ai-service Tests
         working-directory: apps/ai-service
-        run: pytest tests -q
+        run: pytest tests -q --cov=app --cov-report=term-missing --cov-fail-under=70
 
       - name: Run scope-guard Tests
         working-directory: apps/scope-guard
-        run: pytest tests -q
+        run: pytest tests -q --cov=app --cov-report=term-missing --cov-fail-under=75
 
       # 18 ML-DSA-87 signing tests covering the Merkle root signature. Not a
       # workspace vitest suite, so `npm run test` never picked them up.
@@ -164,6 +175,63 @@ jobs:
         # it is recorded, not gated on, until the weights are retuned.
         continue-on-error: true
         run: python tools/test-matchmaking.py
+
+  # Integration suite against the real data plane.
+  #
+  # Distinct from `test` above, which has only a `services: postgres` — no
+  # Redis, no Neo4j, no LocalStack. Every suite that needs the event bus, the
+  # graph or object storage therefore *skips* in that job. This one brings up
+  # infra/docker-compose.test.yml, so those suites actually execute: the ledger
+  # tamper test, the single-fire settlement guard, the automatic-scoring chain
+  # and the Merkle root signature round trip all run here or nowhere.
+  #
+  # `npm run test:e2e` existed and was green-by-inspection only — it appeared
+  # zero times in this workflow, and when first run it was red for 61 tests.
+  e2e:
+    name: Integration Suite (real data plane)
+    runs-on: ubuntu-latest
+    # 20 rather than the 360 default: this job stands up containers, and a hang
+    # waiting on a healthcheck should fail the build rather than burn an hour.
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Node Dependencies
+        run: npm ci
+
+      # scripts/e2e.mjs looks for apps/<app>/.venv specifically, and warns-and-
+      # skips when it is absent — which would let this job report green having
+      # run no Python at all. Creating them is what makes the skip path
+      # unreachable in CI.
+      # Extras matter here. ai-service needs [test] for pytest and [full] for
+      # psycopg, pgvector, boto3 and dilithium-py — without [full],
+      # tests/test_ledger_sign.py cannot import the ML-DSA signer and every
+      # database-backed suite skips, which would let this job pass having
+      # exercised almost nothing. scope-guard keeps psycopg in its base
+      # dependencies and puts pytest under [dev].
+      - name: Create Python virtualenvs
+        run: |
+          python -m venv apps/ai-service/.venv
+          apps/ai-service/.venv/bin/python -m pip install --quiet --upgrade pip
+          apps/ai-service/.venv/bin/python -m pip install --quiet -e "apps/ai-service[test,full]"
+          python -m venv apps/scope-guard/.venv
+          apps/scope-guard/.venv/bin/python -m pip install --quiet --upgrade pip
+          apps/scope-guard/.venv/bin/python -m pip install --quiet -e "apps/scope-guard[dev]"
+
+      - name: Run Integration Suite
+        run: npm run test:e2e
 
   security:
     name: Dependency Audit
@@ -195,11 +263,32 @@ jobs:
       - name: Dependency Audit Gate
         run: node scripts/audit-check.mjs
 
+      # Secret scanning. Before this there was none of any kind — the only
+      # protection was `.gitignore` covering `.env`, which stops the one file
+      # people remember and nothing else. `.env` has in fact never been
+      # committed (`git log --all --diff-filter=A -- .env` is empty), so this
+      # starts from a clean history rather than a known leak.
+      #
+      # fetch-depth: 0 because a shallow clone gives gitleaks only the tip
+      # commit to scan, which silently reduces it to a linter for the current
+      # diff. Placed in `security` rather than its own job so a finding blocks
+      # the same gate the dependency audit does.
+      - name: Checkout Full History
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Secret Scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
+
   container-build:
     name: Build Container Images
     # `security` is in here deliberately. It previously gated nothing, so it
     # reddened the workflow without blocking a merge — the worst of both worlds.
-    needs: [lint, test, security]
+    needs: [lint, test, e2e, security]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -240,15 +329,28 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # Only on a tag, because that is the only trigger that pushes. Gated on
+      # the secret being present as well as the ref, so a fork building a tag
+      # does not fail on credentials it was never going to have.
+      - name: Log in to Registry
+        if: startsWith(github.ref, 'refs/tags/v') && secrets.REGISTRY_USERNAME != ''
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.REGISTRY_HOST || 'docker.io' }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+
       - name: Build Image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ${{ matrix.dockerfile }}
-          # Pushing needs registry credentials and a decision about where
-          # images live — deliberately out of scope here. Everything up to
-          # the push is exercised.
-          push: false
+          # Push only on a version tag. On `main` and PRs the image is built,
+          # loaded, smoke-tested and scanned but never published, so an
+          # ordinary commit cannot ship. Requires REGISTRY_USERNAME and
+          # REGISTRY_TOKEN secrets; without them a tag build fails at the push
+          # rather than silently producing nothing.
+          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
           load: true
           # Tagged with the commit SHA, not `latest`: `latest` cannot express
           # which commit is deployed, and cannot be rolled back to.
@@ -279,10 +381,32 @@ jobs:
           format: sarif
           output: trivy-${{ matrix.name }}.sarif
           severity: CRITICAL,HIGH
-          # Report first. Flip to '1' to make HIGH/CRITICAL block a merge
-          # once the current backlog is triaged — turning it on before that
-          # just teaches people to skip the job.
+          # Advisory, deliberately. This step's job is to populate the Security
+          # tab with the full CRITICAL+HIGH picture; the gating decision is the
+          # separate step below. Keeping them apart means the report stays
+          # complete even as the gate stays narrow.
           exit-code: '0'
+
+      # The gate. Narrower than the report above on purpose.
+      #
+      # CRITICAL only, and `ignore-unfixed` so it fires solely on CVEs that have
+      # a published fix — i.e. ones somebody can actually act on by bumping a
+      # base image. A gate that also fails on unfixable advisories is a gate
+      # that is red for reasons no one can clear, and scripts/audit-check.mjs
+      # already records what that does: "a permanently-red job is not a gate, it
+      # cannot distinguish the run where a new critical appeared from the
+      # hundreds before it, so the only workable response is to ignore it."
+      #
+      # HIGH remains advisory pending triage of the existing backlog. Widen this
+      # to CRITICAL,HIGH once that backlog is cleared — the change is one word.
+      - name: Fail on Fixable Critical Vulnerabilities
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: assurecode/${{ matrix.name }}:${{ github.sha }}
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
 
       - name: Upload Trivy Results
         uses: github/codeql-action/upload-sarif@v3

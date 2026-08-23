@@ -9,13 +9,13 @@ must refuse to produce a number at all.
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
+from support import service_client
 
 from app.deps import get_scope_log, reset_deps_cache
 from app.main import app
 from app.ports.scope_log import ScopeDecisionRecord
 
-client = TestClient(app)
+client = service_client(app)
 
 
 def telemetry(**overrides) -> dict:

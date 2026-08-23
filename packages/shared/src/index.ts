@@ -7,6 +7,41 @@
 import { z } from 'zod';
 
 // ── Event Topics ──────────────────────────────────────────────
+//
+// Consumption status, recorded here so the next reader does not have to grep it
+// out again. "No consumer" is a deliberate state for several of these, not an
+// oversight — but which ones is not obvious from the code:
+//
+//   contract.initialized   published, no consumer. A fan-out point kept for
+//   contract.locked        integrations; contract.locked and tests.generated
+//   tests.generated        additionally go through the transactional outbox, so
+//                          they are durable whether or not anyone listens.
+//   code.push.received     -> ci-worker (the audit pipeline), + gateway WS
+//   ci.sandbox.ready       -> gateway WS only. These four exist to drive the
+//   ci.ast.completed          verification dashboard's live stream; the audit
+//   ci.tests.completed        verdict travels on audit.completed instead, so no
+//   security.scan.completed   business logic reads them.
+//   audit.completed        -> settlement-worker (records the CI signals, then
+//                             triggers scoring), + gateway WS
+//   scope.checked          -> settlement-worker, log only. The scope signal is
+//                             recomputed from scope_checks at evaluation time,
+//                             so a single early in-scope message cannot latch
+//                             the gate open.
+//   xai.scored             -> settlement-worker (the trust-score half of the
+//                             settlement gate)
+//   settlement.requested   -> settlement-worker
+//   settlement.rejected    published, no consumer. The UI learns the outcome by
+//   settlement.completed   polling GET /oracle; these are fan-out points.
+//   escrow.locked          -> settlement-worker (escrow PENDING -> AUTHORIZED)
+//
+// Every topic also has a `<topic>.dlq` partner created by the Redis and Kafka
+// adapters. Nothing drains them; the alert on assurecode_dlq_messages_total is
+// what surfaces a poison message.
+//
+// PAYMENT_FAILED was removed: it was declared here and never published or
+// subscribed anywhere. Its wire name also collided confusingly with Razorpay's
+// own `payment.failed` event-name string, which the gateway compares inside an
+// ESCROW_LOCKED payload and which has nothing to do with this bus.
 export const EVENT_TOPICS = {
   CONTRACT_INITIALIZED: 'contract.initialized',
   CONTRACT_LOCKED: 'contract.locked',
@@ -23,7 +58,6 @@ export const EVENT_TOPICS = {
   SETTLEMENT_REJECTED: 'settlement.rejected',
   SETTLEMENT_COMPLETED: 'settlement.completed',
   ESCROW_LOCKED: 'escrow.locked',
-  PAYMENT_FAILED: 'payment.failed',
 } as const;
 
 export type EventTopic = (typeof EVENT_TOPICS)[keyof typeof EVENT_TOPICS];
@@ -175,24 +209,35 @@ export type SettlementRequested = z.infer<typeof SettlementRequestedSchema>;
 /**
  * Both schemas below described a wire format nothing produced.
  *
- * SettlementCompletedSchema required `transferId` and `completedAt`, but the
- * settlement worker publishes `paymentIntentId` and `settledAt` — release is a
- * *capture* of a held PaymentIntent, not a transfer, and there is no transfer
- * id to report. SettlementRejectedSchema required `rejectedAt`, which was never
- * sent at all. Neither schema is used to validate anything, so the drift was
- * silent: a consumer that trusted these types would have read undefined from
- * every field.
+ * The original required `transferId` and `completedAt`; a first correction
+ * changed those to `paymentIntentId` and `settledAt`. `settledAt` was right.
+ * `paymentIntentId` was not — that name came from the Stripe era, and the
+ * Razorpay pivot made the field `paymentId`. So the comment that claimed this
+ * schema had been "aligned with what settlement-worker actually publishes" was
+ * itself wrong, and stayed wrong because nothing validates against these
+ * schemas: the drift is invisible at runtime and a consumer trusting the type
+ * would read undefined.
  *
- * Aligned with what settlement-worker actually publishes.
+ * Checked field-by-field against the `settlementPayload` literal in
+ * apps/settlement-worker/src/worker.ts. `currency` and `oracleSignals` were
+ * published and simply missing here.
+ *
+ * Release is a *capture* of a held payment, not a transfer — there is no
+ * transfer id to report, and no payout leg exists.
  */
 export const SettlementCompletedSchema = z.object({
   contractId: z.string(),
   freelancerId: z.string(),
+  // Minor units (paise), despite the name — see V014__razorpay_escrow.sql.
   amountCents: z.number().int().nonnegative(),
-  paymentIntentId: z.string(),
+  paymentId: z.string(),
+  currency: z.string(),
   captureStatus: z.string(),
   trustScore: z.number().nullable(),
   criticalVulns: z.number().nullable(),
+  // The full verdict the oracle reached, carried for audit rather than for any
+  // consumer's control flow. Loose on purpose: packages/oracle owns its shape.
+  oracleSignals: z.record(z.unknown()).optional(),
   settledAt: z.string().datetime({ offset: true }),
 });
 export type SettlementCompleted = z.infer<typeof SettlementCompletedSchema>;

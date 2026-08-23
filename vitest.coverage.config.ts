@@ -46,8 +46,7 @@ export default defineConfig({
           functions: 100,
           lines: 100,
         },
-        // Measured 2026-08-16: st 50.02 / br 82.89 / fn 57.54 / ln 50.02,
-        // after adding suites for packages/shared and packages/telemetry.
+        // Measured 2026-08-23: st 71.95 / br 83.05 / fn 79.33 / ln 71.95.
         // Set a couple of points below measured, not flush against it. A gate
         // pinned to the exact current number fails the moment anyone adds an
         // uncovered line to an unrelated file — declaring four env vars in
@@ -55,14 +54,18 @@ export default defineConfig({
         // fails for unrelated reasons is one somebody deletes. The margin is
         // small enough to still catch a real regression.
         //
-        // The gap is concentrated in ledger-client/src/index.ts (9%) and
-        // event-bus/src/outbox-relay.ts (12%), both of which need live
-        // Postgres — they are covered by `npm run test:e2e`, not here. Raise
-        // these as that changes; do not lower them to make a failing run pass.
-        statements: 48,
-        branches: 80,
-        functions: 55,
-        lines: 48,
+        // This crossed the plan's 70% target when event-bus/src/outbox-relay.ts
+        // went from 12% to covered: the relay carries every domain event to the
+        // bus and its batch-isolation behaviour had no test at all. The
+        // remaining gap is ledger-client/src/index.ts, which needs live
+        // Postgres and is measured by vitest.coverage.e2e.config.ts instead.
+        //
+        // Raise these as coverage grows; do not lower them to make a failing
+        // run pass.
+        statements: 70,
+        branches: 82,
+        functions: 77,
+        lines: 70,
       },
     },
   },

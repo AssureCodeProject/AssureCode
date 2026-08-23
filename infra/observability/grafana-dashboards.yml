@@ -1,0 +1,24 @@
+# Grafana dashboard provisioning.
+#
+# Grafana previously mounted only a datasource provider, so it booted connected
+# to Prometheus and Jaeger with nothing to show. The metrics had existed and
+# been scraped the whole time; there was simply no dashboard to read them —
+# which is why "observability" looked done from the compose file and was not.
+apiVersion: 1
+
+providers:
+  - name: assurecode
+    orgId: 1
+    folder: AssureCode
+    type: file
+    disableDeletion: false
+    # Picks up edits to the JSON without a restart, so a panel can be iterated
+    # on against a running stack.
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      # Deliberately NOT /etc/grafana/provisioning/dashboards — that directory
+      # holds this provider file, and mounting the JSON there too would have
+      # the two mounts shadow each other.
+      path: /etc/assurecode/dashboards
+      foldersFromFilesStructure: false

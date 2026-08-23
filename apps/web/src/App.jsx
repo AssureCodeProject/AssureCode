@@ -18,6 +18,8 @@ import XaiTrustScoreView from './components/XaiTrustScoreView';
 import EscrowSettlementView from './components/EscrowSettlementView';
 import MobileDrawer from './components/ui/MobileDrawer';
 import LoginScreen from './components/LoginScreen';
+import { ChainBadge, SignatureBadge } from './components/ui/LedgerBadges';
+import { useLedgerStatus } from './hooks/useLedgerStatus';
 import { useAuth } from './context/AuthContext';
 
 /** Shared fade used by every phase panel, so they stay in step with each other. */
@@ -72,6 +74,10 @@ export function App() {
     const saved = localStorage.getItem('assurecode_contract_data');
     return saved ? JSON.parse(saved) : null;
   });
+
+  // What the footer badges are allowed to claim about the ledger. Fetched
+  // rather than assumed — see hooks/useLedgerStatus.
+  const ledgerStatus = useLedgerStatus(contractData?.contractId);
 
   // Live session timer state
   const [sessionTime, setSessionTime] = useState(formatClockTime);
@@ -352,10 +358,11 @@ export function App() {
       <footer className="bg-ink-2 border-t border-rule py-3 px-4 text-xs font-mono text-prose-muted mt-auto">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
           <span>ASSURECODE AUDIT LEDGER INSTRUMENTATION © 2026</span>
+          {/* Read from the ledger, not asserted. See components/ui/LedgerBadges. */}
           <div className="flex items-center gap-4">
-            <span>MERKLE HASH CHAIN ACTIVE</span>
+            <ChainBadge status={ledgerStatus} />
             <span>│</span>
-            <span>NIST ML-DSA POST-QUANTUM SIGNED</span>
+            <SignatureBadge status={ledgerStatus} />
           </div>
         </div>
       </footer>

@@ -26,6 +26,8 @@ import React, { useState } from 'react';
 import { CreditCard, Loader2, ShieldCheck, AlertTriangle } from 'lucide-react';
 import { apiRequest } from '../utils/api';
 import { openRazorpayCheckout } from '../utils/razorpay';
+import KycVerificationModal from './ui/KycVerificationModal';
+import { useAuth } from '../context/AuthContext';
 
 /** Minor units (paise) → a readable rupee amount. */
 export const formatMinor = (minor, currency = 'INR') =>
@@ -39,9 +41,15 @@ export const formatMinor = (minor, currency = 'INR') =>
 const rupeesToMinor = (rupees) => Math.round(Number(rupees) * 100);
 
 export function EscrowFundingPanel({ contractId, existingEscrow, onFunded }) {
+  const { user } = useAuth();
   const [amountRupees, setAmountRupees] = useState('');
   const [phase, setPhase] = useState('idle'); // idle | creating | paying | verifying
   const [error, setError] = useState(null);
+  // Funding is gated on KYC by requireKycVerified in the gateway. The modal
+  // that satisfies that gate existed and was imported by nothing, so a client
+  // who hit the gate had no route forward from inside the app at all — the only
+  // way to become VERIFIED was tools/seed-users.py.
+  const [kycOpen, setKycOpen] = useState(false);
 
   // An order already exists but nobody has paid it. Offer to resume rather than
   // creating a second order for the same contract.
@@ -51,6 +59,22 @@ export function EscrowFundingPanel({ contractId, existingEscrow, onFunded }) {
   const fail = (message) => {
     setError(message);
     setPhase('idle');
+  };
+
+  /**
+   * The gateway's KYC refusal, turned into the action that resolves it.
+   *
+   * Returns true when it handled the response, so callers stop rather than also
+   * rendering an error the user cannot act on.
+   */
+  const handledKycGate = (res) => {
+    if (res.status === 403 && res.payload?.error === 'KYC_REQUIRED') {
+      setPhase('idle');
+      setError(null);
+      setKycOpen(true);
+      return true;
+    }
+    return false;
   };
 
   /**
@@ -110,6 +134,7 @@ export function EscrowFundingPanel({ contractId, existingEscrow, onFunded }) {
       });
 
       if (!res.ok) {
+        if (handledKycGate(res)) return;
         throw new Error(res.payload.error || `Could not create the escrow order (HTTP ${res.status}).`);
       }
       if (!res.payload.keyId) {
@@ -145,6 +170,7 @@ export function EscrowFundingPanel({ contractId, existingEscrow, onFunded }) {
         body: { amountMinor: pendingOrder.amountMinor, currency: pendingOrder.currency ?? 'INR' },
       });
       if (!res.ok) {
+        if (handledKycGate(res)) return;
         throw new Error(res.payload.error || `Could not reopen the escrow order (HTTP ${res.status}).`);
       }
       await startCheckout(res.payload);
@@ -257,6 +283,19 @@ export function EscrowFundingPanel({ contractId, existingEscrow, onFunded }) {
           <span>{error}</span>
         </p>
       )}
+
+      <KycVerificationModal
+        isOpen={kycOpen}
+        currentUser={user}
+        onClose={() => setKycOpen(false)}
+        onKycComplete={() => {
+          // No re-login needed: requireKycVerified reads kyc_status from the
+          // database on every request precisely so a user who verifies
+          // mid-session is not refused by a stale token claim.
+          setKycOpen(false);
+          setError('Identity verified. Funding is now unblocked — try again.');
+        }}
+      />
     </div>
   );
 }

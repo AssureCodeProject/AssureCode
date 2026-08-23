@@ -127,8 +127,10 @@ would be overstating it."* Examiners reward this.
 
 **What to click:** show the vault, the oracle signals, then release.
 
-**On double payment:** `pg_advisory_xact_lock` inside the settlement
-transaction, plus idempotency keys at the gateway. Stripe uses
+**On double payment:** an atomic claim on the `settlements` primary key
+(`INSERT ... ON CONFLICT DO UPDATE ... WHERE status = 'FAILED'`) — whoever the
+upsert returns a row to is the single claimant; everyone else returns. Plus
+idempotency keys at the gateway. Stripe uses
 `capture_method: 'manual'`, so the capture *is* the release — there is no
 separate transfer to double-fire.
 
@@ -146,7 +148,7 @@ asked, say it's future work — do not demo it as though it arbitrates.
 | **How does the scope guard work?** | "We resolve the contract's genesis ledger hash first — no anchor, no decision. Then we embed the message, retrieve the top-5 contract chunks from a pgvector HNSW index by cosine similarity, and compare the best match against a calibrated threshold of 0.3056. The decision is recorded against that genesis hash so it's auditable." |
 | **Where did 0.3056 come from?** | "A sweep in `tools/calibrate_scope_threshold.py` over a 6-contract, 100-message corpus, run through the real ingestion and retrieval path. The corpus is **split by contract**, so the reported numbers come from three contracts the sweep never saw: 0.792 accuracy, 0.917 recall. The sweep minimises `3*FN + FP` rather than accuracy, because blocking legitimate work holds a payment while allowing scope creep costs an amendment. On the live 50-contract benchmark: 68% accuracy, 100% precision, 60% recall — up from 36% / 100% / 20%. The corpus is authored in-repo and not dual-annotated, so treat the held-out figures as optimistic." |
 | **Isn't that a bad result?** | "Yes. It's the honest one. The failure direction is the safer one for a payment system — a false block costs a scope amendment, a false allow releases uncontracted work — but it's still a failure. Fixing it needs a larger labelled set, not a tuned constant." |
-| **How do you prevent double payouts?** | "Idempotency keys at the gateway with an LRU plus a Postgres table, and `pg_advisory_xact_lock` inside the settlement transaction. There's a concurrency test that fires five simultaneous requests with the same key and asserts exactly one ledger entry." |
+| **How do you prevent double payouts?** | "Idempotency keys at the gateway with an LRU plus a Postgres table, and an atomic claim on the `settlements` primary key in the worker — a conditional upsert, so exactly one caller gets the row and the rest return. There's a concurrency test that fires five simultaneous requests with the same key and asserts exactly one ledger entry." |
 | **Why is matchmaking not sub-millisecond?** | "It embeds text with a real transformer. 84.7 ms warm mean over 1000 candidates, 108 ms p95. An earlier benchmark reported under 3 ms because it used a hash-bucket embedder with no semantics — that number measured nothing." |
 | **How good is the matchmaking?** | "P@5 of 0.837 when the client names the technologies; 0.325 when they describe the outcome in plain language. That gap is the real finding: the system is closer to a robust keyword matcher than a semantic one." |
 | **Why 0.50 / 0.35 / 0.15 for the ranking weights?** | "They were chosen, not derived — and I ablated all 231 settings on the simplex to find out what they cost. They rank 66th of 231 on retrieval; the optimum is near 0.95 on the skill term. But that measures *retrieval*, and trust is in the score on purpose, because we rank who should be hired rather than who's most textually similar. The honest statement is that the split has never been measured against either goal." |

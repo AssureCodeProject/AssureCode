@@ -62,7 +62,13 @@ describe('workspace builder — layout', () => {
     }
 
     expect(ws.entrypoint).toBe('harness.cjs');
-    expect(ws.entryArgs).toEqual([path.join('tests', 'generated.test.js')]);
+    // path.posix, deliberately. This argument is consumed inside the sandbox
+    // container, which is Linux whatever the host is. Asserting path.join here
+    // meant the test agreed with the bug on Windows: the harness was handed
+    // "tests\generated.test.js", found nothing, and reported 0 of 0 tests —
+    // which the pipeline reads as indeterminate rather than as a failure, so
+    // everything stayed green while no test had executed.
+    expect(ws.entryArgs).toEqual(['tests/generated.test.js']);
   });
 
   it('writes the pushed code as the module under test', async () => {

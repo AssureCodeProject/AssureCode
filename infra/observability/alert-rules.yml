@@ -1,0 +1,117 @@
+# Prometheus alerting rules.
+#
+# Every rule here fires on a metric that already exists and is already scraped —
+# none of them needed new instrumentation. That is the reason they are the first
+# rules in the repository: before this there was no `rule_files:` stanza at all,
+# so a poison message could sit in a DLQ indefinitely with a counter faithfully
+# recording it and nobody looking.
+#
+# There is no Alertmanager deployed yet, so these evaluate and show up in
+# Prometheus's own Alerts tab rather than paging anyone. That is still strictly
+# better than a metric nobody queries: the state is named, has a threshold
+# somebody chose, and carries the reason in the annotation.
+#
+# Deliberately few. A starting set that is all true positives is worth more than
+# a comprehensive set that trains people to ignore the tab.
+
+groups:
+  - name: assurecode-delivery
+    interval: 30s
+    rules:
+      # A message reaches the DLQ only after the bus has already retried it, so
+      # any value above zero means a payload was dropped from the pipeline —
+      # an audit that never scored, or a settlement request that never ran.
+      # `> 0` rather than a rate: one lost settlement is worth knowing about.
+      - alert: DeadLetterQueueNotEmpty
+        expr: increase(assurecode_dlq_messages_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Messages are being dead-lettered on {{ $labels.stream }}"
+          description: >-
+            {{ $value | printf "%.0f" }} message(s) moved to {{ $labels.stream }}.dlq in the
+            last 15 minutes. The bus retried each one and gave up. Nothing drains
+            the DLQ automatically, so these events are lost until someone replays
+            them. Check the consumer's logs for the handler that threw.
+
+      # Consumer lag is the difference between when an event was published and
+      # when a handler picked it up. Sustained lag means a worker is falling
+      # behind or has stopped consuming without crashing — the failure mode a
+      # liveness probe cannot see.
+      - alert: EventConsumerLagHigh
+        expr: histogram_quantile(0.95, sum by (le, topic) (rate(assurecode_event_lag_seconds_bucket[5m]))) > 60
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 consumer lag on {{ $labels.topic }} is above 60s"
+          description: >-
+            Events on {{ $labels.topic }} are taking over a minute to be consumed at
+            p95, sustained for 10 minutes. A worker is behind or wedged. Note that
+            settlement-worker holds the AUDIT_COMPLETED handler open while it
+            triggers scoring, so a degraded gateway shows up here first.
+
+  - name: assurecode-availability
+    interval: 30s
+    rules:
+      # The cheapest alert in the file and the one most likely to fire first.
+      # A service that stops being scraped is invisible to every other rule
+      # here, so this has to exist or the rest silently stop meaning anything.
+      - alert: ServiceDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} has not been scrapeable for 2 minutes"
+          description: >-
+            Prometheus cannot reach {{ $labels.instance }}. Every other alert that
+            depends on this target is now blind, not quiet.
+
+      # ci-worker and settlement-worker expose no /metrics at all, so they are
+      # absent from `up` entirely and this rule cannot cover them. Recorded here
+      # rather than left as a surprise: see ARCHITECTURE.md, and the compose
+      # healthchecks are currently the only signal those two produce.
+
+  - name: assurecode-dependencies
+    interval: 30s
+    rules:
+      # Cloudflare is the only LLM provider. When it is unreachable, the OWASP
+      # Layer 2 scan cannot run, and ci-worker correctly refuses to call a
+      # half-completed scan a pass — which means securityPassed stays false and
+      # nothing can settle. That chain is not obvious from the symptom, so the
+      # annotation states it.
+      - alert: LlmProviderFailing
+        expr: >-
+          sum(rate(assurecode_llm_calls_total{outcome!="ok"}[10m]))
+          / clamp_min(sum(rate(assurecode_llm_calls_total[10m])), 0.001) > 0.5
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Over half of LLM calls are failing"
+          description: >-
+            The LLM provider is failing more than 50% of calls over 10 minutes.
+            Consequence: the OWASP Layer 2 scan cannot complete, ci-worker reports
+            securityScanComplete=false, and the oracle's securityPassed signal is
+            permanently false — so no contract can settle until this recovers.
+
+      # The scope guard has measured 100% precision and 60% recall: it does not
+      # let out-of-scope work through, it blocks legitimate requests. A sudden
+      # jump in block rate is therefore much more likely to be a broken
+      # embedding path or a bad threshold than a wave of scope violations.
+      - alert: ScopeGuardBlockingMostRequests
+        expr: >-
+          sum(rate(assurecode_scope_decisions_total{allowed="false"}[15m]))
+          / clamp_min(sum(rate(assurecode_scope_decisions_total[15m])), 0.001) > 0.8
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "scope-guard is blocking over 80% of requests"
+          description: >-
+            Sustained block rate above 80%. Given the guard's measured behaviour
+            (100% precision, 60% recall — it over-blocks rather than under-blocks),
+            suspect the retrieval path or the similarity threshold before
+            suspecting the requests.

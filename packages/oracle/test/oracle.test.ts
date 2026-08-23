@@ -348,7 +348,25 @@ describe('OracleStore writes', () => {
     await store.recordScore('c1', 91, 0);
 
     expect(pool.calls[0].sql).toContain('ON CONFLICT (contract_id) DO UPDATE');
-    expect(pool.calls[0].params).toEqual(['c1', 91, 0]);
+    // scoredAt is optional and defaults to null, which the SQL COALESCEs to
+    // now() — an omitted timestamp must not become an implicit "oldest".
+    expect(pool.calls[0].params).toEqual(['c1', 91, 0, null]);
+  });
+
+  it('passes the event timestamp through so a late score cannot win', async () => {
+    // Two audits in quick succession produce two XAI_SCORED events. Redis
+    // Streams delivers them in order; Kafka, which publish() supplies no
+    // partition key for, can deliver them on different partitions and so out of
+    // order. Without this guard the older score overwrites the newer one and
+    // the settlement gate evaluates a stale number.
+    const { store, pool } = storeWith({});
+    await store.recordScore('c1', 91, 0, '2026-08-22T10:00:00.000Z');
+
+    expect(pool.calls[0].params[3]).toBe('2026-08-22T10:00:00.000Z');
+    expect(pool.calls[0].sql).toContain('oracle_state.scored_at <= EXCLUDED.scored_at');
+    // IS NULL is the other half: a row created by recordAudit alone has no
+    // scored_at, and must still accept its first score.
+    expect(pool.calls[0].sql).toContain('oracle_state.scored_at IS NULL');
   });
 
   it('does not let recordAudit clobber a previously recorded score', async () => {

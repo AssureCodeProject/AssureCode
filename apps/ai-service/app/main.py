@@ -11,16 +11,19 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Response
 
+from app.ports.readiness import build_readiness, check_postgres
 from app.ports.service_auth import assert_configured, verify_service_token
 from app.ports.telemetry import make_metrics_middleware, metrics_response
 from app.routes import embed as embed_routes
+from app.routes import ledger_sign as ledger_sign_routes
 from app.routes import match as match_routes
 from app.routes import rag as rag_routes
 from app.routes import security_scan as security_scan_routes
 from app.routes import test_gen as test_gen_routes
 from app.routes import xai as xai_routes
+from app.settings import get_settings
 
 # `x-service-token` on every route except the probe allow-list in
 # service_auth.PUBLIC_PATHS. Declared on the constructor rather than on each
@@ -46,6 +49,7 @@ app.middleware("http")(make_metrics_middleware("ai-service"))
 
 app.include_router(embed_routes.router)
 app.include_router(match_routes.router)
+app.include_router(ledger_sign_routes.router)
 app.include_router(rag_routes.router)
 app.include_router(security_scan_routes.router)
 app.include_router(test_gen_routes.router)
@@ -54,8 +58,30 @@ app.include_router(xai_routes.router)
 
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
-    """Liveness probe used by docker-compose healthchecks."""
+    """Liveness probe. Asserts only that the process can serve HTTP.
+
+    Deliberately dependency-free: a liveness probe that fails on a database
+    outage makes the orchestrator restart every replica over a problem no
+    restart can fix. Readiness is what should take a degraded pod out of
+    rotation — see /readyz.
+    """
     return {"status": "ok", "service": "ai-service", "time": datetime.now(UTC).isoformat()}
+
+
+@app.get("/readyz")
+def readyz(response: Response) -> dict[str, object]:
+    """Readiness probe. Answers 503 when a required dependency is unreachable.
+
+    Until this existed the Kubernetes readiness probe pointed at /healthz, so a
+    replica with no database still received traffic and failed every request it
+    was handed.
+    """
+    body, status = build_readiness(
+        "ai-service",
+        {"postgres": check_postgres(get_settings().database_url)},
+    )
+    response.status_code = status
+    return body
 
 
 @app.get("/metrics")

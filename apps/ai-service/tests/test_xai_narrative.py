@@ -10,12 +10,12 @@ Three properties are load-bearing, matching the plan's constraints:
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
+from support import service_client
 
 from app.deps import reset_deps_cache
 from app.main import app
 
-client = TestClient(app)
+client = service_client(app)
 
 # A clean, all-passing CI run. Every test here varies only LLM availability, so
 # the telemetry is deliberately identical across calls — that is what makes the

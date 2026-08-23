@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from app.deps import (
@@ -53,6 +53,7 @@ from app.deps import (
     get_scope_log,
     get_settings,
 )
+from app.ports.readiness import build_readiness, check_postgres
 from app.ports.service_auth import assert_configured, verify_service_token
 from app.ports.telemetry import (
     make_metrics_middleware,
@@ -112,7 +113,46 @@ class ScopeCheckResponse(BaseModel):
 
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
+    """Liveness probe. Asserts only that the process can serve HTTP.
+
+    Deliberately dependency-free: a liveness probe that fails on a database
+    outage makes the orchestrator restart every replica over a problem no
+    restart can fix. Readiness is what should take a degraded pod out of
+    rotation — see /readyz.
+    """
     return {"status": "ok", "service": "scope-guard", "time": datetime.now(UTC).isoformat()}
+
+
+@app.get("/readyz")
+def readyz(response: Response) -> dict[str, object]:
+    """Readiness probe. Answers 503 when a required dependency is unreachable.
+
+    Until this existed the Kubernetes readiness probe pointed at /healthz, so a
+    replica that could not resolve H0 or record a scope decision still received
+    chat traffic and refused every message it was handed.
+    """
+    checks: dict[str, object] = {"postgres": check_postgres(get_settings().database_url)}
+
+    # Informational, not a gate: deps.py already refuses to start without a
+    # calibration file, so reaching this line means one loaded. Surfaced here
+    # because "the drift endpoint is answering from synthetic residuals" is
+    # something an operator should be able to read off a probe rather than
+    # having to infer from a response field.
+    try:
+        _, synthetic = get_drift_calibration()
+        checks["drift_calibration"] = {
+            "status": "ok",
+            "detail": "synthetic" if synthetic else "measured",
+        }
+    except Exception as err:
+        checks["drift_calibration"] = {
+            "status": "not_configured",
+            "detail": f"{type(err).__name__}: {str(err)[:200]}",
+        }
+
+    body, status = build_readiness("scope-guard", checks)
+    response.status_code = status
+    return body
 
 
 @app.get("/metrics")

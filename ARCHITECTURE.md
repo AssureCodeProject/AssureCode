@@ -67,15 +67,38 @@ the text reads today, so the decision stays checkable afterwards. If `H0` cannot
 be resolved the guard refuses rather than degrading into a free-floating
 similarity check. Emits `scope.checked`.
 
-**4 — Scoring.** `ai-service` computes an explainable trust score from the audit
-signals. Emits `xai.scored`.
+**4 — Scoring.** `settlement-worker` responds to `audit.completed` by calling
+the gateway's `GET /api/contracts/:id/score`, which has `ai-service` compute an
+explainable trust score from the audit signals and emits `xai.scored`. The
+worker consumes that in turn, so the pipeline closes without a human.
+
+That callback is the whole point of the step. Until it existed the only caller
+of `/score` was a React effect, so the `trustScore >= 85` half of the settlement
+gate could be satisfied only while somebody had the XAI tab open in a browser —
+an audit nobody looked at could never settle. `ENABLE_AUTO_SCORING=false` is the
+kill switch, and reinstates exactly that manual state.
 
 **5 — Settlement.** `settlement-worker` asks `packages/oracle` for a verdict and
 captures the escrow only if approved. Emits `settlement.completed` or
 `settlement.rejected`.
 
+**6 — Sealing.** After a settlement commits, `settlement-worker` computes the
+Merkle root over the contract's chain and asks the gateway to sign it with
+ML-DSA-87. The signer lives in `ai-service` because that is the only service
+carrying an ML-DSA implementation (`dilithium-py`); every service that seals or
+settles is TypeScript, and there is no JavaScript ML-DSA in the tree. A signing
+failure is loud but not fatal — the money has already moved, and
+`GET /api/contracts/:id/root` reports the root as unsigned rather than letting
+the UI assert a signature that is not there.
+
 Topics are declared once in `packages/shared/src/index.ts` (`EVENT_TOPICS`), so
-producer and consumer cannot drift apart by string literal.
+producer and consumer cannot drift apart by string literal. Several topics are
+published with no consumer — `contract.initialized`, `contract.locked`,
+`tests.generated`, `settlement.completed`, `settlement.rejected`. That is
+deliberate: they are fan-out points, and the two that travel via the
+transactional outbox are durable whether or not anyone listens. Which topics
+those are, and why, is recorded next to the constants themselves rather than
+left to be re-derived by grep.
 
 ## Design decisions worth stating
 
@@ -234,6 +257,14 @@ somebody has to find.
    `ENABLE_GITHUB_SOURCE_FETCH=true`. While it is off, webhook-originated
    pushes are refused with an explanation and only `/simulate-push` reaches the
    pipeline. The fetch is untested against live GitHub.
+
+   The path is gated twice: the contract also has to carry a
+   `github_repo_full_name`, or `webhook-ingest` cannot resolve the push to a
+   contract at all. That column now has a writer in the UI (the "GitHub
+   repository" field on contract initialization); previously the only way to
+   set it was calling `PATCH /api/contracts/:id/github-repo` by hand, which made
+   the path unreachable from the application. `ci-worker`'s refusal names which
+   of the two preconditions is missing. See RUNBOOK.md.
 3. **Neo4j is selectable but unjustified.** It works and is verified against
    Postgres for ranking parity, but the matchmaker does no traversal, so it buys
    nothing measurable over pgvector today. Its seed is also two steps

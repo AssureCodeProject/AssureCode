@@ -19,7 +19,7 @@
  *   npm run test:e2e:up           # just bring the stack up
  *   npm run test:e2e:down         # just tear it down
  */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -39,6 +39,10 @@ const PORTS = {
   redis: process.env.TEST_REDIS_PORT ?? '56379',
   neo4jBolt: process.env.TEST_NEO4J_BOLT_PORT ?? '57687',
   localstack: process.env.TEST_LOCALSTACK_PORT ?? '54566',
+  // The two Python services, started as host processes by startAppServices().
+  // 58xxx rather than 8000/8001 so a dev stack can stay up during a test run.
+  aiService: process.env.TEST_AI_SERVICE_PORT ?? '58000',
+  scopeGuard: process.env.TEST_SCOPE_GUARD_PORT ?? '58001',
 };
 
 /**
@@ -78,12 +82,20 @@ const TEST_ENV = {
   RAZORPAY_KEY_ID: 'rzp_test_mock',
   RAZORPAY_KEY_SECRET: 'e2e_razorpay_secret_not_for_production',
   RAZORPAY_WEBHOOK_SECRET: 'e2e_razorpay_webhook_secret_not_for_production',
+  // Where the Node side reaches the Python services started by
+  // startAppServices(). Without these the gateway would fall back to its
+  // localhost:8000 default and hit whatever a developer happens to be running.
+  AI_SERVICE_URL: `http://127.0.0.1:${PORTS.aiService}`,
+  SCOPE_GUARD_URL: `http://127.0.0.1:${PORTS.scopeGuard}`,
 };
 
 const args = process.argv.slice(2);
 const command = args.find((a) => !a.startsWith('--')) ?? 'all';
 const keep = args.includes('--keep');
 const skipPython = args.includes('--no-python');
+// The golden path needs both Python services and a real Redis bus; this is
+// the switch for running the rest of the suite without them.
+const skipGolden = args.includes('--no-golden') || skipPython;
 
 const isWindows = process.platform === 'win32';
 
@@ -140,6 +152,122 @@ function venvPython(app) {
   return existsSync(candidate) ? candidate : null;
 }
 
+/**
+ * The Python services, run as host processes for the golden-path suite.
+ *
+ * Deliberately not in infra/docker-compose.test.yml — that file is the data
+ * plane and its header says so. Running these from the working tree means the
+ * suite exercises the code in front of you, not a possibly-stale image.
+ *
+ * NODE_ENV is deliberately NOT 'test' for them: under test, app/deps.py swaps
+ * in the in-memory RAG store and ledger anchor, and the golden path needs the
+ * Postgres-backed ones so /xai/score reads the scope decisions the run actually
+ * produced.
+ *
+ * EMBED_PROVIDER is deliberately NOT 'fake' either, which is less obvious.
+ * app/deps.py keys three separate adapters off that one flag: `fake` selects
+ * FakeEmbedder *and* InMemoryRagStore (get_rag_store) *and* InMemoryArtifactStore.
+ * The consequence is invisible until you look for it — POST /rag/ingest answers
+ * `200 {"chunks_stored": 2}` while nothing reaches rag_embeddings, so the scope
+ * guard then refuses every message for want of an indexed contract, and
+ * ci-worker cannot fetch the test bundle it was told was stored, so the sandbox
+ * reports 0/0 and no contract can ever settle. The real embedder costs a model
+ * load; it is the only way this path is exercised rather than simulated.
+ */
+const appProcesses = [];
+
+function pythonServiceEnv() {
+  return {
+    ...process.env,
+    ...TEST_ENV,
+    NODE_ENV: 'development',
+    // Real embedder — see the note above on why 'fake' breaks persistence.
+    EMBED_PROVIDER: 'sentence-transformers',
+    // The LLM is safe to fake: LLM_PROVIDER selects only the client, and the
+    // deterministic stand-in still exercises the Layer 2 code path so
+    // securityScanComplete becomes true and the oracle's security signal can
+    // actually be satisfied.
+    LLM_PROVIDER: 'fake',
+    // This stack's LocalStack bucket is best-effort (see createBucket), so the
+    // documented local fallback is what keeps test generation failing on logic
+    // rather than on storage.
+    ALLOW_LOCAL_ARTIFACT_FALLBACK: 'true',
+  };
+}
+
+async function waitForReady(name, url, timeoutMs = 90_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(2000) });
+      // 200 or 503 both mean the process is serving. 503 only says a dependency
+      // is unhappy, and the suite itself reports that far more usefully.
+      if (res.status === 200 || res.status === 503) return true;
+    } catch {
+      // not listening yet
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  console.error(`\n\x1b[31m✗ ${name} was not ready within ${timeoutMs / 1000}s.\x1b[0m`);
+  return false;
+}
+
+/** Returns true when both services are up; false means skip the golden path. */
+async function startAppServices() {
+  const specs = [
+    { app: 'ai-service', port: PORTS.aiService },
+    { app: 'scope-guard', port: PORTS.scopeGuard },
+  ];
+
+  for (const { app, port } of specs) {
+    const py = venvPython(app);
+    if (!py) {
+      console.warn(
+        `\n\x1b[33m! Not starting ${app}\x1b[0m — apps/${app}/.venv not found.` +
+          '\n  The golden-path suite will be skipped, not silently passed.',
+      );
+      return false;
+    }
+
+    console.log(`\n\x1b[1m▸ Starting ${app} on :${port}\x1b[0m`);
+    const child = spawn(
+      py,
+      [
+        '-m',
+        'uvicorn',
+        'app.main:app',
+        '--host',
+        '127.0.0.1',
+        '--port',
+        String(port),
+        '--log-level',
+        'warning',
+      ],
+      {
+        cwd: path.join(repoRoot, 'apps', app),
+        env: pythonServiceEnv(),
+        stdio: 'inherit',
+      },
+    );
+    appProcesses.push({ app, child });
+  }
+
+  for (const { app, port } of specs) {
+    if (!(await waitForReady(app, `http://127.0.0.1:${port}/healthz`))) return false;
+  }
+  return true;
+}
+
+function stopAppServices() {
+  for (const { app, child } of appProcesses) {
+    if (child.exitCode === null && !child.killed) {
+      console.log(`\x1b[2m  stopping ${app}\x1b[0m`);
+      child.kill('SIGTERM');
+    }
+  }
+  appProcesses.length = 0;
+}
+
 function createBucket() {
   // LocalStack starts empty; the artifact store expects its bucket to exist.
   // Non-fatal: the S3 path has a documented local-directory fallback
@@ -154,7 +282,7 @@ function createBucket() {
   }
 }
 
-function main() {
+async function main() {
   if (!dockerAvailable()) {
     console.error(
       '\n\x1b[31mDocker is not responding.\x1b[0m This harness runs real Postgres, Redis,\n' +
@@ -199,14 +327,18 @@ function main() {
 
   let failures = 0;
 
-  // --include-workspace-root=false so the root's own `test` script is not
-  // re-entered recursively.
-  failures += run('Running JS/TS suites', 'npm', [
+  // One pass over every JS/TS suite — packages *and* apps — with coverage.
+  //
+  // This replaces a bare `npm run test --workspaces`. Same suites, same
+  // assertions; the difference is that the app tier is measured, which it
+  // cannot be outside this harness: those suites are `describe.skipIf(!PG_UP)`,
+  // so on a machine with no database they report as skipped and contribute
+  // nothing. That is exactly why the infra-free gate
+  // (vitest.coverage.config.ts) covers only packages, and why this second
+  // config exists.
+  failures += run('Running JS/TS suites with coverage', 'npm', [
     'run',
-    'test',
-    '--workspaces',
-    '--if-present',
-    '--include-workspace-root=false',
+    'test:coverage:e2e',
   ]) === 0
     ? 0
     : 1;
@@ -227,6 +359,38 @@ function main() {
     }
   }
 
+  // ── Golden path ───────────────────────────────────────────────────────
+  //
+  // The suites above are unit and integration tests of individual pieces
+  // against real infrastructure. This is the only thing that drives a contract
+  // through the whole lifecycle — initialize, lock, push, audit, score, settle
+  // — and asserts the ledger and settlement state at the end. It needs the
+  // Python services, because the trust score has no fallback: /score answers
+  // 502 when the scorer is unreachable, by design.
+  if (!skipGolden) {
+    const servicesUp = await startAppServices();
+    if (servicesUp) {
+      failures +=
+        run('Running golden-path suite', 'npx', [
+          'vitest',
+          'run',
+          'test/golden-path.e2e.test.ts',
+        ], {
+          // The one place a real bus is wanted inside a test process: the
+          // gateway and both workers are imported together and must share it.
+          env: { ...process.env, ...TEST_ENV, EVENT_BUS_FORCE_REAL: 'true' },
+        }) === 0
+          ? 0
+          : 1;
+    } else {
+      console.warn(
+        '\n\x1b[33m! Golden path skipped\x1b[0m — the Python services did not start.' +
+          '\n  This is a SKIP, not a pass.',
+      );
+    }
+    stopAppServices();
+  }
+
   if (!keep) composeDown();
   else console.log('\n\x1b[33m! Stack left running (--keep).\x1b[0m Tear down: npm run test:e2e:down');
 
@@ -237,4 +401,8 @@ function main() {
   console.log('\n\x1b[32m✓ test:e2e green.\x1b[0m');
 }
 
-main();
+main().catch((err) => {
+  console.error(err);
+  stopAppServices();
+  process.exit(1);
+});

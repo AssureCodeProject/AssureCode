@@ -4,3 +4,4 @@ export * from './FuturisticButton';
 export * from './RadialGauge';
 export * from './ToastNotification';
 export * from './MobileDrawer';
+export * from './KycVerificationModal';

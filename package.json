@@ -25,6 +25,7 @@
     "seed:neo4j": "tsx tools/seed-neo4j.ts",
     "test": "npm run test --workspaces --if-present --include-workspace-root=false",
     "test:coverage": "vitest run --coverage --config vitest.coverage.config.ts",
+    "test:coverage:e2e": "vitest run --coverage --config vitest.coverage.e2e.config.ts",
     "test:e2e": "node scripts/e2e.mjs",
     "test:e2e:up": "node scripts/e2e.mjs up",
     "test:e2e:down": "node scripts/e2e.mjs down",

@@ -6,11 +6,11 @@ and determinism (same text → same vector).
 from __future__ import annotations
 
 import numpy as np
-from fastapi.testclient import TestClient
+from support import service_client
 
 from app.main import app
 
-client = TestClient(app)
+client = service_client(app)
 
 
 def test_embed_returns_384_dim_vector() -> None:

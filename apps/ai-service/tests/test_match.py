@@ -9,11 +9,11 @@ from __future__ import annotations
 import os
 
 import pytest
-from fastapi.testclient import TestClient
+from support import service_client
 
 from app.main import app
 
-client = TestClient(app)
+client = service_client(app)
 
 
 @pytest.fixture(scope="module", autouse=True)

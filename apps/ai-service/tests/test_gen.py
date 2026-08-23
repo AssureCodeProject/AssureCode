@@ -5,11 +5,11 @@ Verifies: returns s3_key/s3_url, test_count > 0, artifact is downloadable.
 """
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
+from support import service_client
 
 from app.main import app
 
-client = TestClient(app)
+client = service_client(app)
 
 
 def test_generate_tests_returns_s3_url_and_count() -> None:

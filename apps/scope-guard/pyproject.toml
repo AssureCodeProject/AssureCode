@@ -25,6 +25,7 @@ dependencies = [
 dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
+    "pytest-cov>=5.0.0",
     # Required by fastapi.testclient, which every test here uses. Declared
     # explicitly rather than relying on `pip install -e apps/ai-service`
     # running first in CI and leaking it into the shared interpreter.

@@ -12,6 +12,13 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# Alerting rules. There is no Alertmanager deployed, so these surface in
+# Prometheus's own Alerts tab rather than paging — still better than counters
+# nobody queries. Every rule uses a metric that already existed and was already
+# scraped; none needed new instrumentation.
+rule_files:
+  - /etc/prometheus/alert-rules.yml
+
 scrape_configs:
   - job_name: prometheus
     static_configs:

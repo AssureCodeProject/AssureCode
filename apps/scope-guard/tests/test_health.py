@@ -1,11 +1,11 @@
 """Smoke test for the scope-guard health endpoint (task 0.1)."""
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
+from support import service_client
 
 from app.main import app
 
-client = TestClient(app)
+client = service_client(app)
 
 
 def test_healthz() -> None:

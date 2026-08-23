@@ -6,12 +6,12 @@ from the raw path would produce one time series per contract id.
 """
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
+from support import service_client
 
 from app.main import app
 from app.ports import telemetry
 
-client = TestClient(app)
+client = service_client(app)
 
 
 class TestMetricsEndpoint:

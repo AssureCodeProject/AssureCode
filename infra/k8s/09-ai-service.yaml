@@ -74,6 +74,12 @@ spec:
                 name: assurecode-config
             - secretRef:
                 name: assurecode-secrets
+            # Only ai-service gets the ledger signing seed. It is the one
+            # service with an ML-DSA implementation (dilithium-py), so it is the
+            # one service that needs the private key — see the Secret's own
+            # comment in 01-configmap-secrets.yaml.
+            - secretRef:
+                name: assurecode-ledger-signing
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -97,9 +103,14 @@ spec:
             # rather than reading it from the image layer.
             failureThreshold: 30
             periodSeconds: 10
+          # /readyz, not /healthz. Readiness and liveness pointed at the same
+          # dependency-free endpoint, so a replica whose database was
+          # unreachable still passed readiness and kept receiving traffic it
+          # could only fail. Liveness stays on /healthz deliberately: a
+          # database outage must not make the orchestrator restart every pod.
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: 8000
             periodSeconds: 10
           livenessProbe:

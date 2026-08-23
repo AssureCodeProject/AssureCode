@@ -66,6 +66,10 @@ x-datastore-env: &datastore-env
   # scoring when an audit completes, rather than reimplementing that route's
   # contract resolution and telemetry shaping against ai-service directly.
   GATEWAY_URL: http://api-gateway:4000
+  # Kill switch for that call. On by default, because off is the state in which
+  # a contract can be audited and still never acquire a trust score — the
+  # settlement gate then waits forever on a number only a browser can produce.
+  ENABLE_AUTO_SCORING: ${ENABLE_AUTO_SCORING:-true}
   # This stack provides LocalStack and creates the bucket (see localstack-init),
   # so there is no reason for ai-service to write a test bundle to its own
   # container disk. Leaving the fallback on hides a broken S3 config: uploads
@@ -381,6 +385,22 @@ services:
       # executing untrusted freelancer code. Not a trade worth making to run a
       # local demo. See the header of infra/docker/Dockerfile.ci-worker.
       SANDBOX_RUNNER: ${SANDBOX_RUNNER:-node}
+    # Neither worker exposes an HTTP port, so there is no /healthz to probe.
+    # The k8s manifests settle for `node -e "process.exit(0)"`, which only
+    # asserts the Node binary can start — it reports healthy for a worker that
+    # has silently lost its bus connection, which is precisely the failure mode
+    # a headless consumer has.
+    #
+    # This probes the thing the worker cannot do its job without: a reachable
+    # Redis, which is where every event it consumes comes from. Still not proof
+    # that the subscription is live, but it fails on a real class of outage
+    # instead of on none at all.
+    healthcheck:
+      test: ["CMD", "node", "-e", "const s=require('net').createConnection({host:'redis',port:6379,timeout:2000});s.on('connect',()=>{s.destroy();process.exit(0)});s.on('error',()=>process.exit(1));s.on('timeout',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     depends_on:
       <<: *datastore-deps
       migrate:
@@ -396,6 +416,22 @@ services:
     environment:
       <<: *datastore-env
       NODE_ENV: ${NODE_ENV:-development}
+    # Neither worker exposes an HTTP port, so there is no /healthz to probe.
+    # The k8s manifests settle for `node -e "process.exit(0)"`, which only
+    # asserts the Node binary can start — it reports healthy for a worker that
+    # has silently lost its bus connection, which is precisely the failure mode
+    # a headless consumer has.
+    #
+    # This probes the thing the worker cannot do its job without: a reachable
+    # Redis, which is where every event it consumes comes from. Still not proof
+    # that the subscription is live, but it fails on a real class of outage
+    # instead of on none at all.
+    healthcheck:
+      test: ["CMD", "node", "-e", "const s=require('net').createConnection({host:'redis',port:6379,timeout:2000});s.on('connect',()=>{s.destroy();process.exit(0)});s.on('error',()=>process.exit(1));s.on('timeout',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     depends_on:
       <<: *datastore-deps
       migrate:
@@ -441,6 +477,19 @@ services:
       <<: *datastore-env
       NODE_ENV: ${NODE_ENV:-development}
       EMBED_PROVIDER: ${EMBED_PROVIDER:-sentence-transformers}
+      # The ledger's ML-DSA-87 signing seed.
+      #
+      # In this service's own environment block, NOT in the shared
+      # x-datastore-env anchor: that anchor is merged into all seven containers,
+      # which would put the ledger's private key in the process that captures
+      # payments and the one that runs untrusted submitted code. ai-service is
+      # the only service that signs, because it is the only one that ships
+      # dilithium-py.
+      #
+      # Unset by default. POST /ledger/sign-root then answers 503 and roots seal
+      # unsigned, which GET /api/contracts/:id/root reports honestly rather than
+      # papering over. Set it in .env to exercise signing locally.
+      ML_DSA_SEED_HEX: ${ML_DSA_SEED_HEX:-}
       # The image has no baked model. On first boot sentence-transformers pulls
       # all-MiniLM-L6-v2 (~90MB) from HuggingFace; the volume keeps that out of
       # every subsequent start, which is the difference between a 5s and a
@@ -573,6 +622,9 @@ services:
       - --storage.tsdb.retention.time=7d
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Referenced by rule_files: in prometheus.yml. Mounted separately so a
+      # rule edit does not require touching the scrape config.
+      - ./observability/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
       - prometheus-data:/prometheus
     ports:
       - "${PROMETHEUS_PORT:-9090}:9090"
@@ -592,6 +644,11 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
       - ./observability/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      # Grafana previously had a datasource mount and no dashboard mount, so it
+      # booted connected to Prometheus with nothing to display. The metrics were
+      # already there and already scraped; only the dashboard was missing.
+      - ./observability/grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./observability/dashboards:/etc/assurecode/dashboards:ro
       - grafana-data:/var/lib/grafana
     ports:
       - "${GRAFANA_PORT:-3001}:3000"

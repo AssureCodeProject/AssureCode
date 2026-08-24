@@ -1,0 +1,28 @@
+# Reviewed exceptions to the gitleaks secret scan (the `security` CI job's
+# Secret Scan step). Each entry below was inspected and is a fabricated
+# example string, not a real leaked credential — see the reason next to each.
+#
+# Format: one fingerprint per line, exactly as gitleaks prints it
+# (`Fingerprint:` in `gitleaks detect -v` output). Reviewed 2026-08-24.
+
+# tools/verify_owasp_2025_cloudflare.py:98 — fake `sk_live_...` string inside
+# a hardcoded-VULNERABLE_SAMPLES fixture used to test the platform's OWASP
+# A04 "hardcoded secret" detector; the whole point of the sample is to look
+# like a leaked Stripe key.
+d0b3a238179e47968af21e168d3b29842e2c2e46:tools/verify_owasp_2025_cloudflare.py:stripe-access-token:98
+
+# apps/ai-service/tests/test_security_scan.py:31 — same VULNERABLE_SAMPLES
+# fixture, Python side of the same A04 detector test.
+d0b3a238179e47968af21e168d3b29842e2c2e46:apps/ai-service/tests/test_security_scan.py:stripe-access-token:31
+
+# apps/ci-worker/test/worker.test.ts:27 — fake apiKey string inside a test
+# asserting that the AST security scanner flags hardcoded secrets in
+# generated code; the string is the thing under test, not a real key.
+8ce9eb08c13e0b78dc01ce820dfb14f3c6f4ce67:apps/ci-worker/test/worker.test.ts:generic-api-key:27
+
+# .agents/teamwork_preview_explorer_sprint6_1/handoff.md:72 and its duplicate
+# under packages/AssureCode/ (a stray nested-repo artifact from that commit,
+# not a second real occurrence) — an `Idempotency-Key` header value in a
+# manual curl example, literally `idempotency-test-key-1`.
+8ce9eb08c13e0b78dc01ce820dfb14f3c6f4ce67:.agents/teamwork_preview_explorer_sprint6_1/handoff.md:generic-api-key:72
+2ea4cf681eee5209506cb6a84540c7c227c7c1c5:packages/AssureCode/.agents/teamwork_preview_explorer_sprint6_1/handoff.md:generic-api-key:72

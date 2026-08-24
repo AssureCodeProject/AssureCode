@@ -91,7 +91,9 @@ export default [
 
   {
     // The web app is plain JSX with no TypeScript, and runs in a browser.
-    files: ['apps/web/**/*.{js,jsx}'],
+    // AssureCode-FrontEnd/ is a second, separate browser app — not an npm
+    // workspace member, but still lint-checked, so it needs the same globals.
+    files: ['apps/web/**/*.{js,jsx}', 'AssureCode-FrontEnd/src/**/*.{js,jsx}'],
     languageOptions: {
       globals: {
         ...globals.browser,

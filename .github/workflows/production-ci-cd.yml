@@ -47,10 +47,10 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 20
+      - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: '22.15'
           cache: 'npm'
 
       - name: Install Node Dependencies
@@ -99,10 +99,10 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 20
+      - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: '22.15'
           cache: 'npm'
 
       - name: Install Node Dependencies
@@ -197,10 +197,10 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 20
+      - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: '22.15'
           cache: 'npm'
 
       - name: Setup Python 3.11
@@ -240,10 +240,10 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 20
+      - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: '22.15'
           cache: 'npm'
 
       - name: Install Node Dependencies
@@ -278,11 +278,22 @@ jobs:
         with:
           fetch-depth: 0
 
+      # gitleaks/gitleaks-action@v2 wraps the same open-source scanner behind a
+      # license check that only exempts personal-account repos, not
+      # organization-owned ones (this repo is under AssureCodeProject) — so
+      # the action refuses to run without a paid GITLEAKS_LICENSE secret that
+      # was never provisioned. The scanner itself (gitleaks/gitleaks) is MIT
+      # licensed with no such restriction, so this installs and runs it
+      # directly, matching the kubeconform install pattern below.
+      - name: Install gitleaks
+        run: |
+          curl -sSfL \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
       - name: Secret Scan
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
+        run: gitleaks detect --source . --redact -v --exit-code 1
 
   container-build:
     name: Build Container Images

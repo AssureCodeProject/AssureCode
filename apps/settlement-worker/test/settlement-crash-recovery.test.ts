@@ -40,15 +40,24 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import pg from 'pg';
 import { loadDotEnv } from '../../../tools/test-support/env.js';
-import { postgresAvailable, announceSkip } from '../../../tools/test-support/infra.js';
+import { postgresAvailable, redisAvailable, announceSkip } from '../../../tools/test-support/infra.js';
 import { buildDbConfig, getDatabaseUrl, loadConfig } from '@assurecode/config';
 import { createEventBus, eventBusOptionsFromConfig } from '@assurecode/event-bus';
 import { EVENT_TOPICS } from '@assurecode/shared';
 
 loadDotEnv();
 
-const available = await postgresAvailable();
-if (!available) announceSkip('settlement crash recovery', 'PostgreSQL (DATABASE_URL)');
+// The spawned worker forces a real event bus (EVENT_BUS_FORCE_REAL) rather
+// than the in-memory one, since the crash has to be observable from outside
+// its process — so this needs actual Redis, not just Postgres. The `test` CI
+// job only brings up a Postgres service container (no Redis), which is
+// exactly why every other Redis-dependent suite skips there; this one must
+// too, or the spawned worker floods stderr with ECONNREFUSED and the test
+// hangs instead of skipping.
+const [pgUp, redisUp] = await Promise.all([postgresAvailable(), redisAvailable()]);
+const available = pgUp && redisUp;
+if (!pgUp) announceSkip('settlement crash recovery', 'PostgreSQL (DATABASE_URL)');
+else if (!redisUp) announceSkip('settlement crash recovery', 'Redis (REDIS_URL)');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../../..');

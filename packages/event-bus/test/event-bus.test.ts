@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { InMemoryBus, KafkaBus, eventBusOptionsFromConfig } from '../src/index.js';
+import { InMemoryBus, KafkaBus, RedisStreamsBus, eventBusOptionsFromConfig } from '../src/index.js';
 import { EVENT_TOPICS } from '@assurecode/shared';
 import { redisAvailable, announceSkip } from '../../../tools/test-support/infra.js';
 
@@ -331,6 +331,140 @@ describe.skipIf(!REDIS_UP)('RedisStreamsBus — Bounded Retries & DLQ', () => {
       group: 'assurecode',
       id: '100-0',
     });
+  });
+});
+
+// These do not need REDIS_UP: bypassing the constructor via Object.create
+// means no ioredis connection is ever opened (see the unhandled-'error'
+// warning on REDIS_UP above), so they run everywhere the class's own logic
+// needs covering — including jobs with no Redis service, where the suite
+// above is skipped wholesale and this behaviour would otherwise go untested.
+function busWithFakeClient(client: Record<string, unknown>): RedisStreamsBus {
+  const bus = Object.create(RedisStreamsBus.prototype) as RedisStreamsBus;
+  Object.assign(bus as unknown as Record<string, unknown>, {
+    client,
+    subscribers: [],
+    groupName: 'assurecode',
+    groupNameEnsured: new Set(),
+    maxRetries: 3,
+    initialBackoffMs: 1,
+    claimIdleMs: 15_000,
+  });
+  return bus;
+}
+
+describe('RedisStreamsBus — processEntry (no live Redis required)', () => {
+  it('runs the handler once and acks on success, without touching the DLQ', async () => {
+    const xackCalls: unknown[] = [];
+    const xaddCalls: unknown[] = [];
+    const bus = busWithFakeClient({
+      xack: async (...args: unknown[]) => xackCalls.push(args),
+      xadd: async (...args: unknown[]) => xaddCalls.push(args),
+    });
+
+    const envelope = {
+      id: 'evt-1',
+      topic: 't',
+      timestamp: new Date().toISOString(),
+      correlationId: 'c1',
+      payload: {},
+    };
+    let calls = 0;
+    await (bus as any).processEntry('t', 'assurecode', '1-0', ['envelope', JSON.stringify(envelope)], async () => {
+      calls++;
+    });
+
+    expect(calls).toBe(1);
+    expect(xaddCalls).toHaveLength(0);
+    expect(xackCalls).toEqual([['t', 'assurecode', '1-0']]);
+  });
+
+  it('acks immediately without invoking the handler when the entry has no envelope field', async () => {
+    const xackCalls: unknown[] = [];
+    const bus = busWithFakeClient({
+      xack: async (...args: unknown[]) => xackCalls.push(args),
+    });
+
+    let calls = 0;
+    await (bus as any).processEntry('t', 'assurecode', '1-0', ['someOtherField', 'x'], async () => {
+      calls++;
+    });
+
+    expect(calls).toBe(0);
+    expect(xackCalls).toEqual([['t', 'assurecode', '1-0']]);
+  });
+
+  it('retries maxRetries times, forwards to the DLQ, then still acks', async () => {
+    const xackCalls: unknown[] = [];
+    const xaddCalls: Array<[string, ...unknown[]]> = [];
+    const bus = busWithFakeClient({
+      xack: async (...args: unknown[]) => xackCalls.push(args),
+      xadd: async (...args: [string, ...unknown[]]) => xaddCalls.push(args),
+    });
+
+    const envelope = {
+      id: 'evt-2',
+      topic: 't',
+      timestamp: new Date().toISOString(),
+      correlationId: 'c2',
+      payload: { bad: true },
+    };
+    let calls = 0;
+    await (bus as any).processEntry('t', 'assurecode', '2-0', ['envelope', JSON.stringify(envelope)], async () => {
+      calls++;
+      throw new Error('always fails');
+    });
+
+    expect(calls).toBe(3);
+    expect(xaddCalls).toHaveLength(1);
+    expect(xaddCalls[0][0]).toBe('t.dlq');
+    expect(xackCalls).toEqual([['t', 'assurecode', '2-0']]);
+  });
+});
+
+describe('RedisStreamsBus — reclaimStale (no live Redis required)', () => {
+  it('claims idle pending entries via XAUTOCLAIM and runs them through processEntry', async () => {
+    const envelope = {
+      id: 'evt-3',
+      topic: 't',
+      timestamp: new Date().toISOString(),
+      correlationId: 'c3',
+      payload: { reclaimed: true },
+    };
+    const xackCalls: unknown[] = [];
+    const xautoclaimCalls: unknown[] = [];
+    const bus = busWithFakeClient({
+      xack: async (...args: unknown[]) => xackCalls.push(args),
+      xautoclaim: async (...args: unknown[]) => {
+        xautoclaimCalls.push(args);
+        return ['0-0', [['3-0', ['envelope', JSON.stringify(envelope)]]]];
+      },
+    });
+
+    let calls = 0;
+    await (bus as any).reclaimStale('t', 'assurecode', 'consumer-1', async () => {
+      calls++;
+    });
+
+    expect(xautoclaimCalls).toEqual([['t', 'assurecode', 'consumer-1', 15_000, '0-0', 'COUNT', 10]]);
+    expect(calls).toBe(1);
+    expect(xackCalls).toEqual([['t', 'assurecode', '3-0']]);
+  });
+
+  it('is non-fatal when XAUTOCLAIM itself fails — the normal read path must still run', async () => {
+    const bus = busWithFakeClient({
+      xautoclaim: async () => {
+        throw new Error('redis blip');
+      },
+    });
+
+    let calls = 0;
+    await expect(
+      (bus as any).reclaimStale('t', 'assurecode', 'consumer-1', async () => {
+        calls++;
+      }),
+    ).resolves.toBeUndefined();
+    expect(calls).toBe(0);
   });
 });
 

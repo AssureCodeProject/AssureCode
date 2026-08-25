@@ -219,7 +219,7 @@ describe.skipIf(!PG_UP)('payment_events is actually written', () => {
   beforeAll(async () => {
     await pool.query(
       `INSERT INTO contracts (contract_id, client_id, title, requirements, budget_cents, deadline, status)
-       VALUES ($1, 'client-acme', 'webhook audit test', 'n/a', 250000, '2026-12-31', 'LOCKED')
+       VALUES ($1, 'legacy-client', 'webhook audit test', 'n/a', 250000, '2026-12-31', 'LOCKED')
        ON CONFLICT (contract_id) DO NOTHING`,
       [contractId],
     );

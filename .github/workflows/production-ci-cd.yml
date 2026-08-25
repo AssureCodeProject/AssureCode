@@ -129,10 +129,15 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install psycopg2-binary pytest pytest-cov
-          pip install -e apps/ai-service
+          # [full] is required, not optional: app/main.py imports the
+          # ledger_sign routes at module load, which import dilithium-py —
+          # without it, pytest fails to even collect any test file here
+          # (ModuleNotFoundError), not just the ML-DSA-specific ones. Mirrors
+          # the same extras already used in the `e2e` job below.
+          pip install -e "apps/ai-service[test,full]"
           # scope-guard was never installed, which is why its 29 tests could
-          # not run here.
-          pip install -e apps/scope-guard
+          # not run here. [dev] carries pytest itself, per the e2e job.
+          pip install -e "apps/scope-guard[dev]"
 
       - name: Seed Database Users & Profiles
         run: python tools/seed-users.py

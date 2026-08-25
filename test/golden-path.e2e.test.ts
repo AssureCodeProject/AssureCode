@@ -313,8 +313,12 @@ describe('golden path — a contract from initialization to settlement', () => {
     expect(Number(audit.totalTests)).toBeGreaterThan(0);
     expect(Number(audit.passedTests)).toBe(Number(audit.totalTests));
 
-    // Scoring only needs an AI-service round trip once the audit lands, so
-    // this stays well under the file's 120s default.
+    // Scoring includes a real LLM call for the XAI narrative
+    // (xai.py:_generate_narrative), not just an embedding lookup — 60s
+    // proved too tight in live CI once the sandbox actually ran real tests
+    // instead of failing fast (confirmed: "hidden test suite did not fully
+    // pass" cleared, but this wait then timed out on its own). Widened with
+    // real headroom rather than re-guessing a tighter number blind.
     const state = await waitFor(
       'oracle_state.trust_score',
       async () => {
@@ -325,13 +329,13 @@ describe('golden path — a contract from initialization to settlement', () => {
         );
         return rows[0] ?? null;
       },
-      60_000,
+      120_000,
     );
 
     expect(Number(state.trust_score)).toBeGreaterThanOrEqual(0);
     expect(state.ast_passed).toBe(true);
     expect(state.tests_passed).toBe(true);
-  }, 240_000);
+  }, 300_000);
 
   it('settles, and the settlement is single-fire', async () => {
     const oracle = await server.inject({

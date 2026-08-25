@@ -53,7 +53,7 @@ from app.deps import (
     get_scope_log,
     get_settings,
 )
-from app.ports.readiness import build_readiness, check_postgres
+from app.ports.readiness import build_readiness, check_embedder, check_postgres
 from app.ports.service_auth import assert_configured, verify_service_token
 from app.ports.telemetry import (
     make_metrics_middleware,
@@ -131,7 +131,10 @@ def readyz(response: Response) -> dict[str, object]:
     replica that could not resolve H0 or record a scope decision still received
     chat traffic and refused every message it was handed.
     """
-    checks: dict[str, object] = {"postgres": check_postgres(get_settings().database_url)}
+    checks: dict[str, object] = {
+        "postgres": check_postgres(get_settings().database_url),
+        "embedder": check_embedder(get_embedder),
+    }
 
     # Informational, not a gate: deps.py already refuses to start without a
     # calibration file, so reaching this line means one loaded. Surfaced here

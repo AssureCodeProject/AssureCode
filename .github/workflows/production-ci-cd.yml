@@ -263,6 +263,21 @@ jobs:
           apps/scope-guard/.venv/bin/python -m pip install --quiet --upgrade pip
           apps/scope-guard/.venv/bin/python -m pip install --quiet -e "apps/scope-guard[dev]"
 
+      # Both services build their real Embedder lazily (app/ports/embedder.py,
+      # get_embedder() is lru_cached) so the sentence-transformers download only
+      # happens on the *first request that needs it* — and /healthz is
+      # deliberately dependency-free, so scripts/e2e.mjs's waitForReady()
+      # reports the service "ready" before that download has even started. On
+      # a Hugging Face cache miss this cold-starts a multi-minute download in
+      # the middle of the golden-path test's first request, which is what blew
+      # past its timeout and produced "Scope Guard unreachable" — not a real
+      # outage. Forcing the load here, as its own attributable step, moves that
+      # cost out of the test's timing and off the request path entirely.
+      - name: Pre-warm sentence-transformers model
+        run: |
+          apps/ai-service/.venv/bin/python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+          apps/scope-guard/.venv/bin/python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+
       # apps/ci-worker/src/sandbox/docker-sandbox.ts runs this image directly
       # on the runner (not via `services:`), so nothing pre-warms it — a
       # first-time pull mid-test-run eats into the sandbox's own 120s

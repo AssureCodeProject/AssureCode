@@ -13,7 +13,8 @@ from datetime import UTC, datetime
 
 from fastapi import Depends, FastAPI, Response
 
-from app.ports.readiness import build_readiness, check_postgres
+from app.deps import get_embedder
+from app.ports.readiness import build_readiness, check_embedder, check_postgres
 from app.ports.service_auth import assert_configured, verify_service_token
 from app.ports.telemetry import make_metrics_middleware, metrics_response
 from app.routes import embed as embed_routes
@@ -78,7 +79,10 @@ def readyz(response: Response) -> dict[str, object]:
     """
     body, status = build_readiness(
         "ai-service",
-        {"postgres": check_postgres(get_settings().database_url)},
+        {
+            "postgres": check_postgres(get_settings().database_url),
+            "embedder": check_embedder(get_embedder),
+        },
     )
     response.status_code = status
     return body

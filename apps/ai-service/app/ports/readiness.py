@@ -65,6 +65,25 @@ def check_postgres(database_url: str) -> dict[str, Any]:
         }
 
 
+def check_embedder(get_embedder) -> dict[str, Any]:
+    """Force the lazy real-embedder load and report whether it succeeded.
+
+    embedder.py's SentenceTransformerEmbedder loads its model on first use, and
+    get_embedder() is lru_cached — so on a cold Hugging Face cache, whichever
+    request happens to arrive first pays a multi-minute download instead of a
+    readiness check. Calling get_embedder() here makes that load happen (once;
+    the cache makes every call after the first a no-op) as part of answering
+    /readyz, so a caller that waits on readiness before sending real traffic —
+    like scripts/e2e.mjs's waitForReady() — never lands on the request that
+    would otherwise have to pay for it.
+    """
+    try:
+        get_embedder()
+        return {"status": "ok"}
+    except Exception as err:
+        return {"status": "error", "detail": f"{type(err).__name__}: {str(err)[:200]}"}
+
+
 def build_readiness(service: str, checks: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], int]:
     """Combine per-dependency results into a body and an HTTP status.
 

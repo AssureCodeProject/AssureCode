@@ -252,8 +252,15 @@ async function startAppServices() {
     appProcesses.push({ app, child });
   }
 
+  // /readyz, not /healthz: both services build their real embedder lazily on
+  // first use (app/ports/embedder.py), and /healthz is deliberately
+  // dependency-free liveness only — it would report "ready" before that load
+  // has even started. Waiting on /readyz (which now forces and reports on the
+  // embedder load, see app/ports/readiness.py's check_embedder) means the
+  // golden-path test's first real request never lands on the one that would
+  // otherwise pay for a cold model load or Hugging Face download.
   for (const { app, port } of specs) {
-    if (!(await waitForReady(app, `http://127.0.0.1:${port}/healthz`))) return false;
+    if (!(await waitForReady(app, `http://127.0.0.1:${port}/readyz`))) return false;
   }
   return true;
 }

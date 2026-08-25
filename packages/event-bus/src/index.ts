@@ -151,6 +151,15 @@ export class RedisStreamsBus implements EventBus {
   private readonly groupNameEnsured = new Set<string>();
   private readonly maxRetries = 3;
   private readonly initialBackoffMs = 100;
+  // How long a message may sit unacked in another consumer's PEL before this
+  // consumer will claim and process it. Covers the case xack cannot: a
+  // consumer that dies (crash, redeploy, or — as found in the golden-path
+  // e2e suite — a short-lived process from an earlier test file/run that
+  // registered under the shared group and then exited) leaves its claimed
+  // messages permanently stuck, since XREADGROUP '>' only ever hands out
+  // messages nobody has been given yet. Without a reclaim, that stream
+  // entry is gone in practice even though it is still sitting in Redis.
+  private readonly claimIdleMs = 15_000;
 
   constructor(redisUrl: string) {
     this.client = new Redis(redisUrl, { lazyConnect: false, maxRetriesPerRequest: null });
@@ -200,6 +209,141 @@ export class RedisStreamsBus implements EventBus {
     };
   }
 
+  /** Process one stream entry: run the handler with retries, DLQ on final failure, then ack. */
+  private async processEntry(
+    topic: string,
+    groupName: string,
+    id: string,
+    fields: string[],
+    handler: EventHandler,
+  ): Promise<void> {
+    const idx = fields.indexOf('envelope');
+    if (idx === -1) {
+      // Not one of our messages (malformed or from something else writing to
+      // the same stream) — ack it so it does not sit in the PEL forever and
+      // get reclaimed on every future pass.
+      await this.client.xack(topic, groupName, id);
+      return;
+    }
+    const envelope = JSON.parse(fields[idx + 1]) as EventEnvelope;
+
+    const lagSeconds = consumerLagSeconds(envelope);
+    metrics.eventBusLagSeconds.observe({ topic }, lagSeconds);
+    metrics.eventLagGauge.set({ topic }, lagSeconds);
+
+    let attempt = 0;
+    let success = false;
+    let lastError: unknown = null;
+
+    await context.with(parentContextOf(envelope), async () => {
+      const consumeSpan = tracer.startSpan(`event_bus.consume ${topic}`, {
+        attributes: {
+          'messaging.system': 'redis_streams',
+          'messaging.destination': topic,
+          'correlation_id': envelope.correlationId,
+        },
+      });
+
+      try {
+        while (attempt < this.maxRetries) {
+          attempt++;
+          try {
+            await runWithCorrelationId(envelope.correlationId, async () => {
+              await handler(envelope);
+            });
+            success = true;
+            break;
+          } catch (err) {
+            lastError = err;
+            // Single object arg so non-literal `topic` cannot be
+            // interpreted as a printf-style format specifier.
+            console.error({
+              msg: 'event-bus handler error',
+              topic,
+              attempt,
+              maxRetries: this.maxRetries,
+              err,
+            });
+            if (attempt < this.maxRetries) {
+              const backoff = this.initialBackoffMs * Math.pow(2, attempt - 1);
+              await new Promise((r) => setTimeout(r, backoff));
+            }
+          }
+        }
+      } catch (err) {
+        consumeSpan.recordException(err as Error);
+      } finally {
+        consumeSpan.end();
+      }
+    });
+
+    if (!success) {
+      const dlqTopic = `${topic}.dlq`;
+      const errorMessage = lastError instanceof Error ? lastError.message : String(lastError);
+      const errorStack = lastError instanceof Error ? lastError.stack ?? '' : '';
+
+      metrics.dlqMessagesTotal.inc({ stream: dlqTopic });
+
+      console.error(
+        `[event-bus] Message ${id} failed after ${this.maxRetries} attempts on ${topic}. Forwarding to ${dlqTopic}`,
+      );
+
+      await this.client.xadd(
+        dlqTopic,
+        '*',
+        'envelope',
+        JSON.stringify(envelope),
+        'error',
+        errorMessage,
+        'errorStack',
+        errorStack,
+        'failedAt',
+        new Date().toISOString(),
+        'attempts',
+        String(attempt),
+        'originalStream',
+        topic,
+        'originalId',
+        id,
+      );
+    }
+
+    await this.client.xack(topic, groupName, id);
+  }
+
+  /**
+   * Claim and process entries idle in the group's PEL for longer than
+   * claimIdleMs, regardless of which (possibly dead) consumer they were
+   * originally delivered to. Runs once per poll iteration; cheap when there
+   * is nothing to claim (XAUTOCLAIM returns an empty batch).
+   */
+  private async reclaimStale(
+    topic: string,
+    groupName: string,
+    consumer: string,
+    handler: EventHandler,
+  ): Promise<void> {
+    try {
+      const [, entries] = (await this.client.xautoclaim(
+        topic,
+        groupName,
+        consumer,
+        this.claimIdleMs,
+        '0-0',
+        'COUNT',
+        10,
+      )) as [string, Array<[string, string[]]>, string[]?];
+
+      for (const [id, fields] of entries) {
+        await this.processEntry(topic, groupName, id, fields, handler);
+      }
+    } catch (err) {
+      // Non-fatal: a claim failure (e.g. group briefly missing during a
+      // fresh MKSTREAM race) should not stop the normal read path below.
+      console.error({ msg: 'event-bus reclaim error', topic, err });
+    }
+  }
+
   private async poll(
     topic: string,
     groupName: string,
@@ -209,6 +353,8 @@ export class RedisStreamsBus implements EventBus {
   ): Promise<void> {
     while (!sub.stop) {
       try {
+        await this.reclaimStale(topic, groupName, consumer, handler);
+
         const res = (await this.client.xreadgroup(
           'GROUP',
           groupName,
@@ -241,94 +387,7 @@ export class RedisStreamsBus implements EventBus {
         }
         for (const [, messages] of res) {
           for (const [id, fields] of messages) {
-            const idx = fields.indexOf('envelope');
-            if (idx === -1) continue;
-            const envelope = JSON.parse(fields[idx + 1]) as EventEnvelope;
-
-            const lagSeconds = consumerLagSeconds(envelope);
-            metrics.eventBusLagSeconds.observe({ topic }, lagSeconds);
-            metrics.eventLagGauge.set({ topic }, lagSeconds);
-
-            let attempt = 0;
-            let success = false;
-            let lastError: unknown = null;
-
-            await context.with(parentContextOf(envelope), async () => {
-              const consumeSpan = tracer.startSpan(`event_bus.consume ${topic}`, {
-                attributes: {
-                  'messaging.system': 'redis_streams',
-                  'messaging.destination': topic,
-                  'correlation_id': envelope.correlationId,
-                },
-              });
-
-              try {
-                while (attempt < this.maxRetries) {
-                  attempt++;
-                  try {
-                    await runWithCorrelationId(envelope.correlationId, async () => {
-                      await handler(envelope);
-                    });
-                    success = true;
-                    break;
-                  } catch (err) {
-                    lastError = err;
-                    // Single object arg so non-literal `topic` cannot be
-                    // interpreted as a printf-style format specifier.
-                    console.error({
-                      msg: 'event-bus handler error',
-                      topic,
-                      attempt,
-                      maxRetries: this.maxRetries,
-                      err,
-                    });
-                    if (attempt < this.maxRetries) {
-                      const backoff = this.initialBackoffMs * Math.pow(2, attempt - 1);
-                      await new Promise((r) => setTimeout(r, backoff));
-                    }
-                  }
-                }
-              } catch (err) {
-                consumeSpan.recordException(err as Error);
-              } finally {
-                consumeSpan.end();
-              }
-            });
-
-            if (!success) {
-              const dlqTopic = `${topic}.dlq`;
-              const errorMessage =
-                lastError instanceof Error ? lastError.message : String(lastError);
-              const errorStack =
-                lastError instanceof Error ? lastError.stack ?? '' : '';
-
-              metrics.dlqMessagesTotal.inc({ stream: dlqTopic });
-
-              console.error(
-                `[event-bus] Message ${id} failed after ${this.maxRetries} attempts on ${topic}. Forwarding to ${dlqTopic}`,
-              );
-
-              await this.client.xadd(
-                dlqTopic,
-                '*',
-                'envelope',
-                JSON.stringify(envelope),
-                'error',
-                errorMessage,
-                'errorStack',
-                errorStack,
-                'failedAt',
-                new Date().toISOString(),
-                'attempts',
-                String(attempt),
-                'originalStream',
-                topic,
-                'originalId',
-                id,
-              );
-            }
-
-            await this.client.xack(topic, groupName, id);
+            await this.processEntry(topic, groupName, id, fields, handler);
           }
         }
       } catch (err) {

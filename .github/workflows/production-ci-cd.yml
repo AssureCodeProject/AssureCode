@@ -450,7 +450,7 @@ jobs:
             -c "${{ matrix.smoke }}"
 
       - name: Scan Image for Vulnerabilities
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: assurecode/${{ matrix.name }}:${{ github.sha }}
           format: sarif
@@ -475,7 +475,7 @@ jobs:
       # HIGH remains advisory pending triage of the existing backlog. Widen this
       # to CRITICAL,HIGH once that backlog is cleared — the change is one word.
       - name: Fail on Fixable Critical Vulnerabilities
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: assurecode/${{ matrix.name }}:${{ github.sha }}
           format: table

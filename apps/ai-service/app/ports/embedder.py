@@ -10,6 +10,9 @@ factory (app.deps) constructs based on EMBED_PROVIDER.
 from __future__ import annotations
 
 import hashlib
+import os
+import sys
+import time
 from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
@@ -49,9 +52,31 @@ class SentenceTransformerEmbedder:
             # Imported lazily so tests using the fake provider never load torch.
             from sentence_transformers import SentenceTransformer
 
+            # TEMPORARY diagnostic — pins down whether a specific CI stall
+            # (a ~245s gap seen before "Scope Guard unreachable"/scorer
+            # timeouts, unchanged across two prior fix attempts) is actually
+            # inside this load, and if so whether HF_HUB_OFFLINE was even in
+            # effect for *this* process. Remove once that run's log confirms
+            # or rules this out — this is not meant to stay long-term.
+            t0 = time.monotonic()
+            print(
+                f"[embedder-diag] loading {self._model_name!r} pid={os.getpid()} "
+                f"epoch_ms={int(time.time() * 1000)} "
+                f"HF_HUB_OFFLINE={os.environ.get('HF_HUB_OFFLINE')!r} "
+                f"HF_HOME={os.environ.get('HF_HOME')!r}",
+                file=sys.stderr,
+                flush=True,
+            )
             self._model = SentenceTransformer(self._model_name)
             # Sync dim to the model's actual output.
             self._dim = self._model.get_sentence_embedding_dimension()  # type: ignore[union-attr]
+            print(
+                f"[embedder-diag] loaded {self._model_name!r} pid={os.getpid()} "
+                f"epoch_ms={int(time.time() * 1000)} "
+                f"in {time.monotonic() - t0:.2f}s",
+                file=sys.stderr,
+                flush=True,
+            )
 
     @property
     def dim(self) -> int:

@@ -34,6 +34,9 @@ endpoint is not mistaken for something stronger than it is.
 """
 from __future__ import annotations
 
+import os
+import sys
+import time
 from datetime import UTC, datetime
 
 from fastapi import Depends, FastAPI, HTTPException, Response
@@ -306,6 +309,17 @@ def check_scope(
     anchor=Depends(get_ledger_anchor),
     scope_log=Depends(get_scope_log),
 ) -> ScopeCheckResponse:
+    # TEMPORARY diagnostic — see the matching note in
+    # app/ports/embedder.py._ensure_loaded. Confirms whether a request
+    # actually arrives here promptly (delay is upstream/event-dispatch) or
+    # whether the embedder dependency above already blocked this handler
+    # from even starting (delay is the model load itself). Remove together.
+    print(
+        f"[scope-check-diag] entered pid={os.getpid()} "
+        f"epoch_ms={int(time.time() * 1000)} contract_id={req.contract_id!r}",
+        file=sys.stderr,
+        flush=True,
+    )
     if not req.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 

@@ -23,6 +23,34 @@ import { defineConfig } from 'vitest/config';
  * do not lower them to make a failing run pass.
  */
 export default defineConfig({
+  // Resolve @assurecode/* to source rather than to dist. Same fix, same
+  // reasoning, as vitest.coverage.e2e.config.ts: a package's own suite
+  // imports its files relatively (`../src/secrets.js`) and shows real
+  // coverage, but a *sibling* package importing e.g. `@assurecode/config`
+  // resolves to `./dist/index.js` — the instrumented `src/index.ts` never
+  // loads, so code that runs on every request reports 0%. This was fixed for
+  // the e2e config but not this one, which is what the CI coverage gate
+  // actually runs — hence packages/config/src/index.ts and
+  // packages/telemetry/src/{index,telemetry,tracing}.ts showing 0% despite
+  // running under every other package's tests.
+  resolve: {
+    alias: [
+      'config',
+      'event-bus',
+      'kyc-adapter',
+      'ledger-client',
+      'oracle',
+      'razorpay-adapter',
+      'shared',
+      'telemetry',
+    ].map((name) => ({
+      find: `@assurecode/${name}`,
+      replacement: new URL(`./packages/${name}/src/index.ts`, import.meta.url).pathname.replace(
+        /^\/([A-Za-z]:)/,
+        '$1',
+      ),
+    })),
+  },
   test: {
     include: ['packages/*/test/**/*.test.ts'],
     exclude: ['**/node_modules/**', '**/dist/**'],
@@ -46,19 +74,31 @@ export default defineConfig({
           functions: 100,
           lines: 100,
         },
-        // Measured 2026-08-23: st 71.95 / br 83.05 / fn 79.33 / ln 71.95.
-        // Set a couple of points below measured, not flush against it. A gate
-        // pinned to the exact current number fails the moment anyone adds an
-        // uncovered line to an unrelated file — declaring four env vars in
-        // packages/config moved this from 45.19 to 45.00 — and a gate that
-        // fails for unrelated reasons is one somebody deletes. The margin is
-        // small enough to still catch a real regression.
+        // Measured 2026-08-25: st 71.51 / br 84.19 / fn 77.23 / ln 71.51 —
+        // after adding the resolve.alias above (previously only present in
+        // the e2e config), which fixed packages/config/src/index.ts and
+        // packages/telemetry/src/{index,telemetry}.ts silently reporting 0%
+        // despite running under every other package's tests, and after
+        // deleting two dead files (packages/config/src/correlation.ts and
+        // packages/telemetry/src/tracing.ts — exact duplicates of the real
+        // ones in packages/telemetry, unreferenced by any index.ts barrel,
+        // confirmed via a repo-wide grep for relative imports before
+        // removal). Without those two fixes this gate measured 64.84% in CI
+        // (report-only run), well under threshold, for reasons that had
+        // nothing to do with a real drop in tested behaviour.
         //
-        // This crossed the plan's 70% target when event-bus/src/outbox-relay.ts
-        // went from 12% to covered: the relay carries every domain event to the
-        // bus and its batch-isolation behaviour had no test at all. The
-        // remaining gap is ledger-client/src/index.ts, which needs live
-        // Postgres and is measured by vitest.coverage.e2e.config.ts instead.
+        // `functions` now clears its floor by 0.23 points — the thinnest
+        // margin of the four. The next function-heavy addition to
+        // event-bus/src/index.ts (65.38% functions) or
+        // razorpay-adapter/src/index.ts (67.85%) without a matching test is
+        // likely to be what trips this gate next; that is a real regression
+        // signal, not gate fragility, and should not be "fixed" by lowering
+        // the threshold.
+        //
+        // The remaining gap is ledger-client/src/index.ts (needs live
+        // Postgres) and event-bus/src/index.ts (the Kafka/Redis branches,
+        // needs live infra) — both measured honestly by
+        // vitest.coverage.e2e.config.ts instead.
         //
         // Raise these as coverage grows; do not lower them to make a failing
         // run pass.

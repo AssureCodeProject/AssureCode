@@ -37,7 +37,7 @@
  * indeterminate reading the oracle must not confuse with a pass — and it would
  * be indistinguishable from this module working correctly.
  */
-import { mkdtemp, mkdir, writeFile, rm, copyFile, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, copyFile, access, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -291,6 +291,33 @@ export async function buildWorkspace(options: WorkspaceBuildOptions): Promise<Wo
         'utf8',
       ),
     ]);
+
+    // mkdtemp creates directories at mode 0700 (owner-only) on real POSIX
+    // systems — this is standard, deliberate mkdtemp behaviour, not a bug.
+    // The sandbox container runs the workspace as a *different* uid
+    // (docker-sandbox.ts's --user=1000:1000), which then cannot even read
+    // into a 0700 directory it doesn't own, and cp fails before the harness
+    // ever runs — reported upstream as an indeterminate 0/0, not a permission
+    // error. WSL2's filesystem translation is permissive enough that this
+    // never reproduces on Windows, only on a real Linux host (e.g. CI),
+    // which is why it went unnoticed until it was seen there directly.
+    // world-readable + world-executable (needed to traverse directories and
+    // exec node/harness.cjs) but not world-writable.
+    await Promise.all(
+      [
+        dir,
+        path.join(dir, 'tests'),
+        path.join(dir, 'node_modules'),
+        path.join(dir, 'node_modules', '@jest'),
+        path.join(dir, 'node_modules', '@jest', 'globals'),
+        path.join(dir, 'package.json'),
+        path.join(dir, 'index.js'),
+        path.join(dir, 'tests', 'generated.test.js'),
+        path.join(dir, 'harness.cjs'),
+        path.join(dir, 'node_modules', '@jest', 'globals', 'package.json'),
+        path.join(dir, 'node_modules', '@jest', 'globals', 'index.js'),
+      ].map((p) => chmod(p, 0o755)),
+    );
 
     return {
       dir,

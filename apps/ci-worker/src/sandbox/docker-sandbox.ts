@@ -24,7 +24,13 @@ import type {
 } from './types.js';
 import { parseTestOutput } from './types.js';
 
-const IMAGE = 'node:20-alpine';
+// Digest-pinned rather than a floating tag: an unpinned `node:20-alpine` pull
+// on a shared CI runner is exposed to Docker Hub's anonymous rate limit and
+// to the image changing under the sandbox between runs. This needs a manual
+// bump (`docker pull node:20-alpine && docker inspect --format='{{index
+// .RepoDigests 0}}' node:20-alpine`) when the base image gets a security
+// patch — a hard pin never updates itself.
+const IMAGE = 'node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293';
 
 /**
  * Single-quote a value for the `sh -c` string below.

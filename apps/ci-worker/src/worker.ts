@@ -137,9 +137,21 @@ export async function processCodePush(
         provisioned: sandboxResult.provisioned,
         passedTests: sandboxResult.passedTests,
         totalTests: sandboxResult.totalTests,
+        exitCode: sandboxResult.exitCode,
       },
       'Sandbox provisioned',
     );
+    // totalTests === 0 is the documented indeterminate signal (types.ts's
+    // parseTestOutput), not necessarily "genuinely zero tests" — it's
+    // indistinguishable from the sandbox itself failing (bad pull, npm ci
+    // error) unless the actual output is visible. Logged only on this path so
+    // the common case stays quiet.
+    if (sandboxResult.totalTests === 0) {
+      logger.warn(
+        { contractId, sandboxId: sandboxResult.sandboxId, rawOutput: sandboxResult.rawOutput.slice(0, 2000) },
+        'Sandbox produced no parseable test output',
+      );
+    }
     await eventBus.publish(
       EVENT_TOPICS.CI_SANDBOX_READY,
       { contractId, sandboxId: sandboxResult.sandboxId, runner: sandboxResult.runner, provisioned: sandboxResult.provisioned },

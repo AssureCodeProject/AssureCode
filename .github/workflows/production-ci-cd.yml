@@ -219,6 +219,26 @@ jobs:
       - name: Install Node Dependencies
         run: npm ci
 
+      # Without this, every run does a cold pip install of torch +
+      # sentence-transformers from scratch — several hundred MB, and a real
+      # source of both slow runs and network-flake risk on a shared runner.
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('apps/ai-service/pyproject.toml', 'apps/scope-guard/pyproject.toml') }}
+          restore-keys: pip-${{ runner.os }}-
+
+      # sentence-transformers downloads all-MiniLM-L6-v2 from the Hugging Face
+      # Hub on first use (apps/ai-service/app/ports/embedder.py) — caching it
+      # turns a network-bound cold start into a cache hit on every run after
+      # the first.
+      - name: Cache Hugging Face models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-all-MiniLM-L6-v2-${{ runner.os }}
+
       # scripts/e2e.mjs looks for apps/<app>/.venv specifically, and warns-and-
       # skips when it is absent — which would let this job report green having
       # run no Python at all. Creating them is what makes the skip path
@@ -237,6 +257,15 @@ jobs:
           python -m venv apps/scope-guard/.venv
           apps/scope-guard/.venv/bin/python -m pip install --quiet --upgrade pip
           apps/scope-guard/.venv/bin/python -m pip install --quiet -e "apps/scope-guard[dev]"
+
+      # apps/ci-worker/src/sandbox/docker-sandbox.ts runs this image directly
+      # on the runner (not via `services:`), so nothing pre-warms it — a
+      # first-time pull mid-test-run eats into the sandbox's own 120s
+      # execution budget and is exposed to Docker Hub's anonymous rate limit.
+      # Pulling it here, as its own attributable step, moves that risk out of
+      # the test's timing entirely.
+      - name: Pre-pull sandbox image
+        run: docker pull node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293
 
       - name: Run Integration Suite
         run: npm run test:e2e

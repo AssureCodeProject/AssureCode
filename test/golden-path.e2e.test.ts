@@ -289,34 +289,49 @@ describe('golden path — a contract from initialization to settlement', () => {
     });
     expect(push.statusCode, push.body).toBe(200);
 
-    const audit = await waitFor('audit_results row', async () => {
-      // Everything the pipeline measured lives in a single JSONB payload —
-      // audit_results has only (audit_id, contract_id, payload, passed).
-      const { rows } = await pool.query(
-        `SELECT payload FROM audit_results
+    // The sandbox's own execution budget is 120s (docker-sandbox.ts's default
+    // timeoutMs) before it even reports a result, so this wait needs headroom
+    // above that rather than the file's generic 120s default — otherwise the
+    // two waitFor calls in this test can together exceed the outer it()
+    // timeout below even when the pipeline is working, not broken.
+    const audit = await waitFor(
+      'audit_results row',
+      async () => {
+        // Everything the pipeline measured lives in a single JSONB payload —
+        // audit_results has only (audit_id, contract_id, payload, passed).
+        const { rows } = await pool.query(
+          `SELECT payload FROM audit_results
           WHERE contract_id = $1 ORDER BY created_at DESC LIMIT 1`,
-        [contractId],
-      );
-      return rows[0]?.payload ?? null;
-    });
+          [contractId],
+        );
+        return rows[0]?.payload ?? null;
+      },
+      140_000,
+    );
     // A run that executed no tests is indeterminate, never a pass — so a
     // golden path that reached 0/0 has not demonstrated anything.
     expect(Number(audit.totalTests)).toBeGreaterThan(0);
     expect(Number(audit.passedTests)).toBe(Number(audit.totalTests));
 
-    const state = await waitFor('oracle_state.trust_score', async () => {
-      const { rows } = await pool.query(
-        `SELECT ast_passed, tests_passed, security_passed, trust_score, critical_vulns
+    // Scoring only needs an AI-service round trip once the audit lands, so
+    // this stays well under the file's 120s default.
+    const state = await waitFor(
+      'oracle_state.trust_score',
+      async () => {
+        const { rows } = await pool.query(
+          `SELECT ast_passed, tests_passed, security_passed, trust_score, critical_vulns
            FROM oracle_state WHERE contract_id = $1 AND trust_score IS NOT NULL`,
-        [contractId],
-      );
-      return rows[0] ?? null;
-    });
+          [contractId],
+        );
+        return rows[0] ?? null;
+      },
+      60_000,
+    );
 
     expect(Number(state.trust_score)).toBeGreaterThanOrEqual(0);
     expect(state.ast_passed).toBe(true);
     expect(state.tests_passed).toBe(true);
-  }, 180_000);
+  }, 240_000);
 
   it('settles, and the settlement is single-fire', async () => {
     const oracle = await server.inject({

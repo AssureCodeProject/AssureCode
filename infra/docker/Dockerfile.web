@@ -19,6 +19,16 @@ RUN npm -w @assurecode/web run build
 
 FROM nginxinc/nginx-unprivileged:1.27-alpine AS runner
 
+# nginxinc/nginx-unprivileged:1.27-alpine is a floating tag — it does not
+# rebuild on every upstream Alpine security patch, so libcrypto3/libssl3 here
+# had drifted to 3.3.3-r0 (CVE-2026-31789, a heap buffer overflow fixed at
+# 3.3.7-r0). USER root is explicit and temporary: unlike a stock Alpine image,
+# this base already defaults to uid 101 from its own upstream Dockerfile, and
+# apk needs to write its package database, which that uid cannot do. The
+# `USER 101` below returns to the image's normal non-root runtime user.
+USER root
+RUN apk update && apk upgrade --no-cache
+
 # Config first: a bad config should fail the build, not the first request.
 COPY infra/docker/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /app/apps/web/dist /usr/share/nginx/html

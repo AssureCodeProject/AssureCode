@@ -74,6 +74,15 @@ FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 
+# node:22-alpine ships npm's own bundled tar at 7.5.11 (CVE-2026-59873, a
+# gzip-bomb DoS fixable at 7.5.19) — nothing to do with this service's actual
+# dependencies, which never install tar directly (`npm ls tar` at the repo
+# root is empty). Pinned to npm@11 specifically, not npm@latest, because the
+# node:20-alpine images sharing this exact fix cannot take npm@latest (12.x
+# requires Node >=22) — one npm major across every Node Dockerfile here keeps
+# this a single fix to reason about rather than one version per base image.
+RUN npm install -g npm@11
+
 # Docker CLI only — no daemon. Present so SANDBOX_RUNNER=docker remains usable
 # where a socket is safely available; unused under the Kubernetes default.
 RUN apk add --no-cache docker-cli

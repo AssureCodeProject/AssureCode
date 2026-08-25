@@ -34,6 +34,12 @@ FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 
+# node:20-alpine ships npm's own bundled tar at 6.2.1 (CVE-2026-59873, a
+# gzip-bomb DoS fixed at 7.5.19) — nothing to do with this service's own
+# dependencies. See the matching comment in Dockerfile.ci-worker for why
+# npm@11 specifically (the newest line that still installs on Node 20).
+RUN npm install -g npm@11
+
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages ./packages

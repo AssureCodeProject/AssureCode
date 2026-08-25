@@ -31,9 +31,22 @@ COPY scripts/ ./scripts/
 # image (ci-worker, settlement-worker, webhook-ingest are not copied here).
 RUN npm run build
 
+# Missing on this Dockerfile until now — every other service image here prunes
+# before shipping (see Dockerfile.settlement-worker). Without it, the full
+# devDependency tree (vitest included) rode into the runner stage's
+# node_modules copy below, which is how a test framework — CVE-2026-47429,
+# arbitrary code execution — ended up shipping in a production image.
+RUN npm prune --omit=dev
+
 FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
+
+# node:20-alpine ships npm's own bundled tar at 6.2.1 (CVE-2026-59873, a
+# gzip-bomb DoS fixed at 7.5.19) — nothing to do with this service's own
+# dependencies. See the matching comment in Dockerfile.ci-worker for why
+# npm@11 specifically (the newest line that still installs on Node 20).
+RUN npm install -g npm@11
 
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/node_modules ./node_modules

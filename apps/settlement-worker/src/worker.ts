@@ -504,6 +504,122 @@ function subscribeSettlementRequests(): void {
   });
 }
 
+/**
+ * Recover a settlement abandoned at 'PROCESSING' by a worker that died
+ * between capturePayment (line ~461) and commitSettlement (line ~480) — see
+ * the header comment on claimSettlement for why claimSettlement itself can't
+ * re-claim these. Nothing else moves a row out of 'PROCESSING', so finding
+ * one here always means exactly that crash, not a settlement genuinely still
+ * in flight in this same process.
+ *
+ * capturePayment is called again rather than trusting fetchPayment to report
+ * the prior attempt's outcome: a fresh process (this one, right now, having
+ * just restarted) has no memory of what the previous process's in-flight
+ * capture actually did, and the real gateway can be slow to reflect a capture
+ * that raced the crash. Both adapters make a repeat capture safe — the fake
+ * one is a pure overwrite, and a live Razorpay capture on an already-captured
+ * payment fails with a "such capture has already happened" error rather than
+ * double-charging, which the catch below treats as success by re-checking
+ * fetchPayment rather than as a real failure.
+ */
+async function recoverAbandonedSettlement(contractId: string): Promise<void> {
+  logger.warn({ contractId }, 'Recovering settlement abandoned in PROCESSING by a prior crash');
+
+  try {
+    const verdict = await oracle.evaluate(contractId);
+    if (!verdict.approved) {
+      // State moved on since the crash (e.g. a later audit regressed a
+      // signal) — completing the release anyway would settle money against a
+      // verdict nobody currently holds. Leave it PROCESSING and say so loudly
+      // rather than resolve it either direction on a stale approval.
+      logger.error(
+        { contractId, blockers: verdict.blockers },
+        'Cannot auto-recover: oracle no longer approves this contract',
+      );
+      return;
+    }
+
+    const contractRes = await dbPool.query(
+      `SELECT freelancer_id FROM contracts WHERE contract_id = $1`,
+      [contractId],
+    );
+    const freelancerId = contractRes.rows[0]?.freelancer_id ?? '';
+
+    const held = await oracle.findEscrowPayment(contractId);
+    if (!held) {
+      logger.error({ contractId }, 'Cannot auto-recover: no AUTHORIZED escrow payment found');
+      return;
+    }
+
+    let captured;
+    try {
+      captured = await payments.capturePayment({
+        paymentId: held.paymentId,
+        amountMinor: held.amountMinor,
+        currency: held.currency,
+      });
+    } catch (captureErr: any) {
+      const existing = await payments.fetchPayment(held.paymentId);
+      if (!existing.captured) throw captureErr;
+      captured = existing;
+    }
+
+    const settlementPayload = {
+      contractId,
+      freelancerId,
+      amountCents: held.amountMinor,
+      paymentId: held.paymentId,
+      currency: held.currency,
+      captureStatus: captured.status,
+      trustScore: verdict.signals.trustScore,
+      criticalVulns: verdict.signals.criticalVulns,
+      oracleSignals: verdict.signals,
+      settledAt: new Date().toISOString(),
+      recoveredFromCrash: true,
+    };
+
+    await commitSettlement({
+      contractId,
+      freelancerId,
+      paymentId: held.paymentId,
+      trustScore: verdict.signals.trustScore,
+      settlementPayload,
+    });
+
+    await eventBus.publish(EVENT_TOPICS.SETTLEMENT_COMPLETED, settlementPayload, randomUUID());
+    logger.info(
+      { contractId, paymentId: held.paymentId },
+      'Recovered abandoned settlement to COMPLETED',
+    );
+
+    await sealAndSignMerkleRoot(contractId);
+  } catch (err: any) {
+    logger.error({ contractId, err: err.message }, 'Settlement recovery failed');
+  }
+}
+
+/**
+ * Sweep for rows abandoned at 'PROCESSING' and recover each one. Runs once at
+ * startup: under any real deployment (Kubernetes restarting a crashed pod,
+ * this same worker relaunched after `node`/`tsx` exits) that is exactly when
+ * an abandoned row would otherwise sit unrecovered indefinitely — see
+ * claimSettlement's header for why claiming can't do this itself.
+ */
+async function reconcileAbandonedSettlements(): Promise<void> {
+  const { rows } = await dbPool.query(
+    `SELECT contract_id FROM settlements WHERE status = 'PROCESSING'`,
+  );
+  if (rows.length === 0) return;
+
+  logger.warn(
+    { count: rows.length },
+    'Found settlements abandoned in PROCESSING at startup; recovering',
+  );
+  for (const row of rows) {
+    await recoverAbandonedSettlement(row.contract_id);
+  }
+}
+
 async function start(): Promise<void> {
   logger.info('Starting settlement oracle...');
 
@@ -528,6 +644,8 @@ async function start(): Promise<void> {
   subscribeScopeDecisions();
   subscribeEscrowEvents();
   subscribeSettlementRequests();
+
+  await reconcileAbandonedSettlements();
 
   logger.info('Settlement oracle ready.');
 }

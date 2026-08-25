@@ -1,5 +1,6 @@
 /**
- * Chaos test: settlement survives a worker crash (plan2 DoD #6, Phase 1.5a).
+ * Chaos test: settlement survives a worker crash (plan2 DoD #6, Phase 1.5a /
+ * Phase 2 item 2.2).
  *
  * settlement-concurrency.test.ts proves single-fire against concurrent
  * *callers*. This proves the harder case: a *crash*. `claimSettlement` moves a
@@ -7,17 +8,13 @@
  * status 'FAILED' (worker.ts:274-276) — never 'PROCESSING'. If the process
  * dies between `capturePayment` (worker.ts:461) and `commitSettlement`
  * (worker.ts:480), no `catch` ever runs (`markSettlementFailed` only fires
- * from the `catch` at :497), so the row is abandoned at 'PROCESSING' forever
- * while the payment has already been captured.
- *
- * This is expected to FAIL until Phase 2 item 2.2 (a SIGTERM handler plus a
- * reconciler that sweeps stale PROCESSING rows) exists. That is deliberate:
- * the test is written and run first so the failure is evidence the defect is
- * real, rather than being retrofitted to match a fix that already landed. Do
- * not weaken these assertions to make the suite green — a red test proving a
- * real defect is the correct state here. It is marked `it.fails` (not `it`)
- * so that expected, tracked state doesn't also red the whole Integration
- * Suite CI job from the outside — see the comment on the `it.fails` call.
+ * from the `catch` at :497), so the row would be abandoned at 'PROCESSING'
+ * forever while the payment has already been captured — were it not for
+ * `reconcileAbandonedSettlements()`, run once at the end of `start()`, which
+ * sweeps exactly these rows and resumes them (re-running capture, idempotent
+ * either way, then the same commit/ledger/trust-score path the normal flow
+ * uses). This test proves that recovery survives a real kill, not just a
+ * reading of the code.
  *
  * The worker is run as a genuine child process, not imported in-process like
  * the other worker suites: you cannot cleanly interrupt an in-flight `await`
@@ -208,19 +205,7 @@ describe.skipIf(!available)('settlement survives a worker crash', () => {
     await pool?.end();
   });
 
-  // it.fails, not it: this suite's own pass/fail is aggregated into the e2e
-  // job's overall exit code (scripts/e2e.mjs), which gates container-build.
-  // A plain `it()` here would permanently red the entire Integration Suite
-  // job until Phase 2 lands — not because anything is broken, but because
-  // this specific, expected, tracked failure looks identical to the CI
-  // signal for "something is broken" from the outside. it.fails inverts the
-  // expectation: the test still runs for real and must still fail for
-  // exactly this reason, but vitest reports that as a pass. If Phase 2's
-  // SIGTERM handler + reconciler ever makes this test actually succeed,
-  // it.fails will itself fail ("expected test to fail but it passed") —
-  // which is the correct forcing function to flip this back to a plain
-  // it() rather than the fix going unnoticed.
-  it.fails(
+  it(
     'recovers to exactly one COMPLETED settlement after the worker is killed mid-settlement',
     async () => {
       // Held for the whole test, released only after the worker is killed —

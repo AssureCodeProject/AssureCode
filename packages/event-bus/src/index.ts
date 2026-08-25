@@ -190,14 +190,33 @@ export class RedisStreamsBus implements EventBus {
     const consumer = randomUUID();
 
     const groupKey = `${topic}::${groupName}`;
+    let groupAlreadyExisted = false;
     if (!this.groupNameEnsured.has(groupKey)) {
       try {
         await this.client.xgroup('CREATE', topic, groupName, '$', 'MKSTREAM');
       } catch (err) {
         if (!String(err).includes('BUSYGROUP')) throw err;
+        groupAlreadyExisted = true;
       }
       this.groupNameEnsured.add(groupKey);
     }
+
+    // TEMPORARY diagnostic — see the note on reclaimStale/processEntry logging
+    // below. '$' as the CREATE start id means any entry appended to `topic`
+    // before this call resolves is invisible to this group forever: no error,
+    // no DLQ, nothing — the one mechanism found so far that could make a
+    // published event vanish with zero error surface, which matches the
+    // symptom under investigation (a ~240s CI stall with no log trace of the
+    // subscriber ever having seen the message). This line proves whether that
+    // race is even in play for the run being inspected.
+    console.log({
+      msg: 'event-bus subscribe',
+      topic,
+      groupName,
+      consumer,
+      groupAlreadyExisted,
+      epochMs: Date.now(),
+    });
 
     const sub = { topic, consumer, stop: false };
     this.subscribers.push(sub);
@@ -334,6 +353,18 @@ export class RedisStreamsBus implements EventBus {
         10,
       )) as [string, Array<[string, string[]]>, string[]?];
 
+      if (entries.length > 0) {
+        // TEMPORARY diagnostic — see the note on subscribe()'s log above.
+        console.log({
+          msg: 'event-bus reclaimed',
+          topic,
+          groupName,
+          consumer,
+          ids: entries.map(([id]) => id),
+          epochMs: Date.now(),
+        });
+      }
+
       for (const [id, fields] of entries) {
         await this.processEntry(topic, groupName, id, fields, handler);
       }
@@ -351,6 +382,11 @@ export class RedisStreamsBus implements EventBus {
     handler: EventHandler,
     sub: { stop: boolean },
   ): Promise<void> {
+    // TEMPORARY diagnostic state — see the note on subscribe()'s log above.
+    // Throttled rather than per-iteration: BLOCK 2000 means this loop can
+    // tick roughly every 2s, and an unthrottled log would drown the run in
+    // heartbeats over a multi-minute CI job.
+    let lastHeartbeatMs = 0;
     while (!sub.stop) {
       try {
         await this.reclaimStale(topic, groupName, consumer, handler);
@@ -368,7 +404,39 @@ export class RedisStreamsBus implements EventBus {
           '>',
         )) as Array<[string, Array<[string, string[]]>]> | null;
 
+        if (res) {
+          for (const [, messages] of res) {
+            console.log({
+              msg: 'event-bus read',
+              topic,
+              groupName,
+              consumer,
+              ids: messages.map(([id]) => id),
+              epochMs: Date.now(),
+            });
+          }
+        }
+
         if (!res) {
+          const now = Date.now();
+          if (now - lastHeartbeatMs > 20_000) {
+            lastHeartbeatMs = now;
+            try {
+              const pendingSummary = await this.client.xpending(topic, groupName);
+              const streamLen = await this.client.xlen(topic);
+              console.log({
+                msg: 'event-bus idle heartbeat',
+                topic,
+                groupName,
+                consumer,
+                streamLen,
+                pendingSummary,
+                epochMs: now,
+              });
+            } catch (heartbeatErr) {
+              console.error({ msg: 'event-bus heartbeat error', topic, err: heartbeatErr });
+            }
+          }
           // Yield to the event loop before polling again.
           //
           // `continue` alone assumes xreadgroup always parks — true only while

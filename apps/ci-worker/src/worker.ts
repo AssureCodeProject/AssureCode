@@ -239,7 +239,16 @@ export async function processCodePush(
     await (options?.auditStore ?? getAuditStore()).save(auditResults);
 
     logger.info({ contractId, auditResults }, 'CI Pipeline complete, publishing audit.completed');
-    await eventBus.publish(EVENT_TOPICS.AUDIT_COMPLETED, auditResults, correlationId);
+    // TEMPORARY diagnostic — logging the resolved envelope (not just entering
+    // the call) proves the publish itself completed, distinct from merely
+    // having been attempted. Part of tracking down a CI stall where the
+    // subscriber-side "Oracle recorded AUDIT_COMPLETED signals" log never
+    // appears for the real contract; remove once that's root-caused.
+    const publishedEnvelope = await eventBus.publish(EVENT_TOPICS.AUDIT_COMPLETED, auditResults, correlationId);
+    logger.info(
+      { contractId, envelopeId: publishedEnvelope.id, epochMs: Date.now() },
+      'audit.completed publish resolved',
+    );
   } finally {
     // The workspace holds the pushed code and the contract's hidden tests. It
     // is removed whether the pipeline succeeded or threw — leaving it behind

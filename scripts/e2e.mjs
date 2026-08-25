@@ -21,6 +21,7 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -176,6 +177,28 @@ function venvPython(app) {
  */
 const appProcesses = [];
 
+/**
+ * True once all-MiniLM-L6-v2 is already on disk in the Hugging Face cache.
+ *
+ * SentenceTransformer(...) hits the Hub over the network to check the cached
+ * snapshot is current even when every file it needs is already local — that
+ * "unauthenticated requests to the HF Hub" round-trip is what turned a
+ * supposedly-cached model load into a 245s stall in CI (the actual weight
+ * load off disk takes under a second). HF_HUB_OFFLINE=1 skips that check
+ * entirely, but only once the cache is known to hold the model — set
+ * unconditionally, it would break a first-ever run (fresh clone, empty
+ * cache) with a hard failure instead of a slow-but-working download.
+ */
+function hfModelCached() {
+  return existsSync(
+    path.join(
+      process.env.HF_HOME ?? path.join(homedir(), '.cache', 'huggingface'),
+      'hub',
+      'models--sentence-transformers--all-MiniLM-L6-v2',
+    ),
+  );
+}
+
 function pythonServiceEnv() {
   return {
     ...process.env,
@@ -183,6 +206,7 @@ function pythonServiceEnv() {
     NODE_ENV: 'development',
     // Real embedder — see the note above on why 'fake' breaks persistence.
     EMBED_PROVIDER: 'sentence-transformers',
+    ...(hfModelCached() ? { HF_HUB_OFFLINE: '1' } : {}),
     // The LLM is safe to fake: LLM_PROVIDER selects only the client, and the
     // deterministic stand-in still exercises the Layer 2 code path so
     // securityScanComplete becomes true and the oracle's security signal can

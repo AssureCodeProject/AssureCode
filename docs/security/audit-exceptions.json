@@ -43,21 +43,6 @@
       "expires": "2026-11-30"
     },
     {
-      "package": "fast-jwt",
-      "severity": "critical",
-      "advisories": [
-        "GHSA-gm45-q3v2-6cf8",
-        "GHSA-hm7r-c7qw-ghp6",
-        "GHSA-mvf2-f6gm-w987",
-        "GHSA-rp9m-7r4c-75qg",
-        "GHSA-3j8v-cgw4-2g6q",
-        "GHSA-gmvf-9v4p-v8jc"
-      ],
-      "requires": "@fastify/jwt 8 -> 10 (major), which requires fastify 5",
-      "reason": "Transitive through @fastify/jwt. This is the one entry that genuinely warrants moving first, because it is in the token verification path. Tokens here are minted by this service alone with a single symmetric secret and no external issuer, which removes the confused-deputy shape most of these advisories rely on. Should be re-reviewed before the expiry rather than extended by habit.",
-      "expires": "2026-10-31"
-    },
-    {
       "package": "@opentelemetry/sdk-node",
       "severity": "high",
       "advisories": ["GHSA-q7rr-3cgh-j5r3"],

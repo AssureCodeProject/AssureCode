@@ -52,13 +52,6 @@ ENV NODE_ENV=production
 # gzip-bomb DoS fixed at 7.5.19) — nothing to do with this service's own
 # dependencies. See the matching comment in Dockerfile.ci-worker for why
 # npm@11 specifically (the newest line that still installs on Node 20).
-#
-# This closes only the tar finding here. vitest and esbuild's embedded Go
-# runtime also show as CRITICAL in this image's scan — both survive the
-# header comment's deliberate no-prune choice above, since tsx (the actual
-# entrypoint) depends on esbuild and this image is not meant to ship without
-# its dev tooling. Those need their own version bumps, reviewed separately —
-# see the security review that surfaced this whole finding set.
 RUN npm install -g npm@11
 
 COPY --from=builder /app/package*.json ./
@@ -67,7 +60,17 @@ COPY --from=builder /app/packages ./packages
 
 # The two things the gateway image lacks: the runner itself (plus the
 # test-support/env.js helper it imports) and the SQL it applies.
-COPY tools/ ./tools/
+#
+# Not `COPY tools/ ./tools/`: tools/ also holds this project's OWASP-scanner
+# accuracy harness (tools/verify_owasp_2025_cloudflare.py), which deliberately
+# embeds realistic-looking planted secrets as detection fixtures — copying
+# the whole directory shipped that fixture into a real image, where Trivy's
+# secret scanner (correctly) flags it as a live credential. migrate.ts only
+# ever imports test-support/env.js; naming exactly what it needs both fixes
+# that false positive and keeps unrelated dev/eval tooling out of the image.
+COPY tools/package.json ./tools/
+COPY tools/migrate.ts ./tools/
+COPY tools/test-support/ ./tools/test-support/
 COPY infra/migrations/ ./infra/migrations/
 
 USER node

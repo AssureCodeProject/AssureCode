@@ -142,11 +142,11 @@ Close the product's actual value loop — the freelancer is never paid today —
 
 ### PENDING WORK
 1. **A real RazorpayX account with Payouts enabled** — a separate approval process from plain Razorpay Payments, requiring the project owner's business/KYC on Razorpay's side. Without it the real adapter (`RazorpayXPayoutAdapter`) ships written-and-locally-verified-against-the-fake but unproven against RazorpayX's actual API — confirmed directly during this work: the existing `.env` test-mode key (which works fine for ordinary Checkout/capture) 404s against the real Payouts endpoint because RazorpayX isn't activated on that account.
-2. **Confirm the exact real API contract** — the idempotency-key HTTP header name and the live `payout.*` webhook payload field names are implemented from documentation/memory, which is knowledge-cutoff-sensitive; verify against Razorpay's current docs or a sandbox delivery once dashboard access is available.
+2. ~~Confirm the exact real API contract~~ — **Done for the parts verifiable from documentation.** Fetched Razorpay's current docs directly rather than relying on memory, and found the idempotency header this shipped with (`Idempotency-Key`) was wrong — the real header is `X-Payout-Idempotency`, fixed in `packages/razorpay-adapter/src/index.ts`. Also confirmed the webhook payload shape (`payload.payout.entity`) and widened both `PayoutStatus` and the webhook handler's terminal-state mapping to include `payout.rejected`, a real distinct failure state the original implementation missed. What's left is the one thing documentation can't cover: **trigger one real payout once RazorpayX is activated and diff the actual response/webhook** against these now-corrected assumptions.
 3. **A product decision on payout failure policy** — `reconcilePendingPayouts()` currently retries indefinitely every 5 minutes. Whether that needs a retry cap, a human alert, or a manual "retry this payout" admin action is a product call, not something assumed by the code.
 
 ### BLOCKERS
-None technical. All code is built, wired, and passing the full test suite (467+ tests across the monorepo, including 6 new payout-leg tests and 3 new payout-webhook tests) using the project's established fake-adapter pattern. The three items above require the project owner's Razorpay dashboard access and a policy decision — not further engineering.
+None technical. All code is built, wired, and passing the full test suite (467+ tests across the monorepo, including 6 payout-leg tests and 4 payout-webhook tests). The API-contract corrections above were verified against Razorpay's live documentation, not memory. What remains is the project owner's Razorpay dashboard access and a policy decision — not further engineering.
 
 ### DEFINITION OF DONE
 Code-complete: a settlement's payout leg runs end-to-end against the fake adapter (PENDING → PROCESSING → COMPLETED, idempotent retries, webhook confirmation), and the Phase 2 chaos test still passes. **Real-money verification against a live RazorpayX account remains outstanding** — the same category of caveat as GitHub OAuth's `ENABLE_GITHUB_SOURCE_FETCH` deploy step.
@@ -183,7 +183,7 @@ All core-functional work is code-complete and verified against the project's est
 | Priority | Phase | Pending Work | Dependency | Status |
 |---|---|---|---|---|
 | P1 | 3 | Verify the real `RazorpayXPayoutAdapter` against a live RazorpayX account | Requires the project owner's Razorpay dashboard access / business KYC | Pending — code-complete, needs real credentials |
-| P2 | 3 | Confirm real API contract (idempotency header name, live webhook payload shape) | Same as above | Pending — implemented from documentation, unverified against live API |
+| P2 | 3 | Trigger one real payout to confirm the (now doc-corrected) API contract empirically | Same as above | Pending — header name and `payout.rejected` mapping already fixed against live docs; only an empirical check remains |
 | P2 | 3 | Decide payout failure/retry policy (cap, alert, manual retry) | Product decision | Pending |
 
 ---

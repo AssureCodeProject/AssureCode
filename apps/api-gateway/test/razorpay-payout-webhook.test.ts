@@ -121,6 +121,26 @@ describe.skipIf(!PG_UP)('POST /webhooks/razorpay — payout branch', () => {
     expect(row.rows[0].payout_failure_reason).toBe('insufficient_balance');
   });
 
+  it('moves payout_status to FAILED on payout.rejected (a distinct real terminal-failure state)', async () => {
+    await pool.query(`UPDATE settlements SET payout_status = 'PROCESSING' WHERE contract_id = $1`, [
+      contractId,
+    ]);
+    const body = payoutWebhookBody('payout.rejected', {
+      id: payoutId,
+      failure_reason: 'invalid_beneficiary_details',
+    });
+    const res = await inject(body, sign(body), `evt_payout_rejected_${Date.now()}`);
+
+    expect(res.statusCode).toBe(200);
+
+    const row = await pool.query(
+      `SELECT payout_status, payout_failure_reason FROM settlements WHERE contract_id = $1`,
+      [contractId],
+    );
+    expect(row.rows[0].payout_status).toBe('FAILED');
+    expect(row.rows[0].payout_failure_reason).toBe('invalid_beneficiary_details');
+  });
+
   it('returns 200 without error for an unknown payoutId, matching the unknown-escrow convention', async () => {
     const body = payoutWebhookBody('payout.processed', { id: 'pout_never_seen' });
     const res = await inject(body, sign(body), `evt_payout_unknown_${Date.now()}`);

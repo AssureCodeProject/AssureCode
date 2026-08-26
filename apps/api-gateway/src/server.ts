@@ -2053,7 +2053,11 @@ server.post<{
     const finalPayoutStatus =
       event.event === 'payout.processed'
         ? 'COMPLETED'
-        : event.event === 'payout.failed' || event.event === 'payout.reversed'
+        : event.event === 'payout.failed' ||
+            event.event === 'payout.reversed' ||
+            // A distinct real terminal-failure state — e.g. malformed
+            // beneficiary details — confirmed via razorpay.com/docs/webhooks/payouts/.
+            event.event === 'payout.rejected'
           ? 'FAILED'
           : null;
     if (finalPayoutStatus) {

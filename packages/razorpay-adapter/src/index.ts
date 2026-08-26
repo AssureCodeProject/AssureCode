@@ -160,12 +160,21 @@ export interface PaymentPort {
 // ── Payout domain types + port ─────────────────────────────────────────
 
 /**
- * RazorpayX's payout lifecycle. `processing` means accepted, not yet settled
- * bank-side — a payout can sit there for hours before a webhook confirms
- * `processed`/`failed`/`reversed`. There is no synchronous "it definitely
- * worked" the way there is for a capture.
+ * RazorpayX's payout lifecycle, confirmed against razorpay.com/docs/webhooks/payouts/.
+ * `processing` means accepted, not yet settled bank-side — a payout can sit
+ * there for hours before a webhook confirms a terminal state
+ * (`processed`/`failed`/`reversed`/`rejected`). There is no synchronous "it
+ * definitely worked" the way there is for a capture.
  */
-export type PayoutStatus = 'processing' | 'processed' | 'failed' | 'reversed';
+export type PayoutStatus =
+  | 'pending'
+  | 'rejected'
+  | 'queued'
+  | 'initiated'
+  | 'processing'
+  | 'processed'
+  | 'reversed'
+  | 'failed';
 
 export interface PayoutResult {
   payoutId: string;
@@ -634,11 +643,13 @@ export class RazorpayXPayoutAdapter implements PayoutPort {
         queue_if_low_balance: true,
         notes: { contractId: params.contractId },
       },
-      // Idempotency-Key is the documented RazorpayX header at time of writing;
-      // confirm against current Razorpay docs before relying on this in
-      // production — this is exactly the "verify against the real API"
-      // caveat flagged for this feature.
-      { 'Idempotency-Key': params.idempotencyKey },
+      // Confirmed against Razorpay's own docs
+      // (razorpay.com/docs/api/x/payout-idempotency/make-request/): the real
+      // header is X-Payout-Idempotency, not the generic "Idempotency-Key"
+      // this originally shipped with — that would have silently done
+      // nothing, defeating the whole point of this call. Mandatory on every
+      // payout request since 2025-03-15.
+      { 'X-Payout-Idempotency': params.idempotencyKey },
     );
     return toPayoutResult(entity);
   }

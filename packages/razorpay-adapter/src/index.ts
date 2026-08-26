@@ -88,13 +88,14 @@ export interface RefundResult {
  * /webhooks/razorpay route.
  */
 export interface RazorpayWebhookEvent {
-  /** e.g. 'payment.authorized', 'payment.captured', 'payment.failed', 'order.paid'. */
+  /** e.g. 'payment.authorized', 'payment.captured', 'payment.failed', 'order.paid', 'payout.processed'. */
   event: string;
   accountId?: string;
   payload: {
     payment?: { entity: Record<string, unknown> };
     order?: { entity: Record<string, unknown> };
     refund?: { entity: Record<string, unknown> };
+    payout?: { entity: Record<string, unknown> };
   };
   createdAt?: number;
 }
@@ -156,6 +157,57 @@ export interface PaymentPort {
   verifyWebhook(payload: string | Buffer, signature: string): Promise<WebhookVerificationResult>;
 }
 
+// ── Payout domain types + port ─────────────────────────────────────────
+
+/**
+ * RazorpayX's payout lifecycle. `processing` means accepted, not yet settled
+ * bank-side — a payout can sit there for hours before a webhook confirms
+ * `processed`/`failed`/`reversed`. There is no synchronous "it definitely
+ * worked" the way there is for a capture.
+ */
+export type PayoutStatus = 'processing' | 'processed' | 'failed' | 'reversed';
+
+export interface PayoutResult {
+  payoutId: string;
+  status: PayoutStatus;
+  amountMinor: number;
+  currency: string;
+  contractId: string;
+  failureReason?: string;
+}
+
+/**
+ * The freelancer-payout half of the escrow flow — deliberately a separate
+ * port from PaymentPort, not a 7th method bolted onto it. PaymentPort is
+ * entirely about money moving between a client and AssureCode's own
+ * account (Checkout/Orders); PayoutPort is money moving out to a freelancer
+ * (RazorpayX Payouts) — a different Razorpay product with a different
+ * failure mode. Same split rationale @assurecode/kyc-adapter already uses
+ * for pulling identity verification out of the payment adapter.
+ */
+export interface PayoutPort {
+  /**
+   * Send money to a freelancer's payout account.
+   *
+   * `idempotencyKey` must be deterministic per contract (not per call) —
+   * the whole point is that a caller who lost the response to a crash can
+   * call this again with the same key and get back the *original* payout
+   * rather than triggering a second real transfer. That guarantee has to
+   * come from Razorpay's own idempotency handling, not from anything this
+   * process remembers, since the process is exactly what may have crashed.
+   */
+  initiatePayout(params: {
+    contractId: string;
+    accountId: string;
+    amountMinor: number;
+    currency: string;
+    idempotencyKey: string;
+  }): Promise<PayoutResult>;
+
+  /** Read a payout's current state — used by the reconciler and as a webhook fallback. */
+  fetchPayout(payoutId: string): Promise<PayoutResult>;
+}
+
 // ── Configuration ──────────────────────────────────────────────────────
 
 export interface RazorpayConfig {
@@ -163,6 +215,8 @@ export interface RazorpayConfig {
   keySecret: string;
   webhookSecret: string;
   isTest?: boolean;
+  /** RazorpayX source account for payouts. Only required for createPayoutAdapter's real path. */
+  accountNumber?: string;
 }
 
 // ── Factory ────────────────────────────────────────────────────────────
@@ -196,6 +250,21 @@ export function createRazorpayAdapter(config: RazorpayConfig): PaymentPort {
 /** True when the given config would produce a live adapter. Used by boot-time guards. */
 export function isLiveRazorpayConfig(config: RazorpayConfig): boolean {
   return !(createRazorpayAdapter(config) instanceof FakeRazorpayAdapter);
+}
+
+/** Same selection rule as createRazorpayAdapter, for the payout port. */
+export function createPayoutAdapter(config: RazorpayConfig): PayoutPort {
+  if (
+    !config.keyId ||
+    !config.keySecret ||
+    !config.keyId.startsWith('rzp_') ||
+    config.keyId.includes('mock') ||
+    config.keyId.includes('...') ||
+    config.isTest
+  ) {
+    return new FakePayoutAdapter();
+  }
+  return new RazorpayXPayoutAdapter(config);
 }
 
 // ── Signature helpers ──────────────────────────────────────────────────
@@ -280,6 +349,22 @@ export function paymentEntityOf(event: RazorpayWebhookEvent): Record<string, any
 /** Pull the order entity out of any event shape that carries one. */
 export function orderEntityOf(event: RazorpayWebhookEvent): Record<string, any> | null {
   return (event.payload?.order?.entity as Record<string, any>) ?? null;
+}
+
+/** Pull the payout entity out of any event shape that carries one. */
+export function payoutEntityOf(event: RazorpayWebhookEvent): Record<string, any> | null {
+  return (event.payload?.payout?.entity as Record<string, any>) ?? null;
+}
+
+function toPayoutResult(entity: Record<string, any>): PayoutResult {
+  return {
+    payoutId: String(entity.id),
+    status: entity.status as PayoutStatus,
+    amountMinor: Number(entity.amount ?? 0),
+    currency: String(entity.currency ?? 'INR'),
+    contractId: readContractId(entity),
+    ...(entity.failure_reason ? { failureReason: String(entity.failure_reason) } : {}),
+  };
 }
 
 // ── Real Razorpay Adapter ──────────────────────────────────────────────
@@ -464,6 +549,106 @@ export class RazorpayPaymentAdapter implements PaymentPort {
   }
 }
 
+// ── Real RazorpayX Payout Adapter ───────────────────────────────────────
+
+/**
+ * Talks to RazorpayX's Payouts API — a distinct product from plain Razorpay
+ * Payments, requiring its own source `account_number` (RazorpayConfig.accountNumber).
+ *
+ * `initiatePayout` sends an idempotency key on every call. This is not
+ * defensive dressing: it is the only thing that makes it safe for the
+ * settlement worker's crash reconciler to retry a payout whose result it
+ * never saw, without risking a second real transfer. See PayoutPort's doc
+ * comment.
+ */
+export class RazorpayXPayoutAdapter implements PayoutPort {
+  private readonly authHeader: string;
+  private readonly accountNumber: string;
+
+  constructor(config: RazorpayConfig) {
+    this.accountNumber = config.accountNumber ?? '';
+    this.authHeader = `Basic ${Buffer.from(`${config.keyId}:${config.keySecret}`).toString('base64')}`;
+  }
+
+  private async request<T>(
+    method: 'GET' | 'POST',
+    path: string,
+    body?: Record<string, unknown>,
+    extraHeaders?: Record<string, string>,
+  ): Promise<T> {
+    let res: Response;
+    try {
+      res = await fetch(`${RAZORPAY_API_BASE}${path}`, {
+        method,
+        headers: {
+          Authorization: this.authHeader,
+          'Content-Type': 'application/json',
+          ...extraHeaders,
+        },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new RazorpayApiError(`RazorpayX request failed: ${msg}`, 0);
+    }
+
+    const text = await res.text();
+    let parsed: any = null;
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      // Fall through — a non-JSON body is itself the error detail.
+    }
+
+    if (!res.ok) {
+      const e = parsed?.error ?? {};
+      throw new RazorpayApiError(
+        e.description || `RazorpayX ${method} ${path} returned ${res.status}`,
+        res.status,
+        e.code,
+        e.reason,
+      );
+    }
+
+    return parsed as T;
+  }
+
+  async initiatePayout(params: {
+    contractId: string;
+    accountId: string;
+    amountMinor: number;
+    currency: string;
+    idempotencyKey: string;
+  }): Promise<PayoutResult> {
+    const entity = await this.request<Record<string, any>>(
+      'POST',
+      '/payouts',
+      {
+        account_number: this.accountNumber,
+        fund_account_id: params.accountId,
+        amount: params.amountMinor,
+        currency: params.currency,
+        mode: 'IMPS',
+        purpose: 'payout',
+        queue_if_low_balance: true,
+        notes: { contractId: params.contractId },
+      },
+      // Idempotency-Key is the documented RazorpayX header at time of writing;
+      // confirm against current Razorpay docs before relying on this in
+      // production — this is exactly the "verify against the real API"
+      // caveat flagged for this feature.
+      { 'Idempotency-Key': params.idempotencyKey },
+    );
+    return toPayoutResult(entity);
+  }
+
+  async fetchPayout(payoutId: string): Promise<PayoutResult> {
+    const entity = await this.request<Record<string, any>>('GET', `/payouts/${payoutId}`);
+    return toPayoutResult(entity);
+  }
+}
+
 // ── Fake Adapter ───────────────────────────────────────────────────────
 
 /**
@@ -600,5 +785,55 @@ export class FakeRazorpayAdapter implements PaymentPort {
       const msg = err instanceof Error ? err.message : String(err);
       return { valid: false, event: null, error: `Signed body was not JSON: ${msg}` };
     }
+  }
+}
+
+// ── Fake Payout Adapter ─────────────────────────────────────────────────
+
+/**
+ * The one thing this fake must get right is idempotency: it is the whole
+ * safety property under test for the payout leg's crash-recovery path. A
+ * repeated `idempotencyKey` must return the *original* PayoutResult, never
+ * mint a new payoutId — exactly what real RazorpayX idempotency provides.
+ */
+export class FakePayoutAdapter implements PayoutPort {
+  private readonly payouts = new Map<string, PayoutResult>();
+  private readonly byIdempotencyKey = new Map<string, string>();
+  private seq = 0;
+
+  async initiatePayout(params: {
+    contractId: string;
+    accountId: string;
+    amountMinor: number;
+    currency: string;
+    idempotencyKey: string;
+  }): Promise<PayoutResult> {
+    const existingId = this.byIdempotencyKey.get(params.idempotencyKey);
+    if (existingId) {
+      return this.payouts.get(existingId)!;
+    }
+
+    const result: PayoutResult = {
+      payoutId: `pout_fake_${++this.seq}`,
+      status: 'processed',
+      amountMinor: params.amountMinor,
+      currency: params.currency,
+      contractId: params.contractId,
+    };
+    this.payouts.set(result.payoutId, result);
+    this.byIdempotencyKey.set(params.idempotencyKey, result.payoutId);
+    return result;
+  }
+
+  async fetchPayout(payoutId: string): Promise<PayoutResult> {
+    const known = this.payouts.get(payoutId);
+    if (known) return known;
+    return {
+      payoutId,
+      status: 'processing',
+      amountMinor: 0,
+      currency: 'INR',
+      contractId: '',
+    };
   }
 }

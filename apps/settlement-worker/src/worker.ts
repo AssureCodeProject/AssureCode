@@ -21,7 +21,7 @@
 import { createEventBus, eventBusOptionsFromConfig } from '@assurecode/event-bus';
 import { loadConfig, createLogger, getDatabaseUrl, buildDbConfig } from '@assurecode/config';
 import { LedgerClient } from '@assurecode/ledger-client';
-import { createRazorpayAdapter } from '@assurecode/razorpay-adapter';
+import { createRazorpayAdapter, createPayoutAdapter } from '@assurecode/razorpay-adapter';
 import { EVENT_TOPICS, EventEnvelope, SettlementRequested } from '@assurecode/shared';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
@@ -39,11 +39,14 @@ const databaseUrl = getDatabaseUrl(config);
 
 const dbPool = new pg.Pool(buildDbConfig(databaseUrl));
 const ledgerClient = new LedgerClient(databaseUrl);
-const payments = createRazorpayAdapter({
+const razorpayConfig = {
   keyId: config.RAZORPAY_KEY_ID ?? '',
   keySecret: config.RAZORPAY_KEY_SECRET ?? '',
   webhookSecret: config.RAZORPAY_WEBHOOK_SECRET ?? '',
-});
+  accountNumber: config.RAZORPAYX_ACCOUNT_NUMBER ?? '',
+};
+const payments = createRazorpayAdapter(razorpayConfig);
+const payouts = createPayoutAdapter(razorpayConfig);
 
 const eventBus = createEventBus(eventBusOptionsFromConfig(config));
 const oracle = new OracleStore(dbPool);
@@ -399,6 +402,133 @@ async function sealAndSignMerkleRoot(contractId: string): Promise<void> {
   );
 }
 
+/**
+ * Pay the freelancer, now that the escrow release itself has already
+ * committed. Deliberately not part of commitSettlement's transaction: an
+ * external payout call sitting inside a DB transaction would hold a
+ * Postgres connection open for however long RazorpayX takes to answer,
+ * turning network latency into lock contention. A payout failure here must
+ * never unwind the settlement that already happened — the money left
+ * escrow for real, and callers wrap this in its own try/catch for exactly
+ * that reason.
+ *
+ * Each write is its own statement rather than a transaction, on purpose:
+ * the 'PROCESSING' write lands *before* the network call so that a crash
+ * mid-call is visible afterwards as "attempted, needs confirming" rather
+ * than silently reverting to PENDING and being retried as if nothing had
+ * happened. See reconcilePendingPayouts for what "confirming" means.
+ */
+async function attemptPayout(contractId: string, freelancerId: string): Promise<void> {
+  if (!freelancerId) return;
+
+  const acctRes = await dbPool.query(
+    `SELECT payout_account_id FROM users WHERE user_id = $1`,
+    [freelancerId],
+  );
+  const accountId: string | null = acctRes.rows[0]?.payout_account_id ?? null;
+  if (!accountId) {
+    logger.warn(
+      { contractId, freelancerId },
+      'No payout account on file for freelancer; leaving payout PENDING for reconciler',
+    );
+    return;
+  }
+
+  // The capture's paymentId, written by commitSettlement into
+  // settlements.transfer_id — used only to look up the escrow row's amount,
+  // which is the same "escrow table is authoritative" rule the capture
+  // itself already follows rather than trusting an event payload.
+  const settleRes = await dbPool.query(
+    `SELECT transfer_id FROM settlements WHERE contract_id = $1`,
+    [contractId],
+  );
+  const paymentId: string | undefined = settleRes.rows[0]?.transfer_id;
+  const escrowRes = paymentId
+    ? await dbPool.query(
+        `SELECT amount_cents, currency FROM escrow WHERE payment_id = $1`,
+        [paymentId],
+      )
+    : { rows: [] as any[] };
+  const amountMinor: number | undefined = escrowRes.rows[0]?.amount_cents;
+  const currency: string | undefined = escrowRes.rows[0]?.currency;
+  if (!amountMinor || !currency) {
+    logger.error({ contractId, paymentId }, 'Cannot attempt payout: no escrow amount found');
+    return;
+  }
+
+  await dbPool.query(
+    `UPDATE settlements SET payout_status = 'PROCESSING', payout_updated_at = NOW() WHERE contract_id = $1`,
+    [contractId],
+  );
+
+  // Deterministic per contract, not per call: a retry from
+  // reconcilePendingPayouts must reuse this exact key so RazorpayX's own
+  // idempotency handling — not anything this process remembers — is what
+  // stops a lost-response crash from becoming a second real transfer.
+  const idempotencyKey = `payout_${contractId}`;
+
+  let result;
+  try {
+    result = await payouts.initiatePayout({ contractId, accountId, amountMinor, currency, idempotencyKey });
+  } catch (err: any) {
+    await dbPool.query(
+      `UPDATE settlements
+          SET payout_status = 'FAILED', payout_failure_reason = $1, payout_updated_at = NOW()
+        WHERE contract_id = $2`,
+      [err.message, contractId],
+    );
+    logger.error({ contractId, err: err.message }, 'Payout initiation failed');
+    return;
+  }
+
+  const finalStatus =
+    result.status === 'processed' ? 'COMPLETED' : result.status === 'failed' ? 'FAILED' : 'PROCESSING';
+  await dbPool.query(
+    `UPDATE settlements
+        SET payout_status = $1, payout_id = $2, payout_failure_reason = $3, payout_updated_at = NOW()
+      WHERE contract_id = $4`,
+    [finalStatus, result.payoutId, result.failureReason ?? null, contractId],
+  );
+  logger.info({ contractId, payoutId: result.payoutId, status: finalStatus }, 'Payout attempted');
+}
+
+/**
+ * Sweep for settlements whose payout never completed — either a freelancer
+ * without a payout account yet (payout_status stays the column default
+ * 'PENDING' until they finish onboarding), a payout that failed outright, or
+ * one abandoned mid-call by a crash (still 'PROCESSING', no confirmed
+ * result). All three retry through the same attemptPayout, keyed on the
+ * same idempotencyKey, so a retry of an already-sent payout resolves to
+ * RazorpayX's original record rather than sending money twice.
+ *
+ * Runs at startup (once, alongside reconcileAbandonedSettlements) and then
+ * on an interval — unlike the capture leg, a payout can legitimately need
+ * retrying long after the settlement itself completed, e.g. a freelancer
+ * finishing payout onboarding days later. There is no existing periodic-job
+ * primitive anywhere in this codebase to reuse, so this is a plain
+ * setInterval — the smallest addition consistent with everything else here
+ * being hand-rolled.
+ */
+async function reconcilePendingPayouts(): Promise<void> {
+  const { rows } = await dbPool.query(
+    `SELECT s.contract_id, c.freelancer_id
+       FROM settlements s
+       JOIN contracts c ON c.contract_id = s.contract_id
+       JOIN users u ON u.user_id = c.freelancer_id
+      WHERE s.status = 'COMPLETED'
+        AND s.payout_status IN ('PENDING', 'FAILED', 'PROCESSING')
+        AND u.payout_account_id IS NOT NULL`,
+  );
+  if (rows.length === 0) return;
+
+  logger.info({ count: rows.length }, 'Reconciling pending/failed payouts');
+  for (const row of rows) {
+    await attemptPayout(row.contract_id, row.freelancer_id).catch((err: any) =>
+      logger.error({ contractId: row.contract_id, err: err.message }, 'Payout reconciliation attempt failed'),
+    );
+  }
+}
+
 function subscribeSettlementRequests(): void {
   void eventBus.subscribe(EVENT_TOPICS.SETTLEMENT_REQUESTED, async (event: EventEnvelope) => {
     const payload = event.payload as SettlementRequested;
@@ -492,6 +622,14 @@ function subscribeSettlementRequests(): void {
       );
 
       await sealAndSignMerkleRoot(contractId);
+
+      // Own try/catch, not the outer one: the settlement above already
+      // committed for real, so a payout failure must never be reported as
+      // "settlement execution failed" or trigger publishSettlementRejected
+      // for a settlement that validly completed.
+      await attemptPayout(contractId, freelancerId).catch((err: any) =>
+        logger.error({ contractId, err: err.message }, 'Payout attempt failed'),
+      );
     } catch (err: any) {
       logger.error({ contractId, err: err.message }, 'Settlement execution failed');
       await markSettlementFailed(contractId).catch(() => undefined);
@@ -593,6 +731,10 @@ async function recoverAbandonedSettlement(contractId: string): Promise<void> {
     );
 
     await sealAndSignMerkleRoot(contractId);
+
+    await attemptPayout(contractId, freelancerId).catch((err: any) =>
+      logger.error({ contractId, err: err.message }, 'Payout attempt failed'),
+    );
   } catch (err: any) {
     logger.error({ contractId, err: err.message }, 'Settlement recovery failed');
   }
@@ -620,6 +762,10 @@ async function reconcileAbandonedSettlements(): Promise<void> {
   }
 }
 
+/** 5 minutes — first periodic job in this codebase; see reconcilePendingPayouts's header for why. */
+const PAYOUT_RECONCILE_INTERVAL_MS = 5 * 60 * 1000;
+let payoutReconcileTimer: NodeJS.Timeout | undefined;
+
 async function start(): Promise<void> {
   logger.info('Starting settlement oracle...');
 
@@ -646,9 +792,31 @@ async function start(): Promise<void> {
   subscribeSettlementRequests();
 
   await reconcileAbandonedSettlements();
+  await reconcilePendingPayouts();
+  payoutReconcileTimer = setInterval(() => void reconcilePendingPayouts(), PAYOUT_RECONCILE_INTERVAL_MS);
 
   logger.info('Settlement oracle ready.');
 }
+
+/**
+ * The settlement worker is the one process in this money-moving path that
+ * had no graceful shutdown at all — api-gateway and ci-worker both already
+ * do this. Correctness during a mid-settlement SIGTERM still comes from
+ * Postgres transaction atomicity (commitSettlement) plus a generous
+ * terminationGracePeriodSeconds in the Deployment, not from anything below;
+ * this closes resources cleanly on the ordinary shutdown path instead of
+ * leaving the process to be killed once the grace period elapses.
+ */
+async function shutdown(signal: string): Promise<void> {
+  logger.info(`${signal} received, shutting down...`);
+  if (payoutReconcileTimer) clearInterval(payoutReconcileTimer);
+  await dbPool.end();
+  await ledgerClient.close();
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
+process.on('SIGINT', () => void shutdown('SIGINT'));
 
 if (process.env.NODE_ENV !== 'test') {
   start().catch((err) => {
@@ -668,4 +836,7 @@ if (process.env.NODE_ENV !== 'test') {
 // asserted single-fire against a query the worker had already moved on from,
 // and could never have covered the FAILED re-claim path the WHERE clause exists
 // for.
-export { start, oracle, eventBus, claimSettlement };
+// attemptPayout and reconcilePendingPayouts are exported so the payout-leg
+// test suite can exercise the real functions directly, the same reasoning
+// claimSettlement's export above already documents.
+export { start, oracle, eventBus, claimSettlement, attemptPayout, reconcilePendingPayouts };

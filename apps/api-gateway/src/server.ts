@@ -38,6 +38,7 @@ import {
   isLiveRazorpayConfig,
   paymentEntityOf,
   orderEntityOf,
+  payoutEntityOf,
   type PaymentPort,
 } from '@assurecode/razorpay-adapter';
 import { createKycAdapter, type KycPort } from '@assurecode/kyc-adapter';
@@ -1308,6 +1309,15 @@ server.post<{
     userId,
     email: email || 'user@assurecode.io',
   });
+
+  // Previously computed and handed straight back in the response without
+  // ever being stored — the settlement worker's payout leg reads this
+  // column to know where a freelancer's money goes, so it has to land here.
+  await dbPool.query(`UPDATE users SET payout_account_id = $1 WHERE user_id = $2`, [
+    account.accountId,
+    userId,
+  ]);
+
   const link = await kycAdapter.createPayoutOnboardingLink({
     accountId: account.accountId,
     // Hardcoded to localhost:3000 before, so every deployed environment sent
@@ -1994,6 +2004,74 @@ server.post<{
   }
 
   const event = verification.event!;
+
+  // Checked first, ahead of the payment/order resolution below: a payout
+  // webhook carries neither an orderId nor a paymentId, so it would
+  // otherwise fall straight into the `!orderId && !paymentId` early-return
+  // a few lines down and be silently dropped. It also resolves through
+  // settlements.payout_id, not the escrow table — a payout has no escrow
+  // row of its own.
+  const payoutEntity = payoutEntityOf(event);
+  if (payoutEntity) {
+    const payoutId = payoutEntity.id ? String(payoutEntity.id) : null;
+    logger.info({ type: event.event, payoutId, providerEventId }, 'Razorpay payout webhook verified');
+    if (!payoutId) {
+      return reply.status(200).send({ received: true });
+    }
+
+    const settlementRow = await dbPool.query(
+      `SELECT contract_id FROM settlements WHERE payout_id = $1`,
+      [payoutId],
+    );
+    if (settlementRow.rowCount === 0) {
+      logger.warn({ payoutId }, 'Razorpay payout webhook for an unknown payout; ignoring');
+      return reply.status(200).send({ received: true });
+    }
+    const payoutContractId: string = settlementRow.rows[0].contract_id;
+
+    const audit = await recordPaymentEvent({
+      contractId: payoutContractId,
+      eventType: event.event,
+      amountMinor: Number(payoutEntity.amount ?? 0),
+      paymentId: payoutId,
+      providerEventId,
+      payload: { source: 'webhook', status: payoutEntity.status ?? null },
+    });
+    if (providerEventId && !audit.inserted) {
+      logger.info(
+        { providerEventId, contractId: payoutContractId },
+        'Razorpay payout webhook already processed; ignoring redelivery',
+      );
+      return reply.status(200).send({ received: true });
+    }
+
+    // 'processing' arrives synchronously from initiatePayout itself and is
+    // already recorded before any webhook can reach us — only the terminal
+    // states are worth a write here. Anything else (a status this webhook
+    // handler doesn't recognize) is logged via recordPaymentEvent above and
+    // otherwise ignored, matching the 'payment.captured' branch below.
+    const finalPayoutStatus =
+      event.event === 'payout.processed'
+        ? 'COMPLETED'
+        : event.event === 'payout.failed' || event.event === 'payout.reversed'
+          ? 'FAILED'
+          : null;
+    if (finalPayoutStatus) {
+      await dbPool.query(
+        `UPDATE settlements
+            SET payout_status = $1, payout_failure_reason = $2, payout_updated_at = NOW()
+          WHERE payout_id = $3`,
+        [finalPayoutStatus, payoutEntity.failure_reason ?? null, payoutId],
+      );
+      logger.info(
+        { contractId: payoutContractId, payoutId, status: finalPayoutStatus },
+        'Payout status updated from webhook',
+      );
+    }
+
+    return reply.status(200).send({ received: true });
+  }
+
   const paymentEntity = paymentEntityOf(event);
   const orderEntity = orderEntityOf(event);
 

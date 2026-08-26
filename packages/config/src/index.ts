@@ -154,6 +154,12 @@ export const AppConfigSchema = z.object({
   RAZORPAY_KEY_SECRET: z.string().optional(),
   RAZORPAY_WEBHOOK_SECRET: z.string().optional(),
 
+  // RazorpayX's source account for payouts — a different product from plain
+  // Razorpay Payments above, only needed by the payout leg's real adapter.
+  // Optional for the same reason: createPayoutAdapter falls back to
+  // FakePayoutAdapter when this (or the shared rzp_ credentials) is unset.
+  RAZORPAYX_ACCOUNT_NUMBER: z.string().optional(),
+
   // Public base URL of the web app. Used to build KYC and payout-onboarding
   // return URLs, which were hardcoded to http://localhost:3000 in the gateway
   // and so pointed at the developer's own machine from every deployment.

@@ -12,7 +12,7 @@
  * genuine, so both are pinned here against signatures built independently with
  * node:crypto rather than by calling the code under test.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import crypto from 'node:crypto';
 import {
   createRazorpayAdapter,
@@ -22,7 +22,13 @@ import {
   FAKE_KEY_SECRET,
   FAKE_WEBHOOK_SECRET,
   paymentEntityOf,
+  createPayoutAdapter,
+  FakePayoutAdapter,
+  RazorpayXPayoutAdapter,
+  RazorpayApiError,
+  payoutEntityOf,
   type PaymentPort,
+  type PayoutPort,
 } from '../src/index.js';
 
 const KEY_SECRET = 'rzp_test_key_secret_for_signature_checks';
@@ -334,5 +340,197 @@ describe('FakeRazorpayAdapter', () => {
     expect(typeof port.capturePayment).toBe('function');
     expect(typeof port.verifyCheckoutSignature).toBe('function');
     expect(typeof port.verifyWebhook).toBe('function');
+  });
+});
+
+describe('createPayoutAdapter selection', () => {
+  it('picks the fake adapter for a placeholder or missing key, matching createRazorpayAdapter', () => {
+    expect(createPayoutAdapter({ keyId: '', keySecret: '', webhookSecret: '' })).toBeInstanceOf(
+      FakePayoutAdapter,
+    );
+    expect(
+      createPayoutAdapter({ keyId: 'rzp_test_mock', keySecret: 'x', webhookSecret: 'x' }),
+    ).toBeInstanceOf(FakePayoutAdapter);
+  });
+
+  it('picks the real adapter for a genuine rzp_-prefixed key', () => {
+    expect(
+      createPayoutAdapter({ keyId: 'rzp_live_realkey', keySecret: 'x', webhookSecret: 'x' }),
+    ).toBeInstanceOf(RazorpayXPayoutAdapter);
+  });
+});
+
+describe('FakePayoutAdapter', () => {
+  it('is idempotent: the same key returns the original result, not a new payoutId', async () => {
+    const adapter = new FakePayoutAdapter();
+    const first = await adapter.initiatePayout({
+      contractId: 'AC-PAYOUT-1',
+      accountId: 'fa_test',
+      amountMinor: 5000,
+      currency: 'INR',
+      idempotencyKey: 'payout_AC-PAYOUT-1',
+    });
+    const second = await adapter.initiatePayout({
+      contractId: 'AC-PAYOUT-1',
+      accountId: 'fa_test',
+      amountMinor: 5000,
+      currency: 'INR',
+      idempotencyKey: 'payout_AC-PAYOUT-1',
+    });
+    expect(second.payoutId).toBe(first.payoutId);
+  });
+
+  it('mints a distinct payoutId for a different idempotency key', async () => {
+    const adapter = new FakePayoutAdapter();
+    const a = await adapter.initiatePayout({
+      contractId: 'AC-A',
+      accountId: 'fa_test',
+      amountMinor: 1000,
+      currency: 'INR',
+      idempotencyKey: 'payout_AC-A',
+    });
+    const b = await adapter.initiatePayout({
+      contractId: 'AC-B',
+      accountId: 'fa_test',
+      amountMinor: 1000,
+      currency: 'INR',
+      idempotencyKey: 'payout_AC-B',
+    });
+    expect(b.payoutId).not.toBe(a.payoutId);
+  });
+
+  it('fetchPayout returns a known payout, or a placeholder for an unknown id', async () => {
+    const adapter = new FakePayoutAdapter();
+    const created = await adapter.initiatePayout({
+      contractId: 'AC-FETCH',
+      accountId: 'fa_test',
+      amountMinor: 2500,
+      currency: 'INR',
+      idempotencyKey: 'payout_AC-FETCH',
+    });
+
+    const fetched = await adapter.fetchPayout(created.payoutId);
+    expect(fetched).toEqual(created);
+
+    const unknown = await adapter.fetchPayout('pout_never_seen');
+    expect(unknown.status).toBe('processing');
+  });
+
+  it('satisfies the PayoutPort interface', () => {
+    const port: PayoutPort = new FakePayoutAdapter();
+    expect(typeof port.initiatePayout).toBe('function');
+    expect(typeof port.fetchPayout).toBe('function');
+  });
+});
+
+describe('RazorpayXPayoutAdapter', () => {
+  const adapter = new RazorpayXPayoutAdapter({
+    keyId: 'rzp_test_payout_adapter',
+    keySecret: 'secret',
+    webhookSecret: 'whsec',
+    accountNumber: '1234567890',
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('sends the X-Payout-Idempotency header and the account/fund-account fields, and parses a successful response', async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(init.body as string);
+      expect(body.account_number).toBe('1234567890');
+      expect(body.fund_account_id).toBe('fa_test123');
+      expect(body.amount).toBe(50000);
+      // Confirmed against razorpay.com/docs/api/x/payout-idempotency/make-request/ —
+      // this is the header name that actually matters for crash-safe retries.
+      expect((init.headers as Record<string, string>)['X-Payout-Idempotency']).toBe(
+        'payout_AC-REAL-1',
+      );
+      return new Response(
+        JSON.stringify({ id: 'pout_live_1', status: 'processing', amount: 50000, currency: 'INR' }),
+        { status: 200 },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await adapter.initiatePayout({
+      contractId: 'AC-REAL-1',
+      accountId: 'fa_test123',
+      amountMinor: 50000,
+      currency: 'INR',
+      idempotencyKey: 'payout_AC-REAL-1',
+    });
+
+    expect(result).toEqual({
+      payoutId: 'pout_live_1',
+      status: 'processing',
+      amountMinor: 50000,
+      currency: 'INR',
+      contractId: '',
+    });
+  });
+
+  it('throws RazorpayApiError with the provider detail on a non-2xx response', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({ error: { description: 'Fund account not found', code: 'BAD_REQUEST_ERROR' } }),
+          { status: 400 },
+        ),
+      ),
+    );
+
+    await expect(
+      adapter.initiatePayout({
+        contractId: 'AC-REAL-2',
+        accountId: 'fa_missing',
+        amountMinor: 1000,
+        currency: 'INR',
+        idempotencyKey: 'payout_AC-REAL-2',
+      }),
+    ).rejects.toThrow(RazorpayApiError);
+  });
+
+  it('fetchPayout reads the payout back by id', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({ id: 'pout_live_2', status: 'processed', amount: 2500, currency: 'INR' }),
+          { status: 200 },
+        ),
+      ),
+    );
+
+    const result = await adapter.fetchPayout('pout_live_2');
+    expect(result.status).toBe('processed');
+    expect(result.payoutId).toBe('pout_live_2');
+  });
+
+  it('wraps a network failure (not just a non-2xx) as RazorpayApiError too', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('fetch failed');
+      }),
+    );
+
+    await expect(adapter.fetchPayout('pout_unreachable')).rejects.toThrow(RazorpayApiError);
+  });
+});
+
+describe('payoutEntityOf', () => {
+  it('extracts the payout entity from a webhook event payload', () => {
+    const event = {
+      event: 'payout.processed',
+      payload: { payout: { entity: { id: 'pout_1', status: 'processed' } } },
+    } as any;
+    expect(payoutEntityOf(event)).toEqual({ id: 'pout_1', status: 'processed' });
+  });
+
+  it('returns null when the event carries no payout entity', () => {
+    const event = { event: 'payment.captured', payload: {} } as any;
+    expect(payoutEntityOf(event)).toBeNull();
   });
 });

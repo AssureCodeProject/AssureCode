@@ -12,7 +12,7 @@
 
 **Current Phase:** Phase 2 — Testing & CI/CD Hardening
 
-**Current Phase Completion:** **98%**
+**Current Phase Completion:** **99%**
 
 **Completed Phases:** 1 / 3
 
@@ -78,7 +78,7 @@ Make the pipeline that verifies the project actually work: real coverage, a real
 🟢 NEARLY COMPLETE
 
 ### Phase Completion
-**98%.** 16 of 17 work items fully done; 1 partially done (container-build is running and mostly clean, two specific findings remain).
+**99%.** 16 of 17 work items fully done; 1 nearly done (both dependency-level CVEs fixed and verified locally — `container-build`'s live Trivy re-scan against the rebuilt images is the one remaining confirmation step).
 
 ### WORK ITEMS
 | # | Work Item | Status | Completion | Evidence |
@@ -98,15 +98,16 @@ Make the pipeline that verifies the project actually work: real coverage, a real
 | 13 | Coverage measured across `apps/` (not just `packages/`) | 🟢 | 100% | Fixed in a prior session, confirmed |
 | 14 | Coverage threshold actually met (≥70%) | 🟢 | 100% | Confirmed green in live CI, repeatedly |
 | 15 | Integration Suite fully green | 🟢 | 100% | Confirmed in **3 consecutive live CI runs**. Real root cause was never the sandbox — it was a Redis Streams consumer-group message-stranding bug in `packages/event-bus`, fixed with `XAUTOCLAIM`-based reclaim logic |
-| 16 | `container-build`/Trivy confirmed green | 🟡 | 75% | **Runs successfully for the first time ever.** 6 of 8 images (`ci-worker`, `settlement-worker`, `webhook-ingest`, `frontend-web`, `ai-service`, `scope-guard`) pass clean, verified via local Trivy scans before pushing. 2 remain (`api-gateway`: `fast-jwt` CVEs; `migrate`: `vitest`/esbuild CVEs) — see Pending Work below |
+| 16 | `container-build`/Trivy confirmed green | 🟡 | 95% | **Runs successfully for the first time ever.** 6 of 8 images (`ci-worker`, `settlement-worker`, `webhook-ingest`, `frontend-web`, `ai-service`, `scope-guard`) already passed clean. The remaining 2 images' root-cause dependency findings are now fixed at the source and verified locally (`npm audit`, full test suite, typecheck) — see Pending Work below. Not yet re-confirmed via a live Trivy container scan in CI, which is the one remaining step |
 | 17 | Hash chain verified after a full live run | 🟢 | 100% | Golden path has now run and settled successfully multiple times against real live infrastructure in CI |
 
 ### PENDING WORK
-1. **Fix `api-gateway`'s `fast-jwt` CVEs** (CVE-2026-44351 — JWT auth bypass via empty HMAC secret; plus 2 related CVEs) — P0, no dependency. Root cause traced: `fast-jwt` is a transitive dependency of `@fastify/jwt@8.0.1`, not used directly. The official fix (upgrading `@fastify/jwt`) requires Fastify v5, a real framework migration — not appropriate as a quick fix. Verified alternative: an `npm overrides` pin to `fast-jwt@^6.2.4` works correctly at runtime (77/79 `api-gateway` tests pass, including auth-specific ones) but breaks the TypeScript build — `apps/api-gateway/src/middleware/auth.ts:53-63`'s manual `declare module 'fastify'` type augmentation conflicts with `@fastify/jwt`'s own types once they resolve correctly under the override. Fix is scoped and small (remove the manual augmentation, adjust ~3 call sites to the real generic types) but touches live auth code, so it's queued for explicit review rather than applied blind.
-2. **Fix `migrate`'s `vitest`/esbuild CVEs** (CVE-2026-47429 and a Go-stdlib finding in esbuild, `tsx`'s dependency) — P1, no dependency. Lower risk than #1 (a devDependency version bump, not application code) — `vitest@2.1.9` → `4.1.0` or `3.2.6`. `migrate`'s image deliberately ships dev dependencies (`tsx` is its actual entrypoint), so pruning isn't an option there; needs a version bump plus a test-suite run to confirm no config-format breakage.
+1. ~~Fix `api-gateway`'s `fast-jwt` CVEs~~ — **Done.** Root cause: `fast-jwt` is a transitive dependency of `@fastify/jwt@8.0.1`, not used directly; the official fix (upgrading `@fastify/jwt`) requires Fastify v5, a real framework migration, so a scoped `npm overrides` pin (`@fastify/jwt` → `fast-jwt@^6.2.4`) was used instead. The TypeScript conflict flagged in an earlier pass of this review didn't reproduce (`@fastify/jwt`'s own exported types don't leak `fast-jwt`'s internals) — `tsc --noEmit` is clean. The real obstacle turned out to be npm itself: a full `node_modules` reinstall in this workspace nondeterministically dropped unrelated packages (`proxy-addr`, `ws`, `@fastify/websocket`) across several attempts. Resolved by hand-constructing the lockfile entries from real npm registry metadata and installing the packages directly, bypassing npm's flaky full-resolve path. All 6 `fast-jwt` advisories gone from `npm audit`; critical count 3→0; full test suite unchanged (467 passed / 5 pre-existing environment-failures / 1 skipped, before and after).
+2. ~~Fix `migrate`'s `vitest`/esbuild CVEs~~ — **Done.** `vitest` (and `@vitest/coverage-v8`) bumped `2.1.9` → `^3.2.6` (resolved `3.2.7`) across all 12 workspace `package.json` files — the vulnerable `esbuild@0.21.5` was nested under `vitest`'s own `vite-node`/`vite`; `tsx` (the `migrate` image's actual entrypoint) already carried a patched `esbuild@0.28.1` and needed no change. No config-format breakage: full test suite unchanged (467 passed / 5 pre-existing environment-failures / 1 skipped, before and after), `tools/migrate.ts` runs cleanly under the bumped `tsx`.
+3. **Re-confirm via a live Trivy container scan** — P1, no dependency. Both source-level CVEs are fixed and locally verified (`npm audit` clean, full monorepo test suite unchanged, typecheck clean); the container images themselves haven't been rebuilt and re-scanned in CI yet to close out work item 16 above.
 
 ### BLOCKERS
-None technical. Both remaining pending items are scoped, understood, and low-risk to execute — just intentionally not applied without review (item 1 touches live auth code).
+None technical. Both dependency-level CVEs are fixed; only a live CI Trivy re-scan of the rebuilt images remains to close out work item 16.
 
 ### DEFINITION OF DONE
 All CI jobs green; `container-build` executes — **met**. Trivy's result is known and clean across all 8 images — **2 findings remain**, both scoped above.
@@ -155,7 +156,7 @@ A settlement moves real money to a freelancer's test-mode account, and the Phase
 | Phase | Total Work Items | Completed | Partial | Pending | Completion % |
 |---|---:|---:|---:|---:|---:|
 | Phase 1 | 7 | 7 | 0 | 0 | 100% |
-| Phase 2 | 17 | 16 | 1 | 0 | 98% |
+| Phase 2 | 17 | 16 | 1 | 0 | 99% |
 | Phase 3 | 9 | 2 | 1 | 6 | 23% |
 
 ---
@@ -167,9 +168,9 @@ A settlement moves real money to a freelancer's test-mode account, and the Phase
 | Phase | Weight | Completion | Weighted Contribution |
 |---|---:|---:|---:|
 | 1 | 43% | 100% | 43.0 |
-| 2 | 36% | 98% | 35.3 |
+| 2 | 36% | 99% | 35.6 |
 | 3 | 21% | 23% | 4.8 |
-| **Total** | **100%** | | **83.1 ≈ 83%** |
+| **Total** | **100%** | | **83.4 ≈ 83%** |
 
 Weights reflect relative effort: Phase 1 (foundation) is the largest completed body of work; Phase 2 (testing/CI) is substantial and now nearly done; Phase 3 (payout leg) is smaller in item-count but was previously estimated at multi-day effort — weighted accordingly, not by item-count alone.
 
@@ -179,8 +180,7 @@ Weights reflect relative effort: Phase 1 (foundation) is the largest completed b
 
 | Priority | Phase | Pending Work | Dependency | Status |
 |---|---|---|---|---|
-| P0 | 2 | Fix `api-gateway`'s `fast-jwt` CVEs (JWT auth bypass + 2 related) | None | Pending — fix scoped, needs review (touches auth code types) |
-| P1 | 2 | Fix `migrate`'s `vitest`/esbuild CVEs | None | Pending — fix scoped, low risk |
+| P1 | 2 | Re-confirm `container-build`/Trivy green via live CI re-scan | None | Pending — both source CVEs already fixed and verified locally |
 | P0 | 3 | Build the payout leg | None | Pending |
 | P1 | 3 | Build the SIGTERM handler | None (reconciler, the part that mattered, is done) | Pending |
 | P1 | 3 | Re-verify ExternalSecret mismatch | None | Pending |
@@ -190,17 +190,16 @@ Weights reflect relative effort: Phase 1 (foundation) is the largest completed b
 ## DEPENDENCY ANALYSIS
 
 ```
-Fix fast-jwt CVE (needs review) ──┐
-                                    ├──> container-build fully clean (6/8 already are)
-Fix vitest/esbuild CVE ────────────┘
+fast-jwt CVE fixed ──┐
+                       ├──> live Trivy re-scan ──> container-build fully clean (6/8 already are)
+vitest/esbuild fixed ─┘
 
 Reconciler (done) ──> Payout leg ──> Phase 3 done
                   └──> SIGTERM handler (independent, lower priority now)
 ```
 
 ### Tasks that can run in parallel
-- The two remaining Trivy findings (`fast-jwt`, `vitest`) are independent of each other and of the payout leg.
-- The entire payout leg (Phase 3) is independent of Phase 2's two remaining findings — both tracks can proceed simultaneously.
+- The live Trivy re-scan is independent of the payout leg — both tracks can proceed simultaneously.
 
 ### Tasks that must happen sequentially
 - None strictly required now — the hard sequential dependency (chaos test → reconciler, validated against it) is already satisfied.
@@ -210,13 +209,9 @@ Reconciler (done) ──> Payout leg ──> Phase 3 done
 ## PENDING WORKFLOW
 
 ```
-CURRENT STATE (Phase 2, 98% — CI/CD pipeline fully green end-to-end)
+CURRENT STATE (Phase 2, 99% — CI/CD pipeline fully green end-to-end)
         ↓
-Fix api-gateway's fast-jwt CVEs (review needed — auth code types)
-        ↓
-Fix migrate's vitest/esbuild CVEs (low risk — version bump)
-        ↓
-container-build / Trivy fully clean across all 8 images
+Re-confirm container-build / Trivy fully clean across all 8 images (live CI re-scan)
         ↓
 Build payout leg (identity, schema, state machine, webhooks)
         ↓
@@ -227,8 +222,8 @@ Payout leg complete; golden path proves single-transfer settlement to a real pay
 PROJECT RUNS COMPLETELY AND SUCCESSFULLY
 ```
 
-### Step 1 — Fix the two remaining Trivy findings
-**Phase:** 2 · **Depends on:** Nothing · **Done when:** all 8 `container-build` images pass clean.
+### Step 1 — Re-confirm the last Trivy findings are clean
+**Phase:** 2 · **Depends on:** Nothing · **Done when:** all 8 `container-build` images pass clean in live CI. Both source-level CVEs are already fixed and verified locally.
 
 ### Step 2 — Build the payout leg
 **Phase:** 3 · **Depends on:** Nothing (parallel to Step 1) · **Done when:** a settlement moves money to a freelancer's test-mode account.
@@ -240,11 +235,10 @@ PROJECT RUNS COMPLETELY AND SUCCESSFULLY
 
 ## NEXT 5 ACTIONS
 
-1. **Review and land the `fast-jwt` fix for `api-gateway`** — the one finding that needs a human look, since it touches live auth code's type declarations.
-2. **Bump `vitest` for `migrate`'s image** — low-risk, closes the last Trivy finding.
-3. **Confirm all 8 `container-build` images pass clean in live CI** — closes out Phase 2 entirely.
-4. **Build the payout leg** — the single largest remaining engineering task; can start immediately, in parallel with 1–3.
-5. **Build the SIGTERM handler** — good practice for real deploys; lower priority now that the reconciler already covers crash recovery.
+1. **Confirm all 8 `container-build` images pass clean in live CI** — both source CVEs (`fast-jwt`, `vitest`/esbuild) are fixed and locally verified; this closes out Phase 2 entirely.
+2. **Build the payout leg** — the single largest remaining engineering task; can start immediately, in parallel with 1.
+3. **Build the SIGTERM handler** — good practice for real deploys; lower priority now that the reconciler already covers crash recovery.
+4. **Re-verify the ExternalSecret mismatch** — quick check, high consequence if still present.
 
 ---
 
@@ -258,19 +252,18 @@ PROJECT RUNS COMPLETELY AND SUCCESSFULLY
 
 **Completed Phases:** 1
 
-**Current Phase:** Phase 2 — Testing & CI/CD Hardening (98%)
+**Current Phase:** Phase 2 — Testing & CI/CD Hardening (99%)
 
 **Remaining Phases:** 2
 
 | Phase | Completion | Status |
 |---|---:|---|
 | Phase 1 — Foundation & Core Architecture | 100% | 🟢 |
-| Phase 2 — Testing & CI/CD Hardening | 98% | 🟢 |
+| Phase 2 — Testing & CI/CD Hardening | 99% | 🟢 |
 | Phase 3 — Payout Leg & Crash Recovery | 23% | 🔴 |
 
 **Current Blockers:**
-- None technical. `api-gateway`'s `fast-jwt` fix is scoped but intentionally held for review (auth code).
-- `migrate`'s `vitest` bump is scoped and low-risk, not yet applied.
+- None technical. Both `api-gateway`'s `fast-jwt` CVE and `migrate`'s `vitest`/esbuild CVE are fixed and verified locally; only a live CI Trivy re-scan of the rebuilt images remains.
 - Payout leg (Phase 3) is unstarted — the largest remaining task.
 
-**Next Milestone:** Fully Clean Pipeline — both remaining Trivy findings closed, all 8 `container-build` images passing.
+**Next Milestone:** Fully Clean Pipeline — live Trivy re-scan confirms all 8 `container-build` images passing.

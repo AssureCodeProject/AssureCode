@@ -18,6 +18,7 @@ import XaiTrustScoreView from './components/XaiTrustScoreView';
 import EscrowSettlementView from './components/EscrowSettlementView';
 import MobileDrawer from './components/ui/MobileDrawer';
 import LoginScreen from './components/LoginScreen';
+import GithubCallback from './components/GithubCallback';
 import { ChainBadge, SignatureBadge } from './components/ui/LedgerBadges';
 import { useLedgerStatus } from './hooks/useLedgerStatus';
 import { useAuth } from './context/AuthContext';
@@ -135,6 +136,13 @@ export function App() {
     { id: 'xai', label: '03. XAI Trust Score', shortLabel: '03. Trust Score', icon: BrainCircuit, disabled: !contractData },
     { id: 'escrow', label: '04. Escrow Settlement', shortLabel: '04. Escrow', icon: Lock, disabled: !contractData },
   ];
+
+  // No router in this app — GitHub redirects here as a real page navigation,
+  // so this path is checked ahead of the loading/auth gates rather than
+  // through a route table.
+  if (window.location.pathname === '/auth/github/callback') {
+    return <GithubCallback />;
+  }
 
   if (isLoading) {
     return (

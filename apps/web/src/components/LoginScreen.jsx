@@ -1,7 +1,14 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { LogIn, Loader2, AlertCircle } from 'lucide-react';
+import { LogIn, Loader2, AlertCircle, Github } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+
+/** Surfaced from GithubCallback's redirect back here on failure (?error=...). */
+function githubErrorMessage(code) {
+  if (code === 'github_no_email') return 'Your GitHub account has no email address AssureCode can use.';
+  if (code === 'github_oauth_failed') return 'GitHub sign-in failed. Please try again.';
+  return null;
+}
 
 function submitButtonClasses(isSubmitting, canSubmit) {
   const base =
@@ -19,6 +26,8 @@ export function LoginScreen() {
   const [error, setError] = useState(null);
 
   const canSubmit = Boolean(email.trim() && password);
+
+  const githubError = githubErrorMessage(new URLSearchParams(window.location.search).get('error'));
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -86,10 +95,10 @@ export function LoginScreen() {
             />
           </div>
 
-          {error && (
+          {(error || githubError) && (
             <div className="flex items-start gap-2 text-xs font-mono text-fail bg-fail/5 border border-fail/30 px-3 py-2">
               <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-              <span>{error}</span>
+              <span>{error || githubError}</span>
             </div>
           )}
 
@@ -111,10 +120,27 @@ export function LoginScreen() {
               </>
             )}
           </button>
+
+          <div className="flex items-center gap-3 text-[10px] font-mono text-prose-dim uppercase tracking-widest">
+            <div className="h-px flex-1 bg-rule" />
+            <span>or</span>
+            <div className="h-px flex-1 bg-rule" />
+          </div>
+
+          <a
+            id="btn-login-github"
+            href="/auth/github"
+            className="w-full py-3.5 font-mono font-bold text-sm tracking-wider uppercase transition-all
+                       flex items-center justify-center gap-2 border border-rule text-prose hover:border-rule-hi hover:bg-ink-3/40"
+          >
+            <Github className="w-4 h-4" />
+            <span>Continue with GitHub</span>
+          </a>
         </form>
 
         <p className="text-center font-mono text-[11px] text-prose-dim mt-4">
-          Demo accounts only — seeded via tools/seed-users.py. No self-signup.
+          Demo accounts sign in above — seeded via tools/seed-users.py. Freelancers can also
+          continue with GitHub, no self-signup needed either way.
         </p>
       </motion.div>
     </div>

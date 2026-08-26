@@ -56,6 +56,17 @@ export function AuthProvider({ children }) {
     return data.user;
   }, []);
 
+  // GET /auth/github/callback redirects here with a short-lived one-time
+  // code rather than a real JWT (see server.ts) — this is the follow-up call
+  // that actually redeems it. Same token-storage shape as login() above.
+  const completeGithubLogin = useCallback(async (code) => {
+    const data = await callApi('/auth/github/exchange', 'POST', { code });
+    setAuthToken(data.token);
+    localStorage.setItem(TOKEN_STORAGE_KEY, data.token);
+    setUser(toUser(data.user));
+    return data.user;
+  }, []);
+
   const logout = useCallback(() => {
     // Best-effort — JWT is stateless, so failure to reach the gateway does
     // not block clearing the local session.
@@ -65,8 +76,8 @@ export function AuthProvider({ children }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, isAuthenticated: !!user, isLoading, login, logout }),
-    [user, isLoading, login, logout],
+    () => ({ user, isAuthenticated: !!user, isLoading, login, logout, completeGithubLogin }),
+    [user, isLoading, login, logout, completeGithubLogin],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

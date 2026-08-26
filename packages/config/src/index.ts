@@ -164,6 +164,13 @@ export const AppConfigSchema = z.object({
   // default is in one place and assertProductionSecrets can see it.
   GITHUB_WEBHOOK_SECRET: z.string().default('assurecode_github_secret'),
 
+  // Publicly reachable base URL of webhook-ingest — distinct from any
+  // internal/compose service name, because this is the address GitHub's
+  // servers themselves call, not another AssureCode service. Used only when
+  // registering a repo webhook on a freelancer's behalf (POST /repos/.../hooks);
+  // unset in local dev, where GitHub cannot reach localhost anyway.
+  WEBHOOK_INGEST_PUBLIC_URL: z.string().optional(),
+
   // Auth — JWT signing secret and the shared token machine callers (CI
   // harnesses, benchmark/verify scripts) present instead of a user login.
   // Defaults are placeholders only; the gateway fails fast on these in
@@ -236,6 +243,19 @@ export const AppConfigSchema = z.object({
   // allows 60 unauthenticated requests per hour per IP, and one audit costs one
   // request per source file plus one for the tree.
   GITHUB_TOKEN: z.string().optional(),
+
+  // GitHub OAuth App — freelancer login and repo connection (distinct from
+  // GITHUB_TOKEN above, which is a single shared PAT ci-worker uses to fetch
+  // already-pushed source; these authenticate the OAuth flow that lets a
+  // freelancer prove who they are and pick which of their own repos to wire
+  // up). Optional so the app still boots with password-only login when unset.
+  GITHUB_CLIENT_ID: z.string().optional(),
+  GITHUB_CLIENT_SECRET: z.string().optional(),
+  // Symmetric key for pgp_sym_encrypt/_decrypt (see
+  // infra/migrations/postgres/V017__github_oauth.sql) — a freelancer's OAuth
+  // token has to be recoverable (to list their repos, to register a webhook),
+  // so it is encrypted at rest rather than hashed.
+  GITHUB_TOKEN_ENCRYPTION_KEY: z.string().optional(),
 });
 export type AppConfig = z.infer<typeof AppConfigSchema>;
 

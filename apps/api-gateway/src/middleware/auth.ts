@@ -20,7 +20,19 @@ import type { AuthUser } from './rbac.js';
  * raw body rather than by user identity — putting them behind a user JWT
  * would make Razorpay and GitHub unable to call us at all.
  */
-const PUBLIC_PATHS = new Set(['/healthz', '/readyz', '/metrics', '/auth/login']);
+const PUBLIC_PATHS = new Set([
+  '/healthz',
+  '/readyz',
+  '/metrics',
+  '/auth/login',
+  // GitHub OAuth's whole point is standing in for a session that doesn't
+  // exist yet: /github kicks off the redirect, /github/callback is GitHub
+  // calling back with no JWT of ours to present, and /github/exchange trades
+  // the short-lived signed code the callback minted for the real session JWT.
+  '/auth/github',
+  '/auth/github/callback',
+  '/auth/github/exchange',
+]);
 const PUBLIC_PREFIXES = ['/webhooks/'];
 
 function isPublicPath(url: string): boolean {

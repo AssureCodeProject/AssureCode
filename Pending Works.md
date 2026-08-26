@@ -8,7 +8,7 @@
 
 **Project:** AssureCode ("Trust-Code 2.0") — zero-trust, event-driven escrow platform for freelance software contracts
 
-**Overall Completion (core functional scope):** **81%**
+**Overall Completion (core functional scope):** **83%**
 
 **Current Phase:** Phase 2 — Testing & CI/CD Hardening
 
@@ -32,7 +32,7 @@ The core product (contract lifecycle, escrow, the four-signal audit/settlement p
 |---|---|---|---:|
 | 1 | Foundation & Core Architecture | 🟢 Complete | 100% |
 | 2 | Testing & CI/CD Hardening | 🟢 Nearly Complete | 98% |
-| 3 | Functional Completeness — the Payout Leg & Crash Recovery | 🔴 Barely Started | 13% |
+| 3 | Functional Completeness — the Payout Leg & Crash Recovery | 🔴 Barely Started | 23% |
 
 ---
 
@@ -122,7 +122,7 @@ Close the product's actual value loop — the freelancer is never paid today —
 🔴 BARELY STARTED
 
 ### Phase Completion
-**13%.** One real, tested, working deliverable now exists (the crash-recovery reconciler); the payout leg itself remains entirely unbuilt.
+**23%.** Two real, tested, working deliverables now exist (the crash-recovery reconciler and freelancer GitHub OAuth login/repo-connection); the payout leg itself remains entirely unbuilt.
 
 ### WORK ITEMS
 | # | Work Item | Status | Completion | Evidence |
@@ -135,6 +135,7 @@ Close the product's actual value loop — the freelancer is never paid today —
 | 6 | SIGTERM handler for settlement-worker | 🔴 | 0% | Still not built — `SIGKILL` (used by the chaos test) can't be caught by any handler, so the reconciler (item 7) was the fix that actually mattered; a `SIGTERM` handler for graceful shutdown on a real deploy/redeploy remains a separate, not-yet-done nice-to-have |
 | 7 | Reconciler for stale `PROCESSING` rows | 🟢 | 100% | **Built and verified.** `reconcileAbandonedSettlements()` in `apps/settlement-worker/src/worker.ts`, run at startup: finds settlements abandoned mid-release by a crash, re-validates the oracle still approves, safely re-runs capture (idempotent on both the fake and real adapter), and completes the same commit path the normal flow uses. Proven against a real `SIGKILL` mid-settlement in the actual chaos test, both locally (real Postgres + Redis) and in live CI — the chaos test now passes as a plain `it()`, not `it.fails()` |
 | 8 | ExternalSecret name mismatch (ML-DSA signing) | ⚠️ | NEEDS VERIFICATION | Flagged previously, not re-checked this session |
+| 9 | Freelancer GitHub OAuth login + repo connection | 🟢 | 100% | Replaces seeded demo identity with real GitHub login: `GET /auth/github` + `/auth/github/callback` (OAuth round trip, token encrypted at rest via `pgp_sym_encrypt`, migration `V017` applied), `POST /auth/github/exchange`, `GET /api/github/repos`, auto-registered webhook on `PATCH /api/contracts/:id/github-repo`, "Continue with GitHub" on the login screen. 8 new tests passing against real Postgres (`apps/api-gateway/test/github-oauth.test.ts`). The already-real commit-pinned source-fetch pipeline (`ci-worker`) needs no code changes — just `ENABLE_GITHUB_SOURCE_FETCH=true` and `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET`/`GITHUB_TOKEN_ENCRYPTION_KEY` set in the target environment, a deploy-time step, not remaining code |
 
 ### PENDING WORK
 1. **Build the payout leg end-to-end** (items 1–5) — P0, no dependency, the largest remaining engineering task in the project.
@@ -155,11 +156,11 @@ A settlement moves real money to a freelancer's test-mode account, and the Phase
 |---|---:|---:|---:|---:|---:|
 | Phase 1 | 7 | 7 | 0 | 0 | 100% |
 | Phase 2 | 17 | 16 | 1 | 0 | 98% |
-| Phase 3 | 8 | 1 | 1 | 6 | 13% |
+| Phase 3 | 9 | 2 | 1 | 6 | 23% |
 
 ---
 
-## OVERALL COMPLETION: **81%**
+## OVERALL COMPLETION: **83%**
 
 **Methodology.** Weighted by each phase's share of total remaining core-functional effort, not a simple phase-count or percentage average:
 
@@ -167,8 +168,8 @@ A settlement moves real money to a freelancer's test-mode account, and the Phase
 |---|---:|---:|---:|
 | 1 | 43% | 100% | 43.0 |
 | 2 | 36% | 98% | 35.3 |
-| 3 | 21% | 13% | 2.6 |
-| **Total** | **100%** | | **80.9 ≈ 81%** |
+| 3 | 21% | 23% | 4.8 |
+| **Total** | **100%** | | **83.1 ≈ 83%** |
 
 Weights reflect relative effort: Phase 1 (foundation) is the largest completed body of work; Phase 2 (testing/CI) is substantial and now nearly done; Phase 3 (payout leg) is smaller in item-count but was previously estimated at multi-day effort — weighted accordingly, not by item-count alone.
 
@@ -251,7 +252,7 @@ PROJECT RUNS COMPLETELY AND SUCCESSFULLY
 
 **Project:** AssureCode
 
-**Overall Completion (core functional scope):** 81%
+**Overall Completion (core functional scope):** 83%
 
 **Total Phases:** 3
 
@@ -265,7 +266,7 @@ PROJECT RUNS COMPLETELY AND SUCCESSFULLY
 |---|---:|---|
 | Phase 1 — Foundation & Core Architecture | 100% | 🟢 |
 | Phase 2 — Testing & CI/CD Hardening | 98% | 🟢 |
-| Phase 3 — Payout Leg & Crash Recovery | 13% | 🔴 |
+| Phase 3 — Payout Leg & Crash Recovery | 23% | 🔴 |
 
 **Current Blockers:**
 - None technical. `api-gateway`'s `fast-jwt` fix is scoped but intentionally held for review (auth code).

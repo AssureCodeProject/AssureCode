@@ -18,7 +18,7 @@ import fastifyCors from '@fastify/cors';
 import fastifyWebsocket from '@fastify/websocket';
 import fastifyMultipart from '@fastify/multipart';
 import fastifyRateLimit from '@fastify/rate-limit';
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID, createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import net from 'node:net';
 import pg from 'pg';
 import { ZodError } from 'zod';
@@ -106,10 +106,18 @@ if (config.NODE_ENV === 'production' && !isLiveRazorpayConfig(razorpayConfig)) {
 // read this source file. The rule now lives in @assurecode/config so the
 // other services get the same guard instead of only this one — it also
 // catches the REPLACE_ME placeholders shipped in infra/k8s/.
-assertProductionSecrets(config as unknown as Record<string, string | undefined>, [
-  'JWT_SECRET',
-  'SERVICE_TOKEN',
-], { onError: (message) => logger.error(message) });
+//
+// GitHub OAuth's two secrets are required only when GITHUB_CLIENT_ID is set:
+// the feature is opt-in (a deployment can run password-only login forever),
+// so unconditionally requiring them would refuse to boot every production
+// deployment that simply never enabled GitHub login at all.
+const requiredProductionSecrets = ['JWT_SECRET', 'SERVICE_TOKEN'];
+if (config.GITHUB_CLIENT_ID) {
+  requiredProductionSecrets.push('GITHUB_CLIENT_SECRET', 'GITHUB_TOKEN_ENCRYPTION_KEY');
+}
+assertProductionSecrets(config as unknown as Record<string, string | undefined>, requiredProductionSecrets, {
+  onError: (message) => logger.error(message),
+});
 
 // BUG-009: Pre-parsed Redis URL used by the /readyz health check.
 const redisHealthUrl = (() => {
@@ -506,6 +514,289 @@ server.get('/auth/me', async (request, reply) => {
   });
 });
 
+// ── GitHub OAuth (freelancer login + repo connection) ───────────────────
+//
+// Opt-in: only registered when GITHUB_CLIENT_ID is configured, so a
+// deployment that never sets it keeps running password-only login untouched
+// (see the conditional assertProductionSecrets check above this block).
+if (config.GITHUB_CLIENT_ID) {
+  const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+  const EXCHANGE_CODE_TTL_MS = 60 * 1000;
+  const githubCallbackUrl = `${config.GATEWAY_URL}/auth/github/callback`;
+
+  // CSRF guard for the redirect round-trip to GitHub: an HMAC over a random
+  // nonce + timestamp, keyed on JWT_SECRET (already a required, always-set
+  // secret — no new key needed just to sign a short-lived nonce).
+  function signState(): string {
+    const nonce = randomUUID();
+    const ts = Date.now().toString();
+    const payload = `${nonce}.${ts}`;
+    const sig = createHmac('sha256', config.JWT_SECRET).update(payload).digest('base64url');
+    return `${payload}.${sig}`;
+  }
+
+  function verifyState(state: string): boolean {
+    const parts = state.split('.');
+    if (parts.length !== 3) return false;
+    const [nonce, ts, sig] = parts;
+    const expected = createHmac('sha256', config.JWT_SECRET).update(`${nonce}.${ts}`).digest('base64url');
+    const sigBuf = Buffer.from(sig);
+    const expectedBuf = Buffer.from(expected);
+    if (sigBuf.length !== expectedBuf.length || !timingSafeEqual(sigBuf, expectedBuf)) return false;
+    const age = Date.now() - Number(ts);
+    return age >= 0 && age < OAUTH_STATE_TTL_MS;
+  }
+
+  // The callback redirects into the SPA rather than handing back a JWT
+  // directly — a token in a redirect URL lands in browser history, the
+  // Referer header of whatever loads next, and server access logs. This
+  // short-TTL signed code stands in for a one-time code without needing a
+  // new storage table: it is a capability to fetch (not itself) the session
+  // JWT, valid for 60s, which POST /auth/github/exchange redeems below.
+  function signExchangeCode(userId: string): string {
+    const ts = Date.now().toString();
+    const nonce = randomUUID();
+    const payload = `${userId}.${ts}.${nonce}`;
+    const sig = createHmac('sha256', config.JWT_SECRET).update(payload).digest('base64url');
+    return `${payload}.${sig}`;
+  }
+
+  function verifyExchangeCode(code: string): string | null {
+    const parts = code.split('.');
+    if (parts.length !== 4) return null;
+    const [userId, ts, nonce, sig] = parts;
+    const expected = createHmac('sha256', config.JWT_SECRET).update(`${userId}.${ts}.${nonce}`).digest('base64url');
+    const sigBuf = Buffer.from(sig);
+    const expectedBuf = Buffer.from(expected);
+    if (sigBuf.length !== expectedBuf.length || !timingSafeEqual(sigBuf, expectedBuf)) return null;
+    const age = Date.now() - Number(ts);
+    if (age < 0 || age >= EXCHANGE_CODE_TTL_MS) return null;
+    return userId;
+  }
+
+  server.get('/auth/github', async (_request, reply) => {
+    const params = new URLSearchParams({
+      client_id: config.GITHUB_CLIENT_ID!,
+      scope: 'read:user user:email public_repo',
+      state: signState(),
+      redirect_uri: githubCallbackUrl,
+    });
+    return reply.redirect(`https://github.com/login/oauth/authorize?${params.toString()}`);
+  });
+
+  server.get<{ Querystring: { code?: string; state?: string; error?: string } }>(
+    '/auth/github/callback',
+    async (request, reply) => {
+      const { code, state, error } = request.query;
+      if (error || !code || !state || !verifyState(state)) {
+        return reply.redirect(`${config.WEB_APP_URL}/?error=github_oauth_failed`);
+      }
+
+      try {
+        const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify({
+            client_id: config.GITHUB_CLIENT_ID,
+            client_secret: config.GITHUB_CLIENT_SECRET,
+            code,
+            redirect_uri: githubCallbackUrl,
+          }),
+        });
+        const tokenJson: any = await tokenRes.json();
+        const accessToken: string | undefined = tokenJson?.access_token;
+        if (!accessToken) {
+          logger.error({ tokenJson }, 'GitHub OAuth token exchange failed');
+          return reply.redirect(`${config.WEB_APP_URL}/?error=github_oauth_failed`);
+        }
+
+        const ghHeaders = { Authorization: `Bearer ${accessToken}`, 'User-Agent': 'assurecode-api-gateway', Accept: 'application/vnd.github+json' };
+        const ghUserRes = await fetch('https://api.github.com/user', { headers: ghHeaders });
+        const ghUser: any = await ghUserRes.json();
+        if (!ghUser?.id) {
+          logger.error({ ghUser }, 'GitHub /user call failed during OAuth callback');
+          return reply.redirect(`${config.WEB_APP_URL}/?error=github_oauth_failed`);
+        }
+
+        let email: string | undefined = ghUser.email ?? undefined;
+        if (!email) {
+          const emailsRes = await fetch('https://api.github.com/user/emails', { headers: ghHeaders });
+          const emails: any[] = await emailsRes.json().catch(() => []) as any[];
+          email = (Array.isArray(emails) ? emails.find((e) => e.primary)?.email ?? emails[0]?.email : undefined) ?? undefined;
+        }
+        if (!email) {
+          logger.error({ githubLogin: ghUser.login }, 'GitHub account has no accessible email');
+          return reply.redirect(`${config.WEB_APP_URL}/?error=github_no_email`);
+        }
+
+        const providerUserId = String(ghUser.id);
+        const displayName: string = ghUser.name || ghUser.login || email;
+
+        const client = await dbPool.connect();
+        let userId: string;
+        let isNewUser = false;
+        try {
+          await client.query('BEGIN');
+
+          const existingProvider = await client.query(
+            `SELECT user_id FROM auth_providers WHERE provider_type = 'GITHUB' AND provider_user_id = $1`,
+            [providerUserId],
+          );
+
+          if ((existingProvider.rowCount ?? 0) > 0) {
+            userId = existingProvider.rows[0].user_id;
+          } else {
+            const existingUser = await client.query(`SELECT user_id FROM users WHERE email = $1`, [email]);
+            if ((existingUser.rowCount ?? 0) > 0) {
+              userId = existingUser.rows[0].user_id;
+            } else {
+              userId = randomUUID();
+              isNewUser = true;
+              // Sentinel password_hash: no argon2 hash will ever verify
+              // against it, matching the 'unusable-no-login' convention
+              // V012 already established for accounts with no password.
+              await client.query(
+                `INSERT INTO users (user_id, email, password_hash, role, display_name)
+                 VALUES ($1, $2, 'unusable-no-login', 'freelancer', $3)`,
+                [userId, email, displayName],
+              );
+            }
+          }
+
+          const encryptedToken = config.GITHUB_TOKEN_ENCRYPTION_KEY
+            ? (await client.query(`SELECT pgp_sym_encrypt($1, $2) AS enc`, [accessToken, config.GITHUB_TOKEN_ENCRYPTION_KEY])).rows[0].enc
+            : null;
+
+          await client.query(
+            `INSERT INTO auth_providers (user_id, provider_type, provider_user_id, access_token_encrypted, token_scopes, connected_at)
+             VALUES ($1, 'GITHUB', $2, $3, $4, now())
+             ON CONFLICT (provider_type, provider_user_id) DO UPDATE
+               SET access_token_encrypted = EXCLUDED.access_token_encrypted,
+                   token_scopes = EXCLUDED.token_scopes,
+                   connected_at = now()`,
+            [userId, providerUserId, encryptedToken, tokenJson.scope ?? null],
+          );
+
+          await client.query('COMMIT');
+        } catch (err) {
+          await client.query('ROLLBACK');
+          throw err;
+        } finally {
+          client.release();
+        }
+
+        // Matchmaking visibility for a brand-new GitHub-first freelancer:
+        // freelancer_profiles.profile_embedding is NOT NULL with no default
+        // (tools/seed-users.py always computes a real one), so a row can't be
+        // inserted without calling out to ai-service's embedder the same way
+        // that script does. Best-effort — a failure here still leaves a
+        // working login, just not yet matchmaking-visible.
+        if (isNewUser) {
+          try {
+            const profileText = `${displayName} (GitHub: ${ghUser.login ?? providerUserId})`;
+            const embedRes = await fetch(`${aiServiceUrl}/embed`, {
+              method: 'POST',
+              headers: serviceCallHeaders(),
+              body: JSON.stringify({ text: profileText }),
+              signal: AbortSignal.timeout(10_000),
+            });
+            if (embedRes.ok) {
+              const { vector } = (await embedRes.json()) as { vector: number[] };
+              await dbPool.query(
+                `INSERT INTO freelancer_profiles (freelancer_id, skills, profile_text, profile_embedding)
+                 VALUES ($1, $2, $3, $4::vector)
+                 ON CONFLICT (freelancer_id) DO NOTHING`,
+                [userId, [], profileText, `[${vector.join(',')}]`],
+              );
+            } else {
+              logger.warn({ userId, status: embedRes.status }, 'ai-service /embed non-OK; freelancer_profiles row not created');
+            }
+          } catch (err) {
+            logger.warn({ userId, err }, 'Failed to create freelancer_profiles row for new GitHub-login freelancer (non-blocking)');
+          }
+        }
+
+        await logSecurityAudit(dbPool, {
+          userId,
+          action: 'LOGIN',
+          resource: 'auth',
+          ipAddress: request.ip,
+          status: 'SUCCESS',
+        });
+
+        return reply.redirect(`${config.WEB_APP_URL}/auth/github/callback?code=${signExchangeCode(userId)}`);
+      } catch (err: any) {
+        logger.error({ err: err?.message }, 'GitHub OAuth callback failed');
+        return reply.redirect(`${config.WEB_APP_URL}/?error=github_oauth_failed`);
+      }
+    },
+  );
+
+  server.post<{ Body: { code?: string } }>('/auth/github/exchange', async (request, reply) => {
+    const { code } = request.body || {};
+    if (!code) return reply.status(400).send({ error: 'code is required' });
+
+    const userId = verifyExchangeCode(code);
+    if (!userId) return reply.status(401).send({ error: 'Invalid or expired code' });
+
+    const res = await dbPool.query(
+      `SELECT user_id, email, role, display_name, kyc_status, mfa_enabled FROM users WHERE user_id = $1`,
+      [userId],
+    );
+    if (res.rowCount === 0) return reply.status(401).send({ error: 'Invalid or expired code' });
+
+    const row = res.rows[0];
+    const token = (server as any).jwt.sign({
+      sub: row.user_id,
+      email: row.email,
+      role: row.role,
+      kycStatus: row.kyc_status,
+      mfaEnabled: row.mfa_enabled,
+    });
+
+    return reply.send({
+      token,
+      user: { userId: row.user_id, email: row.email, role: row.role, displayName: row.display_name },
+    });
+  });
+
+  // Lists the caller's own GitHub repos, using their stored OAuth token —
+  // never the shared GITHUB_TOKEN, which is scoped to already-linked public
+  // repos only, not to "what can this freelancer see."
+  server.get('/api/github/repos', async (request, reply) => {
+    const user = (request as any).user as AuthUser | undefined;
+    if (!user) return reply.status(401).send({ error: 'Unauthorized' });
+    if (!config.GITHUB_TOKEN_ENCRYPTION_KEY) {
+      return reply.status(503).send({ error: 'GitHub repo listing is not configured on this deployment' });
+    }
+
+    const tokenRow = await dbPool.query(
+      `SELECT pgp_sym_decrypt(access_token_encrypted, $2) AS token
+         FROM auth_providers WHERE user_id = $1 AND provider_type = 'GITHUB' AND access_token_encrypted IS NOT NULL`,
+      [user.userId, config.GITHUB_TOKEN_ENCRYPTION_KEY],
+    );
+    if (tokenRow.rowCount === 0) {
+      return reply.status(404).send({ error: 'No connected GitHub account for this user' });
+    }
+    const token: string = tokenRow.rows[0].token;
+
+    try {
+      const reposRes = await fetch('https://api.github.com/user/repos?per_page=100&sort=pushed', {
+        headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'assurecode-api-gateway', Accept: 'application/vnd.github+json' },
+      });
+      if (!reposRes.ok) {
+        logger.warn({ userId: user.userId, status: reposRes.status }, 'GitHub /user/repos call failed');
+        return reply.status(502).send({ error: 'Failed to list GitHub repositories' });
+      }
+      const repos = await reposRes.json() as any[];
+      return reply.send(repos.map((r) => ({ name: r.name, full_name: r.full_name, private: r.private })));
+    } catch (err) {
+      logger.warn({ userId: user.userId, err }, 'GitHub /user/repos call threw');
+      return reply.status(502).send({ error: 'Failed to list GitHub repositories' });
+    }
+  });
+}
+
 // ── PDF Requirements Upload ─────────────────────────────────────────────
 //
 // Standalone, not tied to a contractId: the client uploads before the form
@@ -755,7 +1046,7 @@ server.patch<{
 
     const result = await dbPool.query(
       `UPDATE contracts SET github_repo_full_name = $1 WHERE contract_id = $2
-       RETURNING contract_id`,
+       RETURNING contract_id, freelancer_id`,
       [githubRepoFullName, contractId],
     );
 
@@ -776,6 +1067,56 @@ server.patch<{
       contractId,
       githubRepoFullName,
     });
+
+    // Best-effort webhook registration. The repo belongs to the freelancer,
+    // not the client who just called this route — so the token that can
+    // actually add a webhook to it is the *freelancer's* stored GitHub OAuth
+    // token (looked up by contracts.freelancer_id), not the caller's. A
+    // freelancer with no connected GitHub account (still logs in with a
+    // password) simply gets no auto-registered webhook; the repo link itself
+    // still succeeds, and the webhook can be added manually as a fallback.
+    const freelancerId: string | null = result.rows[0].freelancer_id;
+    if (freelancerId && config.WEBHOOK_INGEST_PUBLIC_URL && config.GITHUB_TOKEN_ENCRYPTION_KEY) {
+      try {
+        const tokenRow = await dbPool.query(
+          `SELECT pgp_sym_decrypt(access_token_encrypted, $2) AS token
+             FROM auth_providers WHERE user_id = $1 AND provider_type = 'GITHUB' AND access_token_encrypted IS NOT NULL`,
+          [freelancerId, config.GITHUB_TOKEN_ENCRYPTION_KEY],
+        );
+        const freelancerToken: string | undefined = tokenRow.rows[0]?.token;
+        if (freelancerToken) {
+          const hookRes = await fetch(`https://api.github.com/repos/${githubRepoFullName}/hooks`, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${freelancerToken}`,
+              'User-Agent': 'assurecode-api-gateway',
+              Accept: 'application/vnd.github+json',
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              name: 'web',
+              active: true,
+              events: ['push'],
+              config: {
+                url: `${config.WEBHOOK_INGEST_PUBLIC_URL}/webhooks/github`,
+                content_type: 'json',
+                secret: config.GITHUB_WEBHOOK_SECRET,
+              },
+            }),
+          });
+          if (hookRes.ok) {
+            logger.info({ contractId, githubRepoFullName }, 'GitHub webhook auto-registered for repo');
+          } else {
+            logger.warn(
+              { contractId, githubRepoFullName, status: hookRes.status },
+              'GitHub webhook auto-registration failed; add it manually',
+            );
+          }
+        }
+      } catch (err) {
+        logger.warn({ contractId, githubRepoFullName, err }, 'GitHub webhook auto-registration threw (non-blocking)');
+      }
+    }
 
     return {
       statusCode: 200,

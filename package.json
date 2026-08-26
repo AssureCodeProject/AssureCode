@@ -60,7 +60,6 @@
   "overrides": {
     "@fastify/jwt": {
       "fast-jwt": "^6.2.4"
-    },
-    "esbuild": "^0.28.1"
+    }
   }
 }

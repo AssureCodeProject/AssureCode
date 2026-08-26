@@ -27,7 +27,33 @@ COPY packages/shared/package*.json ./packages/shared/
 COPY packages/config/package*.json ./packages/config/
 COPY packages/telemetry/package*.json ./packages/telemetry/
 
-RUN npm ci
+# A plain `npm ci` installs the FULL monorepo dependency graph recorded in
+# the lockfile — every app's vitest, apps/web's own vite, eslint — regardless
+# of which workspace package.json files are actually present above. That is
+# how completely unrelated CVEs (apps/web's own vite/esbuild pair, picked for
+# its production bundling behavior, not this image's needs) ended up in this
+# image's Trivy scan at all. Scoping to the three workspaces actually copied
+# installs only what migrate.ts's own dependency graph needs.
+RUN npm ci --workspace=packages/shared --workspace=packages/telemetry --workspace=packages/config --include-workspace-root
+
+# packages/config's own devDependencies include vitest (its test runner),
+# which is why vite/esbuild land here at all despite the workspace scoping
+# above — every workspace in this monorepo tests with vitest. Nothing in
+# THIS image ever runs vite or vitest (the CMD below only ever runs
+# `tsx tools/migrate.ts`), so unlike apps/web's real production build, there
+# is no bundler behavior to preserve here.
+#
+# vite's own esbuild copy carries a Go stdlib CVE (CVE-2025-68121, fixed at
+# Go 1.24.13+) baked in at esbuild's own compile time — a property of which
+# Go toolchain built that specific binary, not of esbuild's npm version.
+# tsx's separate, newer esbuild copy already ships a patched Go binary
+# (verified: not flagged by Trivy). The actual compiled binary lives in the
+# platform-specific @esbuild/<os>-<arch> optional dependency, not in esbuild
+# itself — both the JS wrapper and that binary package need deleting here.
+# Doing so makes Node's module resolution fall through to the already-present
+# clean copy for any code that still does `require('esbuild')` — inert
+# either way in this image.
+RUN rm -rf node_modules/vite/node_modules/esbuild node_modules/vite/node_modules/@esbuild
 
 # Only the three packages migrate.ts actually pulls in. Copying all of
 # packages/ would drag in event-bus, whose `ioredis` import fails to compile

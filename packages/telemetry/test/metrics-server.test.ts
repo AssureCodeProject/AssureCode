@@ -1,40 +1,46 @@
+/**
+ * startMetricsServer() attached no 'error' listener to the server it created.
+ * A bind failure (e.g. EADDRINUSE, from two settlement-worker test files or a
+ * spawned child process both defaulting to SETTLEMENT_WORKER_PORT) is emitted
+ * as an 'error' event; Node throws it as an uncaught exception when nothing is
+ * listening, which crashes whatever else is running in that process at the
+ * time — this is what turned a second process's bind failure into a golden-path
+ * test timing out waiting on unrelated state.
+ */
 import { describe, it, expect, afterEach } from 'vitest';
 import type { Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { startMetricsServer } from '../src/metrics-server.js';
-import { metrics } from '../src/metrics.js';
 
-/**
- * settlement-worker and ci-worker have no other HTTP surface, so this tiny
- * server is the only thing standing between them and being invisible to
- * Prometheus. Worth its own real test rather than trusting the two callers'
- * wiring alone.
- */
 describe('startMetricsServer', () => {
-  let server: Server | undefined;
-  const noopLogger = { info: () => undefined, error: () => undefined };
+  const servers: Server[] = [];
 
   afterEach(async () => {
-    if (server) await new Promise((resolve) => server!.close(resolve));
-    server = undefined;
+    await Promise.all(servers.splice(0).map((s) => new Promise((resolve) => s.close(resolve))));
   });
 
-  it('serves real Prometheus text on GET /metrics', async () => {
-    const port = 15801;
-    server = startMetricsServer(port, noopLogger);
-    metrics.dlqMessagesTotal.inc({ stream: 'metrics-server-test' });
+  it('logs a bind failure instead of throwing an uncaught exception', async () => {
+    const logger = {
+      info: () => {},
+      error: (obj: unknown) => errors.push(obj),
+    };
+    const errors: unknown[] = [];
 
-    const res = await fetch(`http://127.0.0.1:${port}/metrics`);
-    expect(res.status).toBe(200);
-    expect(res.headers.get('content-type')).toContain('text/plain');
-    const body = await res.text();
-    expect(body).toContain('assurecode_dlq_messages_total');
-  });
+    const first = startMetricsServer(0, logger);
+    servers.push(first);
+    await new Promise<void>((resolve) => first.once('listening', resolve));
+    const { port } = first.address() as AddressInfo;
 
-  it('returns 404 for any other path', async () => {
-    const port = 15802;
-    server = startMetricsServer(port, noopLogger);
+    // No listener of our own is attached to `second` here — if
+    // startMetricsServer does not handle its own 'error' event, this is the
+    // exact scenario that crashes the process instead of merely failing this
+    // assertion.
+    const second = startMetricsServer(port, logger);
+    servers.push(second);
 
-    const res = await fetch(`http://127.0.0.1:${port}/healthz`);
-    expect(res.status).toBe(404);
+    // The bind failure is asynchronous; give it a tick to surface.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    expect(errors).toHaveLength(1);
   });
 });

@@ -31,6 +31,15 @@ export function startMetricsServer(port: number, logger: { info: (obj: unknown, 
     res.end('not found');
   });
 
+  // Without this, a bind failure (EADDRINUSE from a stray process still
+  // holding the port, most commonly) is an unhandled 'error' event — Node
+  // throws it as an uncaught exception, crashing whatever else the process
+  // happens to be doing at that moment. Metrics are advisory; a scrape
+  // endpoint that can't start should not take the worker down with it.
+  server.on('error', (err) => {
+    logger.error({ err, port }, 'Metrics server failed to start');
+  });
+
   server.listen(port, () => {
     logger.info({ port }, 'Metrics server listening on /metrics');
   });

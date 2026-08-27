@@ -2,7 +2,8 @@
  * @assurecode/ci-worker — Consumes code.push events, orchestrates zero-trust CI sandbox.
  */
 
-import { loadConfig, createLogger, getDatabaseUrl } from '@assurecode/config';
+import { loadConfig, createLogger, getDatabaseUrl, startMetricsServer } from '@assurecode/config';
+import type { Server } from 'node:http';
 import { createEventBus, eventBusOptionsFromConfig } from '@assurecode/event-bus';
 import { EVENT_TOPICS, type EventEnvelope } from '@assurecode/shared';
 import { analyzeAST } from './ast-analyzer.js';
@@ -239,16 +240,7 @@ export async function processCodePush(
     await (options?.auditStore ?? getAuditStore()).save(auditResults);
 
     logger.info({ contractId, auditResults }, 'CI Pipeline complete, publishing audit.completed');
-    // TEMPORARY diagnostic — logging the resolved envelope (not just entering
-    // the call) proves the publish itself completed, distinct from merely
-    // having been attempted. Part of tracking down a CI stall where the
-    // subscriber-side "Oracle recorded AUDIT_COMPLETED signals" log never
-    // appears for the real contract; remove once that's root-caused.
-    const publishedEnvelope = await eventBus.publish(EVENT_TOPICS.AUDIT_COMPLETED, auditResults, correlationId);
-    logger.info(
-      { contractId, envelopeId: publishedEnvelope.id, epochMs: Date.now() },
-      'audit.completed publish resolved',
-    );
+    await eventBus.publish(EVENT_TOPICS.AUDIT_COMPLETED, auditResults, correlationId);
   } finally {
     // The workspace holds the pushed code and the contract's hidden tests. It
     // is removed whether the pipeline succeeded or threw — leaving it behind
@@ -273,8 +265,16 @@ export async function processCodePush(
  * rather than audited against something other than what was pushed; only the
  * gateway's /simulate-push, which carries code inline, reaches the pipeline.
  */
+let metricsServer: Server | undefined;
+
 async function main(): Promise<void> {
   logger.info('CI Worker starting...');
+
+  // ci-worker has no other HTTP surface — the k8s deployment probes it with
+  // `exec`, not HTTP — so before this it was invisible to Prometheus's `up`
+  // and to every assurecode_* counter this pipeline already increments
+  // in-process but nothing was ever scraping.
+  metricsServer = startMetricsServer(config.CI_WORKER_PORT, logger);
 
   // Built once. Null when ENABLE_GITHUB_SOURCE_FETCH is not 'true', which is a
   // checkable "the GitHub path is off" rather than a fetcher that fails on
@@ -329,6 +329,7 @@ async function main(): Promise<void> {
 }
 
 async function shutdown(): Promise<void> {
+  if (metricsServer) await new Promise((resolve) => metricsServer!.close(resolve));
   if (typeof eventBus.close === 'function') await eventBus.close();
   process.exit(0);
 }

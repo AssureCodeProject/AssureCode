@@ -32,7 +32,7 @@ The core product (contract lifecycle, escrow, the four-signal audit/settlement p
 |---|---|---|---:|
 | 1 | Foundation & Core Architecture | 🟢 Complete | 100% |
 | 2 | Testing & CI/CD Hardening | 🟢 Complete | 100% |
-| 3 | Functional Completeness — the Payout Leg & Crash Recovery | 🔴 Barely Started | 23% |
+| 3 | Functional Completeness — the Payout Leg & Crash Recovery | 🟢 Complete (code) | 100% |
 
 ---
 
@@ -125,7 +125,7 @@ Close the product's actual value loop — the freelancer is never paid today —
 🟢 COMPLETE (code) — real-credential verification remains, see Pending Work
 
 ### Phase Completion
-**100%.** All nine work items are built, wired, and verified — the payout leg (items 1–6) closes the loop the reconciler and GitHub OAuth work (items 7, 9) had already started. Every path is proven against real Postgres and the project's established fake-adapter pattern; what remains is exercising the *real* RazorpayX adapter against live credentials, which is a deploy-time verification step, not unwritten code — the same shape of caveat item 9 already carries for `ENABLE_GITHUB_SOURCE_FETCH`.
+**100%.** All ten work items are built, wired, and verified — the payout leg (items 1–6) closes the loop the reconciler and GitHub OAuth work (items 7, 9) had already started, and item 10 closes the retry-policy gap that was the last open product decision. Every path is proven against real Postgres and the project's established fake-adapter pattern; what remains is exercising the *real* RazorpayX adapter against live credentials, which is a deploy-time verification step, not unwritten code — the same shape of caveat item 9 already carries for `ENABLE_GITHUB_SOURCE_FETCH`.
 
 ### WORK ITEMS
 | # | Work Item | Status | Completion | Evidence |
@@ -139,11 +139,12 @@ Close the product's actual value loop — the freelancer is never paid today —
 | 7 | Reconciler for stale `PROCESSING` rows | 🟢 | 100% | **Built and verified.** `reconcileAbandonedSettlements()` in `apps/settlement-worker/src/worker.ts`, run at startup: finds settlements abandoned mid-release by a crash, re-validates the oracle still approves, safely re-runs capture (idempotent on both the fake and real adapter), and completes the same commit path the normal flow uses. Proven against a real `SIGKILL` mid-settlement in the actual chaos test, both locally (real Postgres + Redis) and in live CI — the chaos test now passes as a plain `it()`, not `it.fails()` |
 | 8 | ExternalSecret name mismatch (ML-DSA signing) | 🟢 | 100% | **Re-verified and fixed.** The original framing was imprecise — Secret name, key name (`ML_DSA_SEED_HEX`), Deployment env injection, and the app's `os.environ` read were all already consistent. The real bug: the ledger-signing `ExternalSecret`'s `secretStoreRef.name` referenced `assurecode-secret-store`, a `SecretStore` that doesn't exist — the real one is named `assurecode-store`. Fixed in `infra/k8s/overlays/external-secrets/assurecode-external-secret.yaml:129` |
 | 9 | Freelancer GitHub OAuth login + repo connection | 🟢 | 100% | Replaces seeded demo identity with real GitHub login: `GET /auth/github` + `/auth/github/callback` (OAuth round trip, token encrypted at rest via `pgp_sym_encrypt`, migration `V017` applied), `POST /auth/github/exchange`, `GET /api/github/repos`, auto-registered webhook on `PATCH /api/contracts/:id/github-repo`, "Continue with GitHub" on the login screen. 8 new tests passing against real Postgres (`apps/api-gateway/test/github-oauth.test.ts`). The already-real commit-pinned source-fetch pipeline (`ci-worker`) needs no code changes — just `ENABLE_GITHUB_SOURCE_FETCH=true` and `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET`/`GITHUB_TOKEN_ENCRYPTION_KEY` set in the target environment, a deploy-time step, not remaining code |
+| 10 | Payout failure/retry policy | 🟢 | 100% | **Done.** `reconcilePendingPayouts()` now caps retries at `PAYOUT_MAX_ATTEMPTS` (5, ~25 minutes at the 5-minute sweep interval) and transitions an exhausted row to a new terminal `FAILED_TERMINAL` payout_status distinct from plain `FAILED`, so it stops being picked up by the sweep. Migration `V019__payout_retry_cap.sql` adds `settlements.payout_attempts` and widens the status CHECK constraint. Verified with 2 new tests in `apps/settlement-worker/test/payout-leg.test.ts` (cap trips at the threshold; a row below the cap still retries normally) against real Postgres |
 
 ### PENDING WORK
 1. **A real RazorpayX account with Payouts enabled** — a separate approval process from plain Razorpay Payments, requiring the project owner's business/KYC on Razorpay's side. Without it the real adapter (`RazorpayXPayoutAdapter`) ships written-and-locally-verified-against-the-fake but unproven against RazorpayX's actual API — confirmed directly during this work: the existing `.env` test-mode key (which works fine for ordinary Checkout/capture) 404s against the real Payouts endpoint because RazorpayX isn't activated on that account.
 2. ~~Confirm the exact real API contract~~ — **Done for the parts verifiable from documentation.** Fetched Razorpay's current docs directly rather than relying on memory, and found the idempotency header this shipped with (`Idempotency-Key`) was wrong — the real header is `X-Payout-Idempotency`, fixed in `packages/razorpay-adapter/src/index.ts`. Also confirmed the webhook payload shape (`payload.payout.entity`) and widened both `PayoutStatus` and the webhook handler's terminal-state mapping to include `payout.rejected`, a real distinct failure state the original implementation missed. What's left is the one thing documentation can't cover: **trigger one real payout once RazorpayX is activated and diff the actual response/webhook** against these now-corrected assumptions.
-3. **A product decision on payout failure policy** — `reconcilePendingPayouts()` currently retries indefinitely every 5 minutes. Whether that needs a retry cap, a human alert, or a manual "retry this payout" admin action is a product call, not something assumed by the code.
+3. ~~A product decision on payout failure policy~~ — **Done.** See work item 10 above.
 
 ### BLOCKERS
 None technical. All code is built, wired, and passing the full test suite (467+ tests across the monorepo, including 6 payout-leg tests and 4 payout-webhook tests). The API-contract corrections above were verified against Razorpay's live documentation, not memory. What remains is the project owner's Razorpay dashboard access and a policy decision — not further engineering.
@@ -159,7 +160,7 @@ Code-complete: a settlement's payout leg runs end-to-end against the fake adapte
 |---|---:|---:|---:|---:|---:|
 | Phase 1 | 7 | 7 | 0 | 0 | 100% |
 | Phase 2 | 17 | 17 | 0 | 0 | 100% |
-| Phase 3 | 9 | 9 | 0 | 0 | 100% |
+| Phase 3 | 10 | 10 | 0 | 0 | 100% |
 
 ---
 

@@ -43,6 +43,7 @@ describe.skipIf(!available)('payout leg', () => {
   let pool: pg.Pool;
   let attemptPayout: (contractId: string, freelancerId: string) => Promise<void>;
   let reconcilePendingPayouts: () => Promise<void>;
+  let PAYOUT_MAX_ATTEMPTS: number;
 
   const freelancerId = `freelancer-payout-test-${Date.now()}`;
   const freelancerNoAccountId = `freelancer-no-account-${Date.now()}`;
@@ -51,7 +52,7 @@ describe.skipIf(!available)('payout leg', () => {
     // Dynamic import, matching settlement-concurrency.test.ts: the module's
     // top-level pool/adapter construction should only happen when this
     // suite actually runs.
-    ({ attemptPayout, reconcilePendingPayouts } = await import('../src/worker.js'));
+    ({ attemptPayout, reconcilePendingPayouts, PAYOUT_MAX_ATTEMPTS } = await import('../src/worker.js'));
 
     pool = new pg.Pool(buildDbConfig(getDatabaseUrl(loadConfig())));
 
@@ -191,6 +192,55 @@ describe.skipIf(!available)('payout leg', () => {
     ]);
     expect(row.rows[0].payout_status).toBe('COMPLETED');
     expect(row.rows[0].payout_id).toBeTruthy();
+
+    await cleanupContract(contractId);
+  });
+
+  it('reconcilePendingPayouts stops retrying and marks FAILED_TERMINAL once payout_attempts hits the cap', async () => {
+    const contractId = `AC-PAYOUT-CAP-${Date.now()}`;
+    await seedSettledContract(contractId, freelancerId);
+    await pool.query(
+      `UPDATE settlements
+          SET payout_status = 'FAILED', payout_failure_reason = 'simulated repeated failure', payout_attempts = $2
+        WHERE contract_id = $1`,
+      [contractId, PAYOUT_MAX_ATTEMPTS],
+    );
+
+    await reconcilePendingPayouts();
+
+    const row = await pool.query(
+      `SELECT payout_status, payout_id, payout_attempts FROM settlements WHERE contract_id = $1`,
+      [contractId],
+    );
+    // Exhausted rows must not be attempted again: no payout_id should ever
+    // appear, and the attempt count must not have incremented past the cap
+    // it was seeded at.
+    expect(row.rows[0].payout_status).toBe('FAILED_TERMINAL');
+    expect(row.rows[0].payout_id).toBeNull();
+    expect(row.rows[0].payout_attempts).toBe(PAYOUT_MAX_ATTEMPTS);
+
+    await cleanupContract(contractId);
+  });
+
+  it('reconcilePendingPayouts still retries a FAILED payout below the cap', async () => {
+    const contractId = `AC-PAYOUT-BELOWCAP-${Date.now()}`;
+    await seedSettledContract(contractId, freelancerId);
+    await pool.query(
+      `UPDATE settlements
+          SET payout_status = 'FAILED', payout_failure_reason = 'simulated prior failure', payout_attempts = $2
+        WHERE contract_id = $1`,
+      [contractId, PAYOUT_MAX_ATTEMPTS - 1],
+    );
+
+    await reconcilePendingPayouts();
+
+    const row = await pool.query(
+      `SELECT payout_status, payout_id, payout_attempts FROM settlements WHERE contract_id = $1`,
+      [contractId],
+    );
+    expect(row.rows[0].payout_status).toBe('COMPLETED');
+    expect(row.rows[0].payout_id).toBeTruthy();
+    expect(row.rows[0].payout_attempts).toBe(PAYOUT_MAX_ATTEMPTS);
 
     await cleanupContract(contractId);
   });

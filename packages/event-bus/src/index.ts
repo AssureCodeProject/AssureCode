@@ -6,11 +6,20 @@ import { randomUUID } from 'node:crypto';
 import type { EventEnvelope } from '@assurecode/shared';
 import { Redis } from 'ioredis';
 import { Kafka, type Admin, type Consumer, type Producer } from 'kafkajs';
-import { getCorrelationId, runWithCorrelationId } from '@assurecode/config';
+import { getCorrelationId, runWithCorrelationId, createLogger } from '@assurecode/config';
 import { trace, context, propagation, type Context } from '@opentelemetry/api';
 import { metrics } from '@assurecode/telemetry';
 
 const tracer = trace.getTracer('assurecode-event-bus');
+// Previously every log line in this file was a raw console.log/console.error
+// — no structured fields reaching a real log pipeline, no correlation id, and
+// (on the read/heartbeat paths) firing every ~2s per active subscriber. That
+// was debugging instrumentation from tracking down a CI stall (root-caused to
+// this file's own XAUTOCLAIM reclaim logic, now fixed); it stays, demoted to
+// debug level through the same pino logger every service already uses, since
+// this is the hottest code path in the system and unthrottled stdout noise
+// here is a real cost in production.
+const logger = createLogger('event-bus');
 
 // ── Port ───────────────────────────────────────────────────────
 
@@ -201,22 +210,11 @@ export class RedisStreamsBus implements EventBus {
       this.groupNameEnsured.add(groupKey);
     }
 
-    // TEMPORARY diagnostic — see the note on reclaimStale/processEntry logging
-    // below. '$' as the CREATE start id means any entry appended to `topic`
-    // before this call resolves is invisible to this group forever: no error,
-    // no DLQ, nothing — the one mechanism found so far that could make a
-    // published event vanish with zero error surface, which matches the
-    // symptom under investigation (a ~240s CI stall with no log trace of the
-    // subscriber ever having seen the message). This line proves whether that
-    // race is even in play for the run being inspected.
-    console.log({
-      msg: 'event-bus subscribe',
-      topic,
-      groupName,
-      consumer,
-      groupAlreadyExisted,
-      epochMs: Date.now(),
-    });
+    // '$' as the CREATE start id means any entry appended to `topic` before
+    // this call resolves is invisible to this group forever: no error, no
+    // DLQ, nothing. Kept at debug so that race is still traceable without
+    // being on by default.
+    logger.debug({ topic, groupName, consumer, groupAlreadyExisted }, 'event-bus subscribe');
 
     const sub = { topic, consumer, stop: false };
     this.subscribers.push(sub);
@@ -274,15 +272,7 @@ export class RedisStreamsBus implements EventBus {
             break;
           } catch (err) {
             lastError = err;
-            // Single object arg so non-literal `topic` cannot be
-            // interpreted as a printf-style format specifier.
-            console.error({
-              msg: 'event-bus handler error',
-              topic,
-              attempt,
-              maxRetries: this.maxRetries,
-              err,
-            });
+            logger.error({ topic, attempt, maxRetries: this.maxRetries, err }, 'event-bus handler error');
             if (attempt < this.maxRetries) {
               const backoff = this.initialBackoffMs * Math.pow(2, attempt - 1);
               await new Promise((r) => setTimeout(r, backoff));
@@ -303,8 +293,9 @@ export class RedisStreamsBus implements EventBus {
 
       metrics.dlqMessagesTotal.inc({ stream: dlqTopic });
 
-      console.error(
-        `[event-bus] Message ${id} failed after ${this.maxRetries} attempts on ${topic}. Forwarding to ${dlqTopic}`,
+      logger.error(
+        { id, topic, dlqTopic, maxRetries: this.maxRetries },
+        `Message ${id} failed after ${this.maxRetries} attempts on ${topic}. Forwarding to ${dlqTopic}`,
       );
 
       await this.client.xadd(
@@ -354,15 +345,7 @@ export class RedisStreamsBus implements EventBus {
       )) as [string, Array<[string, string[]]>, string[]?];
 
       if (entries.length > 0) {
-        // TEMPORARY diagnostic — see the note on subscribe()'s log above.
-        console.log({
-          msg: 'event-bus reclaimed',
-          topic,
-          groupName,
-          consumer,
-          ids: entries.map(([id]) => id),
-          epochMs: Date.now(),
-        });
+        logger.debug({ topic, groupName, consumer, ids: entries.map(([id]) => id) }, 'event-bus reclaimed');
       }
 
       for (const [id, fields] of entries) {
@@ -371,7 +354,7 @@ export class RedisStreamsBus implements EventBus {
     } catch (err) {
       // Non-fatal: a claim failure (e.g. group briefly missing during a
       // fresh MKSTREAM race) should not stop the normal read path below.
-      console.error({ msg: 'event-bus reclaim error', topic, err });
+      logger.error({ topic, err }, 'event-bus reclaim error');
     }
   }
 
@@ -382,10 +365,9 @@ export class RedisStreamsBus implements EventBus {
     handler: EventHandler,
     sub: { stop: boolean },
   ): Promise<void> {
-    // TEMPORARY diagnostic state — see the note on subscribe()'s log above.
     // Throttled rather than per-iteration: BLOCK 2000 means this loop can
-    // tick roughly every 2s, and an unthrottled log would drown the run in
-    // heartbeats over a multi-minute CI job.
+    // tick roughly every 2s, and an unthrottled log would drown stdout in
+    // heartbeats over a long-running process.
     let lastHeartbeatMs = 0;
     while (!sub.stop) {
       try {
@@ -406,14 +388,7 @@ export class RedisStreamsBus implements EventBus {
 
         if (res) {
           for (const [, messages] of res) {
-            console.log({
-              msg: 'event-bus read',
-              topic,
-              groupName,
-              consumer,
-              ids: messages.map(([id]) => id),
-              epochMs: Date.now(),
-            });
+            logger.debug({ topic, groupName, consumer, ids: messages.map(([id]) => id) }, 'event-bus read');
           }
         }
 
@@ -424,17 +399,12 @@ export class RedisStreamsBus implements EventBus {
             try {
               const pendingSummary = await this.client.xpending(topic, groupName);
               const streamLen = await this.client.xlen(topic);
-              console.log({
-                msg: 'event-bus idle heartbeat',
-                topic,
-                groupName,
-                consumer,
-                streamLen,
-                pendingSummary,
-                epochMs: now,
-              });
+              logger.debug(
+                { topic, groupName, consumer, streamLen, pendingSummary },
+                'event-bus idle heartbeat',
+              );
             } catch (heartbeatErr) {
-              console.error({ msg: 'event-bus heartbeat error', topic, err: heartbeatErr });
+              logger.error({ topic, err: heartbeatErr }, 'event-bus heartbeat error');
             }
           }
           // Yield to the event loop before polling again.
@@ -459,7 +429,7 @@ export class RedisStreamsBus implements EventBus {
           }
         }
       } catch (err) {
-        if (!sub.stop) console.error({ msg: 'event-bus poll error', topic, err });
+        if (!sub.stop) logger.error({ topic, err }, 'event-bus poll error');
         await new Promise((r) => setTimeout(r, 1000));
       }
     }
@@ -549,7 +519,7 @@ export class KafkaBus implements EventBus {
     } catch (err) {
       // createTopics resolves false (rather than throwing) when every topic
       // already exists, so reaching here means something else went wrong.
-      console.error({ msg: 'kafka-bus topic ensure failed', topics: missing, err });
+      logger.error({ topics: missing, err }, 'kafka-bus topic ensure failed');
     }
   }
 
@@ -609,15 +579,7 @@ export class KafkaBus implements EventBus {
         return null;
       } catch (err) {
         lastError = err;
-        // Single object arg so a non-literal `topic` cannot be read as a
-        // printf-style format specifier.
-        console.error({
-          msg: 'event-bus handler error',
-          topic,
-          attempt,
-          maxRetries: this.maxRetries,
-          err,
-        });
+        logger.error({ topic, attempt, maxRetries: this.maxRetries, err }, 'event-bus handler error');
         if (attempt < this.maxRetries) {
           const backoff = this.initialBackoffMs * Math.pow(2, attempt - 1);
           await new Promise((r) => setTimeout(r, backoff));
@@ -650,8 +612,9 @@ export class KafkaBus implements EventBus {
 
     metrics.dlqMessagesTotal.inc({ stream: dlqTopic });
 
-    console.error(
-      `[event-bus] Message ${meta.partition}:${meta.offset} failed after ${meta.attempts} attempts on ${topic}. Forwarding to ${dlqTopic}`,
+    logger.error(
+      { partition: meta.partition, offset: meta.offset, topic, dlqTopic, attempts: meta.attempts },
+      `Message ${meta.partition}:${meta.offset} failed after ${meta.attempts} attempts on ${topic}. Forwarding to ${dlqTopic}`,
     );
 
     await this.producer.send({

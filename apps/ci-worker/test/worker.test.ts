@@ -75,6 +75,15 @@ describe('audit persistence', () => {
     expect(saved).toHaveProperty('highVulns');
     expect(saved.criticalVulns).toBeTypeOf('number');
     expect(saved.maintainability).toBeGreaterThan(0);
+
+    // The isolation strength a settlement decision rests on must be part of
+    // the durable record, not only a log line — see sandbox/index.ts's
+    // runInSandbox() and audit-store.ts's AuditPayload.
+    expect(saved.sandboxRunner).toBeTruthy();
+    expect(['docker', 'node-permission', 'none']).toContain(saved.sandboxRunner);
+    expect(saved.threatModel.runner).toBe(saved.sandboxRunner);
+    expect(Array.isArray(saved.threatModel.enforced)).toBe(true);
+    expect(Array.isArray(saved.threatModel.notEnforced)).toBe(true);
   });
 
   it('cannot report a pass when the Layer 2 security scan did not run', async () => {

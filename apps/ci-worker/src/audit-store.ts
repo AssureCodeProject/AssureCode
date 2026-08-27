@@ -14,6 +14,7 @@
  */
 import pg from 'pg';
 import { buildDbConfig } from '@assurecode/config';
+import type { ThreatModel } from './sandbox/types.js';
 
 export interface AuditPayload {
   contractId: string;
@@ -28,6 +29,16 @@ export interface AuditPayload {
   passed: boolean;
   scanDuration: number;
   timestamp: string;
+  /**
+   * Which sandbox adapter produced passedTests/totalTests, and the isolation
+   * it actually provided. Previously this stopped at a log line
+   * ("Sandbox provisioned") and the CI_SANDBOX_READY event payload — a
+   * settlement decision read from this row could not say what isolation
+   * strength it rested on. No DB migration needed: audit_results.payload is
+   * jsonb.
+   */
+  sandboxRunner: string;
+  threatModel: ThreatModel;
 }
 
 export interface AuditStore {

@@ -36,6 +36,17 @@ const RAZORPAY_API_BASE = 'https://api.razorpay.com/v1';
 /** How long any single Razorpay API call may take. Matches the gateway's other outbound calls. */
 const REQUEST_TIMEOUT_MS = 10_000;
 
+/**
+ * Total attempts (1 original + retries) for a request that fails in a way
+ * retrying can plausibly fix. Mirrors packages/event-bus's maxRetries=3, for
+ * the same reason: "how many times before giving up" should be a property of
+ * this codebase, not of which outbound call happens to be involved.
+ */
+const MAX_ATTEMPTS = 3;
+const INITIAL_BACKOFF_MS = 500;
+/** Never wait longer than this for one retry, even if Retry-After asks for more — a payout/capture call has its own upstream timeout budget (the settlement worker's 5-minute reconcile sweep, the gateway's request timeout) that a single stalled attempt must not consume entirely. */
+const MAX_BACKOFF_MS = 8_000;
+
 // ── Domain types ───────────────────────────────────────────────────────
 
 /**
@@ -376,6 +387,111 @@ function toPayoutResult(entity: Record<string, any>): PayoutResult {
   };
 }
 
+// ── Shared retry-aware request ──────────────────────────────────────────
+
+/**
+ * Parse `Retry-After` (seconds, or an HTTP-date — Razorpay uses the seconds
+ * form, but both are legal per RFC 9110) into milliseconds. Returns null for
+ * anything absent or unparseable, so the caller falls back to its own
+ * exponential backoff rather than trusting a malformed header.
+ */
+function parseRetryAfterMs(header: string | null): number | null {
+  if (!header) return null;
+  const asSeconds = Number(header);
+  if (Number.isFinite(asSeconds) && asSeconds >= 0) return asSeconds * 1000;
+  const asDate = Date.parse(header);
+  if (!Number.isNaN(asDate)) return Math.max(0, asDate - Date.now());
+  return null;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * One outbound call to Razorpay/RazorpayX, retried when — and only when —
+ * retrying is the right response: a 429 (respecting Retry-After when the
+ * response sends one), a 5xx, or a network-level failure (fetch itself
+ * throwing — a DNS failure, a dropped connection, the AbortSignal timeout).
+ * A 4xx other than 429 is a real rejection (bad request, bad auth, "already
+ * captured") and retrying it wastes a call without changing the outcome —
+ * worse, for capturePayment/initiatePayout, it would mean re-sending a
+ * request whose *first* attempt may already have taken effect server-side
+ * before the response was lost, which is exactly what the idempotency key on
+ * the payout path (and Razorpay's own capture-is-idempotent behaviour) exists
+ * to make safe; a blind retry policy that also retried non-retryable errors
+ * would not need that safety net any less.
+ *
+ * Both adapter classes below share this so the retry policy is one
+ * implementation, not two copies that could quietly drift apart.
+ */
+async function requestWithRetry<T>(opts: {
+  method: 'GET' | 'POST';
+  path: string;
+  authHeader: string;
+  body?: Record<string, unknown>;
+  extraHeaders?: Record<string, string>;
+  /** 'Razorpay' or 'RazorpayX', for error messages only. */
+  service: string;
+}): Promise<T> {
+  let lastErr: RazorpayApiError | undefined;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(`${RAZORPAY_API_BASE}${opts.path}`, {
+        method: opts.method,
+        headers: {
+          Authorization: opts.authHeader,
+          'Content-Type': 'application/json',
+          ...opts.extraHeaders,
+        },
+        ...(opts.body ? { body: JSON.stringify(opts.body) } : {}),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    } catch (err: unknown) {
+      // A network failure or timeout, not an API response — always eligible
+      // for retry, since nothing about it tells us the request took effect.
+      const msg = err instanceof Error ? err.message : String(err);
+      lastErr = new RazorpayApiError(`${opts.service} request failed: ${msg}`, 0);
+      if (attempt < MAX_ATTEMPTS) {
+        await sleep(Math.min(MAX_BACKOFF_MS, INITIAL_BACKOFF_MS * 2 ** (attempt - 1)));
+        continue;
+      }
+      throw lastErr;
+    }
+
+    const text = await res.text();
+    let parsed: any = null;
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      // Fall through — a non-JSON body from Razorpay is itself the error detail.
+    }
+
+    if (res.ok) return parsed as T;
+
+    const e = parsed?.error ?? {};
+    const apiErr = new RazorpayApiError(
+      e.description || `${opts.service} ${opts.method} ${opts.path} returned ${res.status}`,
+      res.status,
+      e.code,
+      e.reason,
+    );
+
+    const retryable = res.status === 429 || res.status >= 500;
+    if (!retryable || attempt === MAX_ATTEMPTS) throw apiErr;
+
+    const retryAfterMs = res.status === 429 ? parseRetryAfterMs(res.headers.get('retry-after')) : null;
+    const backoffMs = retryAfterMs ?? INITIAL_BACKOFF_MS * 2 ** (attempt - 1);
+    await sleep(Math.min(MAX_BACKOFF_MS, backoffMs));
+  }
+
+  // Unreachable — the loop above always returns or throws — but satisfies
+  // the compiler's control-flow analysis without an unsound non-null cast.
+  throw lastErr ?? new RazorpayApiError(`${opts.service} request failed after ${MAX_ATTEMPTS} attempts`, 0);
+}
+
 // ── Real Razorpay Adapter ──────────────────────────────────────────────
 
 /** Razorpay's error envelope, raised with enough detail to be actionable in a log. */
@@ -412,48 +528,8 @@ export class RazorpayPaymentAdapter implements PaymentPort {
     this.authHeader = `Basic ${Buffer.from(`${config.keyId}:${config.keySecret}`).toString('base64')}`;
   }
 
-  private async request<T>(
-    method: 'GET' | 'POST',
-    path: string,
-    body?: Record<string, unknown>,
-  ): Promise<T> {
-    let res: Response;
-    try {
-      res = await fetch(`${RAZORPAY_API_BASE}${path}`, {
-        method,
-        headers: {
-          Authorization: this.authHeader,
-          'Content-Type': 'application/json',
-        },
-        ...(body ? { body: JSON.stringify(body) } : {}),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      });
-    } catch (err: unknown) {
-      // A network failure or timeout is not an API error; distinguishing them
-      // matters because the caller retries one and not the other.
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new RazorpayApiError(`Razorpay request failed: ${msg}`, 0);
-    }
-
-    const text = await res.text();
-    let parsed: any = null;
-    try {
-      parsed = text ? JSON.parse(text) : null;
-    } catch {
-      // Fall through — a non-JSON body from Razorpay is itself the error detail.
-    }
-
-    if (!res.ok) {
-      const e = parsed?.error ?? {};
-      throw new RazorpayApiError(
-        e.description || `Razorpay ${method} ${path} returned ${res.status}`,
-        res.status,
-        e.code,
-        e.reason,
-      );
-    }
-
-    return parsed as T;
+  private request<T>(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>): Promise<T> {
+    return requestWithRetry<T>({ method, path, body, authHeader: this.authHeader, service: 'Razorpay' });
   }
 
   async createOrder(params: {
@@ -579,48 +655,13 @@ export class RazorpayXPayoutAdapter implements PayoutPort {
     this.authHeader = `Basic ${Buffer.from(`${config.keyId}:${config.keySecret}`).toString('base64')}`;
   }
 
-  private async request<T>(
+  private request<T>(
     method: 'GET' | 'POST',
     path: string,
     body?: Record<string, unknown>,
     extraHeaders?: Record<string, string>,
   ): Promise<T> {
-    let res: Response;
-    try {
-      res = await fetch(`${RAZORPAY_API_BASE}${path}`, {
-        method,
-        headers: {
-          Authorization: this.authHeader,
-          'Content-Type': 'application/json',
-          ...extraHeaders,
-        },
-        ...(body ? { body: JSON.stringify(body) } : {}),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new RazorpayApiError(`RazorpayX request failed: ${msg}`, 0);
-    }
-
-    const text = await res.text();
-    let parsed: any = null;
-    try {
-      parsed = text ? JSON.parse(text) : null;
-    } catch {
-      // Fall through — a non-JSON body is itself the error detail.
-    }
-
-    if (!res.ok) {
-      const e = parsed?.error ?? {};
-      throw new RazorpayApiError(
-        e.description || `RazorpayX ${method} ${path} returned ${res.status}`,
-        res.status,
-        e.code,
-        e.reason,
-      );
-    }
-
-    return parsed as T;
+    return requestWithRetry<T>({ method, path, body, extraHeaders, authHeader: this.authHeader, service: 'RazorpayX' });
   }
 
   async initiatePayout(params: {

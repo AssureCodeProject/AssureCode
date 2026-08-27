@@ -14,6 +14,8 @@ export interface AuthUser {
   role: 'client' | 'freelancer' | 'auditor' | 'admin';
   kycStatus: 'UNVERIFIED' | 'PENDING' | 'VERIFIED' | 'REJECTED';
   mfaEnabled: boolean;
+  /** The user_sessions row this request's JWT was issued under — see auth.ts's session-store.ts. */
+  sessionId: string;
 }
 
 /**

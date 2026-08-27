@@ -7,26 +7,53 @@
  * onboarding flow in someone else's name, just by changing an ID in the
  * request.
  *
- * The denial happens before any database access, so these run without
- * PostgreSQL.
+ * This used to run without PostgreSQL — the denial happened before any
+ * database access. It no longer can: auth.ts now checks user_sessions on
+ * every authenticated request (real session revocation, not just a token
+ * that never expires), so *reaching* the guard at all requires a real
+ * session row, which requires a real user row for the FK. Skips, rather than
+ * mocks the database away, when one is not reachable.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import pg from 'pg';
 import server from '../src/server.js';
+import { newSessionId, createSession } from '../src/middleware/session-store.js';
+import { buildDbConfig, getDatabaseUrl, loadConfig } from '@assurecode/config';
+import { postgresAvailable, announceSkip } from '../../../tools/test-support/infra.js';
 
 type Role = 'client' | 'freelancer' | 'auditor' | 'admin';
 
-function tokenFor(userId: string, role: Role = 'freelancer'): string {
-  return (server as any).jwt.sign({
+const PG_UP = await postgresAvailable();
+if (!PG_UP) announceSkip('API Gateway — KYC ownership guards', 'a running PostgreSQL on DATABASE_URL');
+
+const pool = new pg.Pool(buildDbConfig(getDatabaseUrl(loadConfig())));
+
+/** Every userId used as a *caller* (not just a target) needs a real users row for user_sessions' FK, and a real session row to pass auth.ts's revocation check. */
+const CALLER_IDS = ['user-attacker', 'user-a', 'user-admin', 'user-self'];
+
+async function tokenFor(userId: string, role: Role = 'freelancer'): Promise<string> {
+  await pool.query(
+    `INSERT INTO users (user_id, email, password_hash, role, display_name)
+     VALUES ($1, $1 || '@example.test', 'unusable-no-login', $2, $1)
+     ON CONFLICT (user_id) DO UPDATE SET role = EXCLUDED.role`,
+    [userId, role],
+  );
+
+  const sessionId = newSessionId();
+  const token = (server as any).jwt.sign({
     sub: userId,
     email: `${userId}@example.test`,
     role,
     kycStatus: 'UNVERIFIED',
     mfaEnabled: false,
+    sid: sessionId,
   });
+  await createSession(pool, sessionId, { userId, token, ttlSeconds: 3600 });
+  return token;
 }
 
-function authHeaders(userId: string, role: Role = 'freelancer'): Record<string, string> {
-  return { authorization: `Bearer ${tokenFor(userId, role)}` };
+async function authHeaders(userId: string, role: Role = 'freelancer'): Promise<Record<string, string>> {
+  return { authorization: `Bearer ${await tokenFor(userId, role)}` };
 }
 
 beforeAll(async () => {
@@ -34,13 +61,18 @@ beforeAll(async () => {
   await server.ready();
 });
 
-describe('KYC route ownership guards', () => {
+afterAll(async () => {
+  if (PG_UP) await pool.query(`DELETE FROM users WHERE user_id = ANY($1)`, [CALLER_IDS]);
+  await pool?.end();
+});
+
+describe.skipIf(!PG_UP)('KYC route ownership guards', () => {
   describe('POST /api/kyc/verify', () => {
     it('rejects verifying somebody else', async () => {
       const res = await server.inject({
         method: 'POST',
         url: '/api/kyc/verify',
-        headers: authHeaders('user-attacker'),
+        headers: await authHeaders('user-attacker'),
         payload: { userId: 'user-victim', idType: 'PASSPORT' },
       });
 
@@ -52,7 +84,7 @@ describe('KYC route ownership guards', () => {
       const res = await server.inject({
         method: 'POST',
         url: '/api/kyc/verify',
-        headers: authHeaders('user-a'),
+        headers: await authHeaders('user-a'),
         payload: { userId: 'user-a' },
       });
 
@@ -65,7 +97,7 @@ describe('KYC route ownership guards', () => {
       const res = await server.inject({
         method: 'GET',
         url: '/api/kyc/status/user-victim',
-        headers: authHeaders('user-attacker'),
+        headers: await authHeaders('user-attacker'),
       });
 
       expect(res.statusCode).toBe(403);
@@ -74,15 +106,16 @@ describe('KYC route ownership guards', () => {
     it('does not leak whether the target account exists', async () => {
       // Both a real and an invented ID must answer identically, or the
       // status code itself becomes a user-enumeration oracle.
+      const headers = await authHeaders('user-attacker');
       const real = await server.inject({
         method: 'GET',
         url: '/api/kyc/status/legacy-client',
-        headers: authHeaders('user-attacker'),
+        headers,
       });
       const invented = await server.inject({
         method: 'GET',
         url: '/api/kyc/status/no-such-user-at-all',
-        headers: authHeaders('user-attacker'),
+        headers,
       });
 
       expect(real.statusCode).toBe(403);
@@ -95,7 +128,7 @@ describe('KYC route ownership guards', () => {
       const res = await server.inject({
         method: 'POST',
         url: '/api/kyc/connect-onboarding',
-        headers: authHeaders('user-attacker'),
+        headers: await authHeaders('user-attacker'),
         payload: { userId: 'user-victim', email: 'victim@example.test' },
       });
 
@@ -106,7 +139,7 @@ describe('KYC route ownership guards', () => {
       const res = await server.inject({
         method: 'POST',
         url: '/api/kyc/connect-onboarding',
-        headers: authHeaders('user-a'),
+        headers: await authHeaders('user-a'),
         payload: {},
       });
 
@@ -122,7 +155,7 @@ describe('KYC route ownership guards', () => {
       const res = await server.inject({
         method: 'GET',
         url: '/api/kyc/status/user-victim',
-        headers: authHeaders('user-admin', 'admin'),
+        headers: await authHeaders('user-admin', 'admin'),
       });
 
       expect(res.statusCode).not.toBe(403);
@@ -132,7 +165,7 @@ describe('KYC route ownership guards', () => {
       const res = await server.inject({
         method: 'GET',
         url: '/api/kyc/status/user-self',
-        headers: authHeaders('user-self'),
+        headers: await authHeaders('user-self'),
       });
 
       expect(res.statusCode).not.toBe(403);

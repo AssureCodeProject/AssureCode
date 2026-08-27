@@ -520,6 +520,98 @@ describe('RazorpayXPayoutAdapter', () => {
   });
 });
 
+/**
+ * requestWithRetry is shared by RazorpayPaymentAdapter and
+ * RazorpayXPayoutAdapter — exercised once here via the payout adapter's
+ * fetchPayout (a plain GET) rather than duplicating the same assertions for
+ * both classes, since it is genuinely one implementation.
+ */
+describe('retry/backoff', () => {
+  const adapter = new RazorpayXPayoutAdapter({
+    keyId: 'rzp_test_retry_adapter',
+    keySecret: 'secret',
+    webhookSecret: 'whsec',
+    accountNumber: '1234567890',
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('retries a 429 and succeeds, honouring a zero-length Retry-After', async () => {
+    let calls = 0;
+    const fetchMock = vi.fn(async () => {
+      calls++;
+      if (calls === 1) {
+        return new Response(JSON.stringify({ error: { description: 'rate limited' } }), {
+          status: 429,
+          headers: { 'retry-after': '0' },
+        });
+      }
+      return new Response(JSON.stringify({ id: 'pout_retry_1', status: 'processed', amount: 100, currency: 'INR' }), {
+        status: 200,
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await adapter.fetchPayout('pout_retry_1');
+    expect(result.status).toBe('processed');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries a 5xx and succeeds on a later attempt', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const fetchMock = vi.fn(async () => {
+      calls++;
+      if (calls < 3) {
+        return new Response(JSON.stringify({ error: { description: 'upstream unavailable' } }), { status: 503 });
+      }
+      return new Response(JSON.stringify({ id: 'pout_retry_2', status: 'processed', amount: 100, currency: 'INR' }), {
+        status: 200,
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const promise = adapter.fetchPayout('pout_retry_2');
+    // Fast-forwards through both backoff sleeps without real wall-clock delay.
+    await vi.advanceTimersByTimeAsync(30_000);
+    const result = await promise;
+
+    expect(result.status).toBe('processed');
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not retry a non-429 4xx — it is a real rejection, not a transient failure', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ error: { description: 'no such payout' } }), { status: 404 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(adapter.fetchPayout('pout_missing')).rejects.toThrow(RazorpayApiError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives up after exhausting retries on repeated 429s', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: { description: 'still rate limited' } }), {
+          status: 429,
+          headers: { 'retry-after': '0' },
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(adapter.fetchPayout('pout_always_429')).rejects.toThrow(RazorpayApiError);
+    // 1 original attempt + 2 retries, matching packages/event-bus's own
+    // maxRetries=3 convention — not re-exported here since 3 call sites
+    // asserting the same literal is clearer than a shared constant for a
+    // number this unlikely to change independently per adapter.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+});
+
 describe('payoutEntityOf', () => {
   it('extracts the payout entity from a webhook event payload', () => {
     const event = {

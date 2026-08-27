@@ -77,10 +77,11 @@ be pinned or verification fails on data nobody tampered with.
 
 **What to say:**
 > "Phase 2 is the zero-trust CI pipeline. A GitHub push is intercepted by HMAC
-> signature check, the repository is cloned at that commit into an ephemeral
-> Docker container with no network interface at all, and the hidden tests are
-> bind-mounted read-only so the developer never sees them. We measure three
-> things: test outcome, AST complexity, and OWASP findings."
+> signature check, the repository is cloned at that commit and the hidden
+> tests are placed alongside it, into an ephemeral Docker container with no
+> network interface at all and the whole workspace mounted read-only — so the
+> developer never sees the tests and can't tamper with them from inside. We
+> measure three things: test outcome, AST complexity, and OWASP findings."
 
 **What to click:** Simulate the push and watch the pipeline steppers.
 

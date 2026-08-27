@@ -99,7 +99,7 @@ export class DockerSandbox implements SandboxRunner {
         'PID, mount, IPC, and network namespace isolation',
         'no network interface at all (--network=none)',
         'cgroup memory limit and CPU quota',
-        'read-only bind mounts for code and hidden tests',
+        'read-only bind mount for the whole workspace, code and hidden tests alike',
         'container removed on exit (--rm), so no state survives a run',
         'wall-clock timeout with process kill',
       ],
@@ -225,21 +225,23 @@ export class DockerSandbox implements SandboxRunner {
         'npm_config_cache=/tmp/.npm',
       ];
 
-      if (options.hiddenTestsPath) {
-        args.push('-v', `${options.hiddenTestsPath}:/hidden-tests:ro`);
-      }
-
       // Two shapes of run. A workspace built by workspace-builder.ts carries its
       // own dependency-free harness, so it is executed directly — `npm ci` there
       // would fail for want of a lockfile it has no reason to have. A cloned
       // repository is a real project and keeps the install-then-test path.
+      //
+      // Hidden tests do not arrive via a second, separate bind mount: workspace-
+      // builder.ts writes them into the same workDir as the pushed code before
+      // this method ever runs, and that whole tree is what /workspace:ro is.
+      // They are still read-only and tamper-evident from inside the container —
+      // just via the one mount, not two. (A `hiddenTestsPath` option existed
+      // here for a real second mount and was never once passed by any caller;
+      // removed rather than left as code with no path that exercises it.)
       const shellCommand = options.entrypoint
         ? 'cp -r /workspace /tmp/app && cd /tmp/app && ' +
-          (options.hiddenTestsPath ? 'cp -r /hidden-tests/. /tmp/app/tests/ 2>/dev/null; ' : '') +
           `node ${shellQuote(options.entrypoint)} ${(options.entryArgs ?? []).map(shellQuote).join(' ')}`
         : // /workspace is read-only, so install into a writable overlay under /tmp.
           'cp -r /workspace /tmp/app && cd /tmp/app && ' +
-          (options.hiddenTestsPath ? 'cp -r /hidden-tests/. /tmp/app/test/ 2>/dev/null; ' : '') +
           'npm ci --silent 2>/dev/null && npm test -- --json 2>/dev/null';
 
       args.push('-w', '/workspace', IMAGE, 'sh', '-c', shellCommand);

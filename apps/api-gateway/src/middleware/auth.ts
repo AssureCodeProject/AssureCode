@@ -11,7 +11,9 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import fastifyJwt from '@fastify/jwt';
 import { hash as argon2Hash, verify as argon2Verify } from '@node-rs/argon2';
+import type pg from 'pg';
 import type { AuthUser } from './rbac.js';
+import { isSessionActive } from './session-store.js';
 
 /**
  * Paths a request can reach with no credential at all: liveness/readiness/
@@ -25,6 +27,10 @@ const PUBLIC_PATHS = new Set([
   '/readyz',
   '/metrics',
   '/auth/login',
+  // The second half of an MFA-gated login: the caller holds a short-lived
+  // challenge from /auth/login, not a session — there is nothing to verify a
+  // bearer token against yet.
+  '/auth/mfa/challenge',
   // GitHub OAuth's whole point is standing in for a session that doesn't
   // exist yet: /github kicks off the redirect, /github/callback is GitHub
   // calling back with no JWT of ours to present, and /github/exchange trades
@@ -60,6 +66,8 @@ export interface JwtPayload {
   role: AuthUser['role'];
   kycStatus: AuthUser['kycStatus'];
   mfaEnabled: boolean;
+  /** Names the user_sessions row this token was issued under — see session-store.ts. */
+  sid: string;
 }
 
 declare module 'fastify' {
@@ -81,13 +89,25 @@ declare module 'fastify' {
  * not a boot-completion promise; the real completion signal is `.ready()`,
  * which Fastify calls internally before dispatching the first request.
  */
-export function registerAuth(server: FastifyInstance, jwtSecret: string, serviceToken: string): void {
+export function registerAuth(
+  server: FastifyInstance,
+  jwtSecret: string,
+  serviceToken: string,
+  pool: pg.Pool,
+  jwtExpiresInSeconds: number,
+): void {
   // @fastify/jwt's published types resolve against a different structural
   // shape of FastifyInstance than this workspace's hoisted fastify version
   // exposes (an npm workspace hoisting artifact, not a real incompatibility —
   // the plugin registers and runs correctly). Cast at the boundary rather
   // than fight the type resolution.
-  void server.register(fastifyJwt as any, { secret: jwtSecret });
+  //
+  // `sign.expiresIn` as a plain number is seconds (fast-jwt's convention —
+  // see JWT_EXPIRES_IN_SECONDS's comment in packages/config). Before this,
+  // no expiry was set at all: a token was valid until whoever held it lost
+  // it, which is the same problem revocation exists to solve, from the other
+  // direction.
+  void server.register(fastifyJwt as any, { secret: jwtSecret, sign: { expiresIn: jwtExpiresInSeconds } });
 
   server.addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply) => {
     if (isPublicPath(request.url)) return;
@@ -114,12 +134,23 @@ export function registerAuth(server: FastifyInstance, jwtSecret: string, service
       } else {
         payload = await request.jwtVerify();
       }
+
+      // A cryptographically valid, unexpired JWT is not the same claim as "the
+      // session it names is still active" — this is the actual revocation
+      // check. A stolen token that has not yet hit its `exp` still fails here
+      // the moment its session is logged out. Fails closed: a DB error is not
+      // distinguishable from "revoked" to the caller.
+      if (!(await isSessionActive(pool, payload.sid))) {
+        return reply.status(401).send({ error: 'Unauthorized', message: 'This session has been revoked or has expired.' });
+      }
+
       (request as any).user = {
         userId: payload.sub,
         email: payload.email,
         role: payload.role,
         kycStatus: payload.kycStatus,
         mfaEnabled: payload.mfaEnabled,
+        sessionId: payload.sid,
       } satisfies AuthUser;
     } catch {
       return reply.status(401).send({ error: 'Unauthorized', message: 'A valid Authorization bearer token or x-service-token header is required.' });

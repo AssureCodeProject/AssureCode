@@ -183,6 +183,21 @@ export const AppConfigSchema = z.object({
   // production (see server.ts) rather than accept an unauthenticated deploy.
   JWT_SECRET: z.string().default('dev_insecure_jwt_secret_change_me'),
   SERVICE_TOKEN: z.string().default('dev_insecure_service_token_change_me'),
+  // A plain number here is interpreted as seconds by fast-jwt (the library
+  // @fastify/jwt wraps), not milliseconds — a string without units would
+  // silently mean milliseconds instead, so this stays numeric. Also used to
+  // compute user_sessions.expires_at, so the DB-backed revocation check and
+  // the JWT's own `exp` claim agree on the same lifetime.
+  JWT_EXPIRES_IN_SECONDS: z.coerce.number().default(86400), // 24h
+
+  // Symmetric key for pgp_sym_encrypt/_decrypt on mfa_credentials.secret_key —
+  // same reasoning as GITHUB_TOKEN_ENCRYPTION_KEY (a TOTP secret has to be
+  // recoverable to check a live code against it, so it is encrypted at rest
+  // rather than hashed). Unlike the GitHub key, MFA routes are always
+  // registered (not gated behind an OAuth app being configured), so this
+  // needs a default rather than being optional — production still refuses to
+  // boot on the default via assertProductionSecrets.
+  MFA_SECRET_ENCRYPTION_KEY: z.string().default('dev_insecure_mfa_key_change_me'),
 
   // The ML-DSA-87 seed the Merkle root signature is derived from. 32 bytes of
   // hex.

@@ -223,6 +223,18 @@ export async function processCodePush(
       criticalVulns,
       highVulns,
       securityScore: securityScan.score,
+      // Which adapter produced passedTests/totalTests and what it actually
+      // isolated — previously only reached a log line and CI_SANDBOX_READY's
+      // event payload, never the durable record a settlement decision rests on.
+      sandboxRunner: sandboxResult.runner,
+      // Always set by runInSandbox() (sandbox/index.ts) — this fallback is
+      // for a hypothetical caller that bypassed it and called an adapter's
+      // run() directly, not a path this file itself takes.
+      threatModel: sandboxResult.threatModel ?? {
+        runner: sandboxResult.runner,
+        enforced: [],
+        notEnforced: ['threat model unavailable'],
+      },
       // Which layers actually ran, so a downstream reader can tell a clean scan
       // from a scan that could not complete. The settlement oracle reads this:
       // "no findings" from Layer 1 alone is not the same claim as "no findings".

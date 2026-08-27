@@ -20,7 +20,42 @@ it is unchanged.
 """
 from __future__ import annotations
 
+from email.utils import parsedate_to_datetime
+from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
+
+#: Total attempts (1 original + retries) for a Cloudflare call that fails in a
+#: way retrying can plausibly fix. Mirrors packages/razorpay-adapter's own
+#: MAX_ATTEMPTS=3 — "how many times before giving up" is a property of this
+#: codebase's retry policy, not of which outbound call happens to be involved.
+_MAX_ATTEMPTS = 3
+_INITIAL_BACKOFF_S = 0.5
+#: Never wait longer than this for one retry, even if Retry-After asks for
+#: more — a synchronous test-generation/security-scan call already has its
+#: own 30s-per-attempt budget; a single stalled retry must not multiply that
+#: unboundedly.
+_MAX_BACKOFF_S = 8.0
+
+
+def _parse_retry_after(header_value: str | None) -> float | None:
+    """Seconds, or an HTTP-date (RFC 9110 permits either) -> seconds from now. None if absent/unparseable, so the caller falls back to its own exponential backoff rather than trusting a malformed header."""
+    if not header_value:
+        return None
+    try:
+        seconds = float(header_value)
+        if seconds >= 0:
+            return seconds
+    except ValueError:
+        pass
+    try:
+        dt = parsedate_to_datetime(header_value)
+    except (TypeError, ValueError):
+        return None
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return max(0.0, (dt - datetime.now(timezone.utc)).total_seconds())
 
 
 @runtime_checkable
@@ -151,8 +186,6 @@ class CloudflareWorkersAiClient:
         fixture that reports whatever the fixture says. Failures are now visible
         and routes translate them into HTTP 503.
         """
-        import httpx
-
         if not self._account_id or not self._api_token:
             raise LlmUnavailableError(
                 "Cloudflare Workers AI is not configured: set CLOUDFLARE_ACCOUNT_ID "
@@ -160,30 +193,19 @@ class CloudflareWorkersAiClient:
             )
 
         url = f"https://api.cloudflare.com/client/v4/accounts/{self._account_id}/ai/run/{self._model}"
-        try:
-            resp = httpx.post(
-                url,
-                headers={"Authorization": f"Bearer {self._api_token}"},
-                json={
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": "You are AssureCode AI assistant for test generation, security scanning, and XAI score evaluation.",
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
-                    "max_tokens": max_tokens,
+        headers = {"Authorization": f"Bearer {self._api_token}"}
+        payload = {
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are AssureCode AI assistant for test generation, security scanning, and XAI score evaluation.",
                 },
-                timeout=30.0,
-            )
-        except httpx.HTTPError as err:
-            raise LlmUnavailableError(f"Cloudflare Workers AI request failed: {err}") from err
+                {"role": "user", "content": prompt},
+            ],
+            "max_tokens": max_tokens,
+        }
 
-        if resp.status_code != 200:
-            detail = resp.text[:300]
-            raise LlmUnavailableError(
-                f"Cloudflare Workers AI returned HTTP {resp.status_code}: {detail}"
-            )
+        resp = self._post_with_retry(url, headers, payload)
 
         try:
             data = resp.json()
@@ -211,4 +233,48 @@ class CloudflareWorkersAiClient:
         raise LlmUnavailableError(
             f"Cloudflare Workers AI returned no usable response field: {str(data)[:300]}"
         )
+
+    def _post_with_retry(self, url: str, headers: dict, payload: dict):
+        """POST with retry, retrying only failures retrying can plausibly fix.
+
+        A 429 (honouring Retry-After when Cloudflare sends one) or a 5xx or a
+        network-level failure — a DNS failure, a dropped connection, the
+        client-side timeout — is retried. Any other 4xx (bad request, a
+        revoked token, an unknown model) is a real rejection: retrying it
+        wastes a call without changing the outcome, and would also mean
+        resending a prompt whose *first* attempt may already have been billed
+        or logged server-side before the response was lost.
+        """
+        import httpx
+        import time
+
+        last_err: LlmUnavailableError | None = None
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
+            try:
+                resp = httpx.post(url, headers=headers, json=payload, timeout=30.0)
+            except httpx.HTTPError as err:
+                last_err = LlmUnavailableError(f"Cloudflare Workers AI request failed: {err}")
+                if attempt == _MAX_ATTEMPTS:
+                    raise last_err from err
+                time.sleep(min(_MAX_BACKOFF_S, _INITIAL_BACKOFF_S * (2 ** (attempt - 1))))
+                continue
+
+            if resp.status_code == 200:
+                return resp
+
+            retryable = resp.status_code == 429 or resp.status_code >= 500
+            detail = resp.text[:300]
+            last_err = LlmUnavailableError(
+                f"Cloudflare Workers AI returned HTTP {resp.status_code}: {detail}"
+            )
+            if not retryable or attempt == _MAX_ATTEMPTS:
+                raise last_err
+
+            retry_after = _parse_retry_after(resp.headers.get("retry-after")) if resp.status_code == 429 else None
+            backoff = retry_after if retry_after is not None else _INITIAL_BACKOFF_S * (2 ** (attempt - 1))
+            time.sleep(min(_MAX_BACKOFF_S, backoff))
+
+        # Unreachable — every branch above returns or raises — but satisfies
+        # static analysis without an unsound assertion that last_err is set.
+        raise last_err or LlmUnavailableError("Cloudflare Workers AI request failed after retries")
 

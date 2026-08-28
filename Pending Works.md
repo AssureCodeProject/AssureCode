@@ -142,15 +142,15 @@ Close the product's actual value loop — the freelancer is never paid today —
 | 10 | Payout failure/retry policy | 🟢 | 100% | **Done.** `reconcilePendingPayouts()` now caps retries at `PAYOUT_MAX_ATTEMPTS` (5, ~25 minutes at the 5-minute sweep interval) and transitions an exhausted row to a new terminal `FAILED_TERMINAL` payout_status distinct from plain `FAILED`, so it stops being picked up by the sweep. Migration `V019__payout_retry_cap.sql` adds `settlements.payout_attempts` and widens the status CHECK constraint. Verified with 2 new tests in `apps/settlement-worker/test/payout-leg.test.ts` (cap trips at the threshold; a row below the cap still retries normally) against real Postgres |
 
 ### PENDING WORK
-1. **A real RazorpayX account with Payouts enabled** — a separate approval process from plain Razorpay Payments, requiring the project owner's business/KYC on Razorpay's side. Without it the real adapter (`RazorpayXPayoutAdapter`) ships written-and-locally-verified-against-the-fake but unproven against RazorpayX's actual API — confirmed directly during this work: the existing `.env` test-mode key (which works fine for ordinary Checkout/capture) 404s against the real Payouts endpoint because RazorpayX isn't activated on that account.
-2. ~~Confirm the exact real API contract~~ — **Done for the parts verifiable from documentation.** Fetched Razorpay's current docs directly rather than relying on memory, and found the idempotency header this shipped with (`Idempotency-Key`) was wrong — the real header is `X-Payout-Idempotency`, fixed in `packages/razorpay-adapter/src/index.ts`. Also confirmed the webhook payload shape (`payload.payout.entity`) and widened both `PayoutStatus` and the webhook handler's terminal-state mapping to include `payout.rejected`, a real distinct failure state the original implementation missed. What's left is the one thing documentation can't cover: **trigger one real payout once RazorpayX is activated and diff the actual response/webhook** against these now-corrected assumptions.
+1. ~~A real RazorpayX account with Payouts enabled~~ — **Done.** Activated in test mode (no KYC needed for sandbox): live `rzp_test_...` key, `RAZORPAYX_ACCOUNT_NUMBER` set, a real Fund Account (`fa_TUrp3JnX0Kvfw0`) created and funded with test balance.
+2. ~~Confirm the exact real API contract~~ — **Done, empirically.** Beyond the earlier doc-verified fixes (`X-Payout-Idempotency` header, `payout.rejected`/`reversed` webhook mapping), this has now been confirmed against Razorpay's real sandbox API directly: `RazorpayXPayoutAdapter.initiatePayout`/`fetchPayout` called for real (`pout_TVFDux9uN3FxNp`, ₹1 test payout), a real webhook delivered to a live `ngrok` tunnel, signature verification passed, and `"type":"payout.processed"` logged as `"Razorpay webhook verified"` in `api-gateway`. `toPayoutResult()` and the `PayoutStatus` union both match the real response/webhook shape — no code changes were needed.
 3. ~~A product decision on payout failure policy~~ — **Done.** See work item 10 above.
 
 ### BLOCKERS
-None technical. All code is built, wired, and passing the full test suite (467+ tests across the monorepo, including 6 payout-leg tests and 4 payout-webhook tests). The API-contract corrections above were verified against Razorpay's live documentation, not memory. What remains is the project owner's Razorpay dashboard access and a policy decision — not further engineering.
+None. All code is built, wired, and passing the full test suite (467+ tests across the monorepo, including 6 payout-leg tests and 4 payout-webhook tests), and the real RazorpayX payout + webhook path is now empirically verified end-to-end in test mode — not just against the fake adapter.
 
 ### DEFINITION OF DONE
-Code-complete: a settlement's payout leg runs end-to-end against the fake adapter (PENDING → PROCESSING → COMPLETED, idempotent retries, webhook confirmation), and the Phase 2 chaos test still passes. **Real-money verification against a live RazorpayX account remains outstanding** — the same category of caveat as GitHub OAuth's `ENABLE_GITHUB_SOURCE_FETCH` deploy step.
+Code-complete and now empirically verified: a real test-mode payout runs through `RazorpayXPayoutAdapter` against Razorpay's live sandbox API, and a real signed webhook is received, verified, and parsed correctly by `apps/api-gateway`. The fake-adapter path (PENDING → PROCESSING → COMPLETED, idempotent retries, webhook confirmation) and the Phase 2 chaos test still pass unchanged. Remaining before a real production launch: live (non-test) credentials, which need the project owner's real KYC/business activation on Razorpay's side — a deploy-time step, not unwritten engineering.
 
 ---
 
@@ -183,9 +183,9 @@ All core-functional work is code-complete and verified against the project's est
 
 | Priority | Phase | Pending Work | Dependency | Status |
 |---|---|---|---|---|
-| P1 | 3 | Verify the real `RazorpayXPayoutAdapter` against a live RazorpayX account | Requires the project owner's Razorpay dashboard access / business KYC | Pending — code-complete, needs real credentials |
-| P2 | 3 | Trigger one real payout to confirm the (now doc-corrected) API contract empirically | Same as above | Pending — header name and `payout.rejected` mapping already fixed against live docs; only an empirical check remains |
-| P2 | 3 | Decide payout failure/retry policy (cap, alert, manual retry) | Product decision | Pending |
+| ~~P1~~ | 3 | ~~Verify the real `RazorpayXPayoutAdapter` against a live RazorpayX account~~ | — | **Done** — verified against RazorpayX test-mode sandbox (`pout_TVFDux9uN3FxNp`) |
+| ~~P2~~ | 3 | ~~Trigger one real payout to confirm the API contract empirically~~ | — | **Done** — real payout + real signed webhook (`payout.processed`) verified end-to-end through `api-gateway` |
+| ~~P2~~ | 3 | ~~Decide payout failure/retry policy (cap, alert, manual retry)~~ | — | **Done** — see work item 10 above |
 
 ---
 
@@ -195,12 +195,13 @@ All core-functional work is code-complete and verified against the project's est
 Phase 1 (foundation) — DONE
 Phase 2 (CI/CD hardening) — DONE
 Phase 3 (payout leg, code) — DONE
+Real RazorpayX test-mode verification — DONE
 
-Real RazorpayX verification (needs the project owner's account) ──> production launch
+Live (non-test) RazorpayX credentials, real KYC (needs the project owner) ──> production launch
 ```
 
 ### Tasks that can run in parallel
-- The three remaining items are all independent of each other and require the project owner, not further engineering.
+- N/A — the payout-leg engineering and its real-API verification are both complete. What remains (live credentials) is a single deploy-time dependency on the project owner, not further engineering.
 
 ### Tasks that must happen sequentially
 - None — every hard sequential dependency this project had (chaos test → reconciler, capture → payout) is already satisfied and verified.
@@ -212,25 +213,26 @@ Real RazorpayX verification (needs the project owner's account) ──> producti
 ```
 CURRENT STATE (Phases 1-3 code-complete, 100% — full test suite green, CI/CD fully green end-to-end)
         ↓
-Project owner activates RazorpayX Payouts on the Razorpay account
+Real RazorpayX test-mode Payouts activated, verified end-to-end (payout + signed webhook) — DONE
         ↓
-Verify RazorpayXPayoutAdapter's idempotency header + payout.* webhook shape against the real API
+Payout failure/retry policy decided and implemented — DONE
         ↓
-Decide payout failure/retry policy
+Project owner activates live (non-test) RazorpayX credentials + real business KYC
         ↓
 PROJECT RUNS COMPLETELY AND SUCCESSFULLY, WITH REAL MONEY
 ```
 
 ### Step 1 — Activate and verify real RazorpayX Payouts
-**Phase:** 3 · **Depends on:** the project owner's Razorpay dashboard access · **Done when:** a settlement pays a real freelancer test-mode account through the live adapter.
+**Phase:** 3 · **Status:** Done. A real test-mode payout (`pout_TVFDux9uN3FxNp`) was created through `RazorpayXPayoutAdapter` against RazorpayX's sandbox API, marked `Processed` on the dashboard, and the resulting signed webhook was delivered to a live `ngrok` tunnel and verified end-to-end by `apps/api-gateway` (`"Razorpay webhook verified"`, `type: payout.processed`). Only live (non-test) credentials remain, gated on the project owner's real KYC.
 
 ---
 
 ## NEXT 5 ACTIONS
 
-1. **Activate RazorpayX Payouts** on the project's Razorpay account — the one remaining item that needs the project owner, not more code.
-2. **Verify the real API contract** (idempotency header, webhook payload shape) once that access exists.
-3. **Decide the payout failure/retry policy** — a product call, not an engineering one.
+1. ~~Activate RazorpayX Payouts~~ — **Done**, test-mode sandbox.
+2. ~~Verify the real API contract~~ — **Done**, empirically, real payout + real webhook.
+3. ~~Decide the payout failure/retry policy~~ — **Done**.
+4. Obtain live (non-test) RazorpayX credentials — needs the project owner's real business KYC before any real production payout can run.
 
 ---
 
@@ -246,16 +248,16 @@ PROJECT RUNS COMPLETELY AND SUCCESSFULLY, WITH REAL MONEY
 
 **Current Phase:** None — all three phases are code-complete
 
-**Remaining Phases:** 0 (real-credential verification only, see Pending Work)
+**Remaining Phases:** 0 (live production credentials only, see Pending Work)
 
 | Phase | Completion | Status |
 |---|---:|---|
 | Phase 1 — Foundation & Core Architecture | 100% | 🟢 |
 | Phase 2 — Testing & CI/CD Hardening | 100% | 🟢 |
-| Phase 3 — Payout Leg & Crash Recovery | 100% | 🟢 |
+| Phase 3 — Payout Leg & Crash Recovery | 100% | 🟢 (real RazorpayX test-mode payout + webhook verified end-to-end) |
 
 **Current Blockers:**
-- None technical. All code is built, tested, and passing in live CI.
-- Real-money verification against a live RazorpayX account needs the project owner's Razorpay dashboard access — not further engineering.
+- None technical. All code is built, tested, passing in live CI, and empirically verified against RazorpayX's real sandbox API.
+- Real-*production* money movement needs the project owner's live (non-test) Razorpay credentials and business KYC — not further engineering.
 
-**Next Milestone:** Real RazorpayX Payouts activated and verified against a live test-mode payout.
+**Next Milestone:** Live (non-test) RazorpayX credentials activated for production launch.

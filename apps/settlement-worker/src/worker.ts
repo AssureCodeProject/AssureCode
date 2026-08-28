@@ -886,6 +886,11 @@ if (process.env.NODE_ENV !== 'test') {
 // attemptPayout and reconcilePendingPayouts are exported so the payout-leg
 // test suite can exercise the real functions directly, the same reasoning
 // claimSettlement's export above already documents.
+// metricsServer is exported so a test that calls start() directly (bypassing
+// the NODE_ENV=test guard above to exercise the real startup path) has a way
+// to close the Prometheus listener afterward. Without this, the port stays
+// bound past the test file's own process and collides with the next test or
+// suite that also calls start() — this is what happens.
 export {
   start,
   oracle,
@@ -894,4 +899,5 @@ export {
   attemptPayout,
   reconcilePendingPayouts,
   PAYOUT_MAX_ATTEMPTS,
+  metricsServer,
 };

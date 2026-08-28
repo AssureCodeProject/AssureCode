@@ -87,6 +87,13 @@ describe.skipIf(!available)('AUDIT_COMPLETED reaches the trust-score gate on its
     await pool?.query('DELETE FROM contracts WHERE contract_id = $1', [contractId]);
     await pool?.end();
     await new Promise<void>((resolve) => stub.close(() => resolve()));
+    // worker.start() opens the real Prometheus listener on SETTLEMENT_WORKER_PORT
+    // (bypassing the NODE_ENV=test guard, deliberately, to exercise the real
+    // startup path). Left open, it collides with the next process that calls
+    // start() on the same port — e.g. the golden-path suite immediately after.
+    if (worker.metricsServer) {
+      await new Promise<void>((resolve) => worker.metricsServer!.close(() => resolve()));
+    }
   });
 
   it('records the CI signals and a trust score from one audit event', async () => {

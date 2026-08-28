@@ -20,8 +20,8 @@ it is unchanged.
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
 
 #: Total attempts (1 original + retries) for a Cloudflare call that fails in a
@@ -54,8 +54,8 @@ def _parse_retry_after(header_value: str | None) -> float | None:
     if dt is None:
         return None
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return max(0.0, (dt - datetime.now(timezone.utc)).total_seconds())
+        dt = dt.replace(tzinfo=UTC)
+    return max(0.0, (dt - datetime.now(UTC)).total_seconds())
 
 
 @runtime_checkable
@@ -245,8 +245,9 @@ class CloudflareWorkersAiClient:
         resending a prompt whose *first* attempt may already have been billed
         or logged server-side before the response was lost.
         """
-        import httpx
         import time
+
+        import httpx
 
         last_err: LlmUnavailableError | None = None
         for attempt in range(1, _MAX_ATTEMPTS + 1):

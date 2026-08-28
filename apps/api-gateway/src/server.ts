@@ -57,6 +57,16 @@ import {
 import { withIdempotency } from './middleware/idempotency.js';
 import { logSecurityAudit, requireRole, requireKycVerified, type AuthUser } from './middleware/rbac.js';
 import { registerAuth, verifyPassword } from './middleware/auth.js';
+import { createSession, newSessionId, revokeSession } from './middleware/session-store.js';
+import {
+  startEnrollment,
+  verifyEnrollment,
+  verifyActiveCode,
+  disableMfa,
+  MfaAlreadyEnabledError,
+  MfaNotPendingError,
+  MfaNotEnabledError,
+} from './middleware/mfa-store.js';
 import { extractPdfText, MAX_PDF_BYTES } from './middleware/pdf.js';
 
 // ── Configuration ─────────────────────────────────────────────────────
@@ -112,7 +122,7 @@ if (config.NODE_ENV === 'production' && !isLiveRazorpayConfig(razorpayConfig)) {
 // the feature is opt-in (a deployment can run password-only login forever),
 // so unconditionally requiring them would refuse to boot every production
 // deployment that simply never enabled GitHub login at all.
-const requiredProductionSecrets = ['JWT_SECRET', 'SERVICE_TOKEN'];
+const requiredProductionSecrets = ['JWT_SECRET', 'SERVICE_TOKEN', 'MFA_SECRET_ENCRYPTION_KEY'];
 if (config.GITHUB_CLIENT_ID) {
   requiredProductionSecrets.push('GITHUB_CLIENT_SECRET', 'GITHUB_TOKEN_ENCRYPTION_KEY');
 }
@@ -365,7 +375,7 @@ void server.register(fastifyRateLimit as any, {
 // except the allow-list inside registerAuth (health/ready/metrics/login/
 // webhooks). Registered after the correlation-id hook so a 401 still carries
 // one.
-registerAuth(server, config.JWT_SECRET, config.SERVICE_TOKEN);
+registerAuth(server, config.JWT_SECRET, config.SERVICE_TOKEN, dbPool, config.JWT_EXPIRES_IN_SECONDS);
 
 // Liveness probe
 server.get('/healthz', async () => {
@@ -407,6 +417,69 @@ server.get('/metrics', async (_request, reply) => {
 });
 
 // ── Auth Endpoints ───────────────────────────────────────────────────────
+
+const MFA_CHALLENGE_TTL_MS = 5 * 60 * 1000;
+
+// Same short-lived-signed-code shape as the GitHub OAuth exchange code below
+// (HMAC over a nonce+timestamp, keyed on JWT_SECRET — no new storage table),
+// but with a purpose prefix baked into the signed string. Without it, a code
+// minted here would also happen to verify against GitHub's
+// verifyExchangeCode (same key, same `userId.ts.nonce` shape) and vice versa
+// — two unrelated capabilities that should never be interchangeable.
+function signMfaChallenge(userId: string): string {
+  const ts = Date.now().toString();
+  const nonce = randomUUID();
+  const payload = `mfa.${userId}.${ts}.${nonce}`;
+  const sig = createHmac('sha256', config.JWT_SECRET).update(payload).digest('base64url');
+  return `${userId}.${ts}.${nonce}.${sig}`;
+}
+
+function verifyMfaChallenge(challenge: string): string | null {
+  const parts = challenge.split('.');
+  if (parts.length !== 4) return null;
+  const [userId, ts, nonce, sig] = parts;
+  const expected = createHmac('sha256', config.JWT_SECRET).update(`mfa.${userId}.${ts}.${nonce}`).digest('base64url');
+  const sigBuf = Buffer.from(sig);
+  const expectedBuf = Buffer.from(expected);
+  if (sigBuf.length !== expectedBuf.length || !timingSafeEqual(sigBuf, expectedBuf)) return null;
+  const age = Date.now() - Number(ts);
+  if (age < 0 || age >= MFA_CHALLENGE_TTL_MS) return null;
+  return userId;
+}
+
+/** The tail end of a successful auth (password-only, or password+TOTP): mint a real session and log it. Shared so both paths agree on exactly what "logged in" means. */
+async function issueSession(
+  row: { user_id: string; email: string; role: string; kyc_status: string; mfa_enabled: boolean; display_name: string },
+  request: FastifyRequest,
+) {
+  const sessionId = newSessionId();
+  const token = (server as any).jwt.sign({
+    sub: row.user_id,
+    email: row.email,
+    role: row.role,
+    kycStatus: row.kyc_status,
+    mfaEnabled: row.mfa_enabled,
+    sid: sessionId,
+  });
+  await createSession(dbPool, sessionId, {
+    userId: row.user_id,
+    token,
+    userAgent: request.headers['user-agent'],
+    ipAddress: request.ip,
+    ttlSeconds: config.JWT_EXPIRES_IN_SECONDS,
+  });
+  await logSecurityAudit(dbPool, {
+    userId: row.user_id,
+    action: 'LOGIN',
+    resource: 'auth',
+    ipAddress: request.ip,
+    status: 'SUCCESS',
+  });
+  return {
+    token,
+    user: { userId: row.user_id, email: row.email, role: row.role, displayName: row.display_name },
+  };
+}
 
 // A far tighter bucket than the global one. Login is the only unauthenticated
 // route that does credential work, so it is where an online password-guessing
@@ -453,38 +526,88 @@ server.post<{
     return invalid();
   }
 
-  const token = (server as any).jwt.sign({
-    sub: row.user_id,
-    email: row.email,
-    role: row.role,
-    kycStatus: row.kyc_status,
-    mfaEnabled: row.mfa_enabled,
-  });
-
-  await logSecurityAudit(dbPool, {
-    userId: row.user_id,
-    action: 'LOGIN',
-    resource: 'auth',
-    ipAddress: request.ip,
-    status: 'SUCCESS',
-  });
-
-  return reply.send({
-    token,
-    user: {
+  // Password alone is not enough for an MFA-enrolled account. No session is
+  // created yet — only a short-lived, single-purpose challenge naming this
+  // user, redeemable at POST /auth/mfa/challenge alongside a live TOTP code.
+  if (row.mfa_enabled) {
+    await logSecurityAudit(dbPool, {
       userId: row.user_id,
-      email: row.email,
-      role: row.role,
-      displayName: row.display_name,
-    },
-  });
+      action: 'MFA_CHALLENGE_ISSUED',
+      resource: 'auth',
+      ipAddress: request.ip,
+      status: 'SUCCESS',
+    });
+    return reply.send({ mfaRequired: true, challenge: signMfaChallenge(row.user_id) });
+  }
+
+  return reply.send(await issueSession(row, request));
 });
 
-// JWT is stateless and carries no server-side session to revoke; the client
-// discards the token. This route exists for API symmetry and audit logging.
+// The second step of an MFA-gated login: redeem the challenge from
+// POST /auth/login plus a live TOTP code for a real session. Rate-limited
+// the same as login itself — a 6-digit code is guessable given enough
+// attempts, and this is the endpoint that would take them.
+server.post<{
+  Body: { challenge: string; code: string };
+}>('/auth/mfa/challenge', {
+  config: {
+    rateLimit: {
+      max: Number(process.env.RATE_LIMIT_LOGIN_MAX ?? 10),
+      timeWindow: '1 minute',
+      keyGenerator: (request: FastifyRequest) => request.ip,
+    },
+  },
+}, async (request, reply) => {
+  const { challenge, code } = request.body || {};
+  if (!challenge || !code) {
+    return reply.status(400).send({ error: 'challenge and code are required' });
+  }
+
+  const userId = verifyMfaChallenge(challenge);
+  if (!userId) {
+    return reply.status(401).send({ error: 'Invalid or expired challenge' });
+  }
+
+  let valid: boolean;
+  try {
+    valid = await verifyActiveCode(dbPool, userId, code, config.MFA_SECRET_ENCRYPTION_KEY);
+  } catch (err) {
+    if (err instanceof MfaNotEnabledError) {
+      // Account had MFA disabled between login and this call — the challenge
+      // names a state that no longer exists, not a wrong code.
+      return reply.status(401).send({ error: 'MFA is no longer enabled for this account' });
+    }
+    throw err;
+  }
+
+  if (!valid) {
+    await logSecurityAudit(dbPool, {
+      userId,
+      action: 'MFA_CHALLENGE_FAILED',
+      resource: 'auth',
+      ipAddress: request.ip,
+      status: 'DENIED',
+    });
+    return reply.status(401).send({ error: 'Invalid code' });
+  }
+
+  const res = await dbPool.query(
+    `SELECT user_id, email, role, display_name, kyc_status, mfa_enabled FROM users WHERE user_id = $1`,
+    [userId],
+  );
+  if (res.rowCount === 0) return reply.status(401).send({ error: 'Invalid or expired challenge' });
+
+  return reply.send(await issueSession(res.rows[0], request));
+});
+
+// Real revocation: the session named in the caller's own token is marked
+// revoked, so that exact token (and any other request presenting it) is
+// rejected by auth.ts's isSessionActive check from this point on — not just
+// discarded client-side, which was this route's entire effect before.
 server.post('/auth/logout', async (request, reply) => {
   const user = (request as any).user as AuthUser | undefined;
   if (user) {
+    await revokeSession(dbPool, user.sessionId);
     await logSecurityAudit(dbPool, {
       userId: user.userId,
       action: 'LOGOUT',
@@ -513,6 +636,87 @@ server.get('/auth/me', async (request, reply) => {
     kycStatus: user.kycStatus,
     displayName: res.rows[0]?.display_name ?? user.email,
   });
+});
+
+// ── MFA (TOTP) ───────────────────────────────────────────────────────────
+// Always registered, unlike GitHub OAuth below — MFA is core auth, not an
+// opt-in integration, so it does not depend on any external app being
+// configured.
+
+server.post('/auth/mfa/enroll', async (request, reply) => {
+  const user = (request as any).user as AuthUser | undefined;
+  if (!user) return reply.status(401).send({ error: 'Unauthorized' });
+
+  try {
+    const { secret, otpauthUri } = await startEnrollment(dbPool, user.userId, user.email, config.MFA_SECRET_ENCRYPTION_KEY);
+    return reply.send({ secret, otpauthUri });
+  } catch (err) {
+    if (err instanceof MfaAlreadyEnabledError) {
+      return reply.status(409).send({ error: 'MFA is already enabled; disable it first to re-enroll' });
+    }
+    throw err;
+  }
+});
+
+// Activates the secret POST /auth/mfa/enroll just handed back. Until this
+// succeeds once, the pending secret gates nothing — login stays
+// password-only, since users.mfa_enabled is only flipped here.
+server.post<{ Body: { code: string } }>('/auth/mfa/verify', async (request, reply) => {
+  const user = (request as any).user as AuthUser | undefined;
+  if (!user) return reply.status(401).send({ error: 'Unauthorized' });
+
+  const { code } = request.body || {};
+  if (!code) return reply.status(400).send({ error: 'code is required' });
+
+  try {
+    const ok = await verifyEnrollment(dbPool, user.userId, code, config.MFA_SECRET_ENCRYPTION_KEY);
+    if (!ok) return reply.status(401).send({ error: 'Invalid code' });
+    await logSecurityAudit(dbPool, {
+      userId: user.userId,
+      action: 'MFA_ENABLED',
+      resource: 'auth',
+      ipAddress: request.ip,
+      status: 'SUCCESS',
+    });
+    return reply.send({ success: true });
+  } catch (err) {
+    if (err instanceof MfaNotPendingError) {
+      return reply.status(409).send({ error: 'No pending MFA enrollment; call /auth/mfa/enroll first' });
+    }
+    throw err;
+  }
+});
+
+// Requires a live code, not just an authenticated session — a stolen session
+// token is exactly what MFA exists to blunt, and letting that same token
+// silently turn MFA back off would undo the point.
+server.post<{ Body: { code: string } }>('/auth/mfa/disable', async (request, reply) => {
+  const user = (request as any).user as AuthUser | undefined;
+  if (!user) return reply.status(401).send({ error: 'Unauthorized' });
+
+  const { code } = request.body || {};
+  if (!code) return reply.status(400).send({ error: 'code is required' });
+
+  let valid: boolean;
+  try {
+    valid = await verifyActiveCode(dbPool, user.userId, code, config.MFA_SECRET_ENCRYPTION_KEY);
+  } catch (err) {
+    if (err instanceof MfaNotEnabledError) {
+      return reply.status(409).send({ error: 'MFA is not enabled' });
+    }
+    throw err;
+  }
+  if (!valid) return reply.status(401).send({ error: 'Invalid code' });
+
+  await disableMfa(dbPool, user.userId);
+  await logSecurityAudit(dbPool, {
+    userId: user.userId,
+    action: 'MFA_DISABLED',
+    resource: 'auth',
+    ipAddress: request.ip,
+    status: 'SUCCESS',
+  });
+  return reply.send({ success: true });
 });
 
 // ── GitHub OAuth (freelancer login + repo connection) ───────────────────
@@ -747,12 +951,21 @@ if (config.GITHUB_CLIENT_ID) {
     if (res.rowCount === 0) return reply.status(401).send({ error: 'Invalid or expired code' });
 
     const row = res.rows[0];
+    const sessionId = newSessionId();
     const token = (server as any).jwt.sign({
       sub: row.user_id,
       email: row.email,
       role: row.role,
       kycStatus: row.kyc_status,
       mfaEnabled: row.mfa_enabled,
+      sid: sessionId,
+    });
+    await createSession(dbPool, sessionId, {
+      userId: row.user_id,
+      token,
+      userAgent: request.headers['user-agent'],
+      ipAddress: request.ip,
+      ttlSeconds: config.JWT_EXPIRES_IN_SECONDS,
     });
 
     return reply.send({

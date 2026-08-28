@@ -26,10 +26,13 @@ export interface SandboxOptions {
   repoUrl?: string;
   /** Commit to check out. Recorded in the result for auditability. */
   commitHash?: string;
-  /** Directory holding the code under test, used when repoUrl is absent. */
+  /**
+   * Directory holding the code under test, used when repoUrl is absent.
+   * Hidden tests, when present, are already written into this same tree by
+   * workspace-builder.ts before the sandbox runs — there is no separate
+   * hidden-tests mount.
+   */
   workDir?: string;
-  /** Hidden test bundle to mount read-only alongside the code. */
-  hiddenTestsPath?: string;
   /**
    * Entry script the sandbox executes, relative to `workDir`. Defaults to the
    * harness the workspace builder writes.
@@ -62,6 +65,18 @@ export interface SandboxExecutionResult {
   commitHash?: string;
   /** True when the process was killed for exceeding its time budget. */
   timedOut: boolean;
+  /**
+   * The isolation guarantees `runner` actually provided, attached by
+   * runInSandbox() from the selected adapter's describeThreatModel() (or a
+   * "nothing was provisioned" stand-in when selection itself failed). Carried
+   * through into audit_results by worker.ts so a settlement decision's
+   * isolation strength is part of the durable record, not only a log line.
+   *
+   * Optional here (not on every adapter's own construction of this type) —
+   * runInSandbox() is the one place that attaches it, so an individual
+   * adapter's run() is not required to know about it.
+   */
+  threatModel?: ThreatModel;
 }
 
 export interface ThreatModel {

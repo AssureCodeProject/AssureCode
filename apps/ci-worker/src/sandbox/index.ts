@@ -79,7 +79,15 @@ export async function runInSandbox(
       durationMs: 0,
       commitHash: options.commitHash,
       timedOut: false,
+      // No adapter was ever selected, so nothing was enforced — stated
+      // explicitly rather than left absent, which would read as "unknown"
+      // instead of "none".
+      threatModel: { runner: 'none', enforced: [], notEnforced: ['no isolation was established at all'] },
     };
   }
-  return runner.run(contractId, options);
+  const result = await runner.run(contractId, options);
+  // Attached here, not by each adapter's own run() — one place that knows
+  // "the result and the guarantees that produced it travel together" so an
+  // adapter can't accidentally return a result without them.
+  return { ...result, threatModel: runner.describeThreatModel() };
 }

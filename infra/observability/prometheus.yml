@@ -1,9 +1,11 @@
 # Prometheus scrape configuration for the local stack.
 #
-# All four instrumented services. The Node pair use packages/telemetry
-# (prom-client); the Python pair use app/ports/telemetry.py (prometheus_client),
-# which deliberately shares the `assurecode_*` metric-name prefix so a dashboard
-# can sum a family across both tiers.
+# All six instrumented services. The Node quartet use packages/telemetry
+# (prom-client) — ci-worker and settlement-worker via the minimal
+# metrics-server.ts HTTP surface added for exactly this, since neither has
+# any other route; the Python pair use app/ports/telemetry.py
+# (prometheus_client), which deliberately shares the `assurecode_*`
+# metric-name prefix so a dashboard can sum a family across both tiers.
 #
 # Tracing is still Node-only: the Python services emit metrics but no OTel
 # spans, so a trace crossing into ai-service or scope-guard stops at the
@@ -51,3 +53,17 @@ scrape_configs:
       - targets: ["scope-guard:8001"]
         labels:
           service: scope-guard
+
+  - job_name: ci-worker
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["ci-worker:5001"]
+        labels:
+          service: ci-worker
+
+  - job_name: settlement-worker
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["settlement-worker:5002"]
+        labels:
+          service: settlement-worker

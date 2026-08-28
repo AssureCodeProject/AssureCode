@@ -19,7 +19,8 @@
  * and refuses rows whose payment_id is still NULL.
  */
 import { createEventBus, eventBusOptionsFromConfig } from '@assurecode/event-bus';
-import { loadConfig, createLogger, getDatabaseUrl, buildDbConfig } from '@assurecode/config';
+import { loadConfig, createLogger, getDatabaseUrl, buildDbConfig, startMetricsServer } from '@assurecode/config';
+import type { Server } from 'node:http';
 import { LedgerClient } from '@assurecode/ledger-client';
 import { createRazorpayAdapter, createPayoutAdapter } from '@assurecode/razorpay-adapter';
 import { EVENT_TOPICS, EventEnvelope, SettlementRequested } from '@assurecode/shared';
@@ -457,7 +458,9 @@ async function attemptPayout(contractId: string, freelancerId: string): Promise<
   }
 
   await dbPool.query(
-    `UPDATE settlements SET payout_status = 'PROCESSING', payout_updated_at = NOW() WHERE contract_id = $1`,
+    `UPDATE settlements
+        SET payout_status = 'PROCESSING', payout_attempts = payout_attempts + 1, payout_updated_at = NOW()
+      WHERE contract_id = $1`,
     [contractId],
   );
 
@@ -511,7 +514,7 @@ async function attemptPayout(contractId: string, freelancerId: string): Promise<
  */
 async function reconcilePendingPayouts(): Promise<void> {
   const { rows } = await dbPool.query(
-    `SELECT s.contract_id, c.freelancer_id
+    `SELECT s.contract_id, c.freelancer_id, s.payout_attempts
        FROM settlements s
        JOIN contracts c ON c.contract_id = s.contract_id
        JOIN users u ON u.user_id = c.freelancer_id
@@ -523,6 +526,32 @@ async function reconcilePendingPayouts(): Promise<void> {
 
   logger.info({ count: rows.length }, 'Reconciling pending/failed payouts');
   for (const row of rows) {
+    // A row with no payout account never reaches the PROCESSING write in
+    // attemptPayout (see the early return there), so payout_attempts stays 0
+    // for as long as the freelancer hasn't finished onboarding — that case is
+    // meant to wait indefinitely, not exhaust the cap. Only rows that actually
+    // reached a real payout attempt accumulate attempts, so the cap only ever
+    // fires on genuine repeated failure.
+    if (row.payout_attempts >= PAYOUT_MAX_ATTEMPTS) {
+      await dbPool
+        .query(
+          `UPDATE settlements
+              SET payout_status = 'FAILED_TERMINAL', payout_updated_at = NOW()
+            WHERE contract_id = $1 AND payout_status != 'FAILED_TERMINAL'`,
+          [row.contract_id],
+        )
+        .catch((err: any) =>
+          logger.error(
+            { contractId: row.contract_id, err: err.message },
+            'Failed to mark payout FAILED_TERMINAL',
+          ),
+        );
+      logger.error(
+        { contractId: row.contract_id, attempts: row.payout_attempts },
+        `Payout exceeded ${PAYOUT_MAX_ATTEMPTS} attempts; stopped auto-retrying. Needs manual review.`,
+      );
+      continue;
+    }
     await attemptPayout(row.contract_id, row.freelancer_id).catch((err: any) =>
       logger.error({ contractId: row.contract_id, err: err.message }, 'Payout reconciliation attempt failed'),
     );
@@ -764,10 +793,27 @@ async function reconcileAbandonedSettlements(): Promise<void> {
 
 /** 5 minutes — first periodic job in this codebase; see reconcilePendingPayouts's header for why. */
 const PAYOUT_RECONCILE_INTERVAL_MS = 5 * 60 * 1000;
+/**
+ * After this many real attempts, reconcilePendingPayouts stops retrying
+ * automatically and marks the row FAILED_TERMINAL instead — without a cap, a
+ * payout failing for a permanent reason (a malformed beneficiary account, an
+ * account-level block) retries identically every 5 minutes forever,
+ * indistinguishable in the code from one that's failing transiently. 5
+ * attempts at the 5-minute interval above is ~25 minutes of automatic retry
+ * before a human needs to look at it.
+ */
+const PAYOUT_MAX_ATTEMPTS = 5;
 let payoutReconcileTimer: NodeJS.Timeout | undefined;
+let metricsServer: Server | undefined;
 
 async function start(): Promise<void> {
   logger.info('Starting settlement oracle...');
+
+  // Same reasoning as ci-worker's metrics server: this is the process that
+  // actually captures payments and drives payouts, and it had zero
+  // Prometheus visibility — not down, just unmeasured. No other HTTP surface
+  // exists here (k8s uses an `exec` probe), so this is deliberately minimal.
+  metricsServer = startMetricsServer(config.SETTLEMENT_WORKER_PORT, logger);
 
   // Announced once at startup rather than per event. With auto-scoring off,
   // every audit still records its CI signals but no contract ever acquires a
@@ -810,6 +856,7 @@ async function start(): Promise<void> {
 async function shutdown(signal: string): Promise<void> {
   logger.info(`${signal} received, shutting down...`);
   if (payoutReconcileTimer) clearInterval(payoutReconcileTimer);
+  if (metricsServer) await new Promise((resolve) => metricsServer!.close(resolve));
   await dbPool.end();
   await ledgerClient.close();
   process.exit(0);
@@ -839,4 +886,12 @@ if (process.env.NODE_ENV !== 'test') {
 // attemptPayout and reconcilePendingPayouts are exported so the payout-leg
 // test suite can exercise the real functions directly, the same reasoning
 // claimSettlement's export above already documents.
-export { start, oracle, eventBus, claimSettlement, attemptPayout, reconcilePendingPayouts };
+export {
+  start,
+  oracle,
+  eventBus,
+  claimSettlement,
+  attemptPayout,
+  reconcilePendingPayouts,
+  PAYOUT_MAX_ATTEMPTS,
+};

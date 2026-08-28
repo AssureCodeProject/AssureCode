@@ -376,6 +376,8 @@ services:
     image: assurecode/ci-worker:local
     container_name: assurecode-ci-worker
     restart: unless-stopped
+    ports:
+      - "${CI_WORKER_PORT:-5001}:5001"
     environment:
       <<: *datastore-env
       NODE_ENV: ${NODE_ENV:-development}
@@ -385,11 +387,12 @@ services:
       # executing untrusted freelancer code. Not a trade worth making to run a
       # local demo. See the header of infra/docker/Dockerfile.ci-worker.
       SANDBOX_RUNNER: ${SANDBOX_RUNNER:-node}
-    # Neither worker exposes an HTTP port, so there is no /healthz to probe.
-    # The k8s manifests settle for `node -e "process.exit(0)"`, which only
-    # asserts the Node binary can start — it reports healthy for a worker that
-    # has silently lost its bus connection, which is precisely the failure mode
-    # a headless consumer has.
+    # Neither worker exposes a /healthz — the /metrics surface below is
+    # deliberately minimal (metrics-server.ts) and answers only /metrics, not
+    # readiness. The k8s manifests settle for `node -e "process.exit(0)"`,
+    # which only asserts the Node binary can start — it reports healthy for a
+    # worker that has silently lost its bus connection, which is precisely the
+    # failure mode a headless consumer has.
     #
     # This probes the thing the worker cannot do its job without: a reachable
     # Redis, which is where every event it consumes comes from. Still not proof
@@ -413,14 +416,17 @@ services:
     image: assurecode/settlement-worker:local
     container_name: assurecode-settlement-worker
     restart: unless-stopped
+    ports:
+      - "${SETTLEMENT_WORKER_PORT:-5002}:5002"
     environment:
       <<: *datastore-env
       NODE_ENV: ${NODE_ENV:-development}
-    # Neither worker exposes an HTTP port, so there is no /healthz to probe.
-    # The k8s manifests settle for `node -e "process.exit(0)"`, which only
-    # asserts the Node binary can start — it reports healthy for a worker that
-    # has silently lost its bus connection, which is precisely the failure mode
-    # a headless consumer has.
+    # Neither worker exposes a /healthz — the /metrics surface below is
+    # deliberately minimal (metrics-server.ts) and answers only /metrics, not
+    # readiness. The k8s manifests settle for `node -e "process.exit(0)"`,
+    # which only asserts the Node binary can start — it reports healthy for a
+    # worker that has silently lost its bus connection, which is precisely the
+    # failure mode a headless consumer has.
     #
     # This probes the thing the worker cannot do its job without: a reachable
     # Redis, which is where every event it consumes comes from. Still not proof

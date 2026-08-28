@@ -147,10 +147,15 @@ money-releasing gate, free to drift from the one that releases the money.
    `X-Hub-Signature-256` and emits `code.push.received`.
 3. **Ephemeral sandbox.** `DockerSandbox` clones the repo at `commitHash`,
    checks it out, and runs it under `--network=none --memory=<limit>m --cpus=1
-   --read-only`, with the code and the hidden tests bind-mounted read-only
-   (`/workspace:ro`, `/hidden-tests:ro`). A `NodePermissionSandbox` adapter is
-   selected when no Docker daemon is available, and `describeThreatModel()`
-   reports which guarantees the *active* adapter actually provides.
+   --read-only`. The hidden tests are written into that same workspace before
+   the container starts (`workspace-builder.ts`), not delivered via a second
+   mount, so `/workspace:ro` alone covers both — code and hidden tests are
+   equally unwritable and unreadable-from-outside once the container is
+   running. A `NodePermissionSandbox` adapter is selected when no Docker
+   daemon is available, and `describeThreatModel()` reports which guarantees
+   the *active* adapter actually provides — and, since this session, that
+   threat model is carried through into the persisted `audit_results` row
+   itself, not only logged.
 4. **AST analysis.** Real `@babel/parser` traversal computes cyclomatic
    complexity, Halstead volume, and the SEI maintainability index (§4.3).
 5. **Hidden test execution.** `npm test` runs against the mounted bundle. A

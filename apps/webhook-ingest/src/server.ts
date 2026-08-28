@@ -2,7 +2,9 @@ import { initTracing, metrics } from '@assurecode/telemetry';
 initTracing('webhook-ingest');
 
 import crypto from 'node:crypto';
+import net from 'node:net';
 import Fastify from 'fastify';
+import fastifyRateLimit from '@fastify/rate-limit';
 import pg from 'pg';
 import {
   loadConfig,
@@ -35,6 +37,37 @@ const GITHUB_WEBHOOK_SECRET = config.GITHUB_WEBHOOK_SECRET;
 // up. pg.Pool connects lazily, so constructing it here costs nothing until the
 // first push arrives and does not make the process depend on Postgres to boot.
 const dbPool = new pg.Pool(buildDbConfig(getDatabaseUrl(config)));
+
+// Same pattern as api-gateway's /readyz (server.ts): a TCP-level check, no
+// Redis commands issued, no side effects.
+const redisHealthUrl = (() => {
+  try {
+    return config.REDIS_URL ? new URL(config.REDIS_URL) : null;
+  } catch {
+    return null;
+  }
+})();
+
+async function pingRedis(): Promise<'ok' | 'error' | 'not_configured'> {
+  if (!redisHealthUrl) return 'not_configured';
+  return new Promise<'ok' | 'error'>((resolve) => {
+    const socket = net.createConnection(
+      { host: redisHealthUrl!.hostname, port: Number(redisHealthUrl!.port || 6379), timeout: 2000 },
+      () => {
+        socket.destroy();
+        resolve('ok');
+      },
+    );
+    socket.on('error', () => {
+      socket.destroy();
+      resolve('error');
+    });
+    socket.on('timeout', () => {
+      socket.destroy();
+      resolve('error');
+    });
+  });
+}
 
 // Correlation ID hook
 fastify.addHook('onRequest', (request, reply, done) => {
@@ -109,6 +142,29 @@ export async function resolveContractId(
   return result.rows[0]?.contract_id ?? null;
 }
 
+// Previously this endpoint had zero rate limiting of any kind — the HMAC
+// check (verifyGitHubSignature, below) stops forged payloads, but does
+// nothing against a flood of validly-signed replays or high request volume,
+// and nothing at all runs before the signature check, so garbage bodies could
+// still burn CPU and a DB round-trip (resolveContractId) on every request.
+// Same plugin and shape as api-gateway's global limiter; keyed on IP since
+// this route has no authenticated caller, only GitHub's signature.
+void fastify.register(fastifyRateLimit as any, {
+  global: true,
+  max: Number(process.env.RATE_LIMIT_MAX ?? 100),
+  timeWindow: process.env.RATE_LIMIT_WINDOW ?? '1 minute',
+  enableDraftSpec: true,
+  allowList: (request: { url: string }) => {
+    if (config.NODE_ENV === 'test') return true;
+    return request.url === '/healthz' || request.url === '/readyz' || request.url === '/metrics';
+  },
+  errorResponseBuilder: (_request: unknown, context: { after: string }) => ({
+    error: 'Too many requests',
+    message: `Rate limit exceeded. Retry in ${context.after}.`,
+    statusCode: 429,
+  }),
+});
+
 // Add raw body parser for signature verification
 fastify.addContentTypeParser('application/json', { parseAs: 'buffer' }, (req, body: Buffer, done) => {
   try {
@@ -122,7 +178,34 @@ fastify.addContentTypeParser('application/json', { parseAs: 'buffer' }, (req, bo
 
 fastify.get('/healthz', async () => ({ status: 'ok', service: 'webhook-ingest' }));
 
-fastify.get('/readyz', async () => ({ status: 'ready', service: 'webhook-ingest', timestamp: new Date().toISOString() }));
+// Previously a static 200 regardless of DB/Redis state — this service cannot
+// resolve a contract or publish CODE_PUSH_RECEIVED without both, so a probe
+// that always says "ready" would keep routing real GitHub pushes to a pod
+// that can only fail them, rather than pulling it out of rotation. Same
+// pattern as api-gateway's /readyz.
+fastify.get('/readyz', async (_request, reply) => {
+  const checks: Record<string, string> = {};
+  let allOk = true;
+
+  try {
+    await dbPool.query('SELECT 1');
+    checks.db = 'ok';
+  } catch (err: any) {
+    checks.db = `error: ${err?.message || String(err)}`;
+    allOk = false;
+  }
+
+  const redisStatus = await pingRedis();
+  checks.redis = redisStatus;
+  if (redisStatus === 'error') allOk = false;
+
+  return reply.status(allOk ? 200 : 503).send({
+    status: allOk ? 'ready' : 'not_ready',
+    service: 'webhook-ingest',
+    ...checks,
+    timestamp: new Date().toISOString(),
+  });
+});
 
 fastify.get('/metrics', async (_request, reply) => {
   reply.header('Content-Type', metrics.getMetricsContentType());

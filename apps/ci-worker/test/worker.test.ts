@@ -39,10 +39,19 @@ describe('ci-worker modules', () => {
   it('selects a sandbox runner on this host', async () => {
     // Docker where a daemon exists, the Node permission model otherwise. One of
     // the two must always be available, so selection never legitimately fails.
+    //
+    // DockerSandbox.isAvailable() gives its own `docker info` probe up to 5s
+    // internally (docker-sandbox.ts). Vitest's default test timeout is also
+    // 5000ms, with zero margin between them — under CI load (this suite runs
+    // alongside the Integration Suite pulling Docker images concurrently), the
+    // outer test timeout can fire a hair before the inner probe would have
+    // resolved on its own, failing a test that was never actually broken. This
+    // call can run twice (selectSandboxRunner + isAvailable below), so the test
+    // timeout needs headroom for two 5s probes, not one.
     const runner = await selectSandboxRunner();
     expect(['docker', 'node-permission']).toContain(runner.name);
     expect(await runner.isAvailable()).toBe(true);
-  });
+  }, 15_000);
 
   it('records which runner produced a result', async () => {
     const res = await runInSandbox('c123', {});

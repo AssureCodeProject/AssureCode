@@ -18,7 +18,7 @@ so at runtime.
 
 | Phase | What happens | Where |
 |---|---|---|
-| 1 | Contract created, requirements embedded, genesis hash `H0` written | `api-gateway`, `ledger-client` |
+| 1 | Contract created, requirements embedded, genesis hash `H0` written | `api-gateway`,`ledger-client` |
 | 2 | Pushed code audited in an isolated sandbox (AST + dual-layer OWASP + generated tests) | `ci-worker`, `ai-service` |
 | 3 | Chat messages checked against the contract as originally hashed | `scope-guard` |
 | 4 | Explainable trust score computed from the audit signals | `ai-service` |
@@ -102,7 +102,7 @@ a top-level package named `app`, so collecting them together fails:
 
 ```bash
 cd apps/ai-service  && pytest tests -q     # 78 passed, 5 skipped
-cd apps/scope-guard && pytest tests -q     # 29 passed
+cd apps/scope-guard && pytest tests -q     # 29 passed ()
 ```
 
 ---

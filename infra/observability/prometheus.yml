@@ -67,3 +67,13 @@ scrape_configs:
       - targets: ["settlement-worker:5002"]
         labels:
           service: settlement-worker
+
+  # Server-level Redis metrics (used_memory, connected_clients,
+  # instantaneous_ops_per_sec, rejected_connections, ...) via redis_exporter,
+  # not the app services themselves — none of the six above expose Redis's
+  # own INFO output, only their own command-level spans.
+  - job_name: redis
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+        labels:
+          service: redis

@@ -169,9 +169,15 @@ export class RedisStreamsBus implements EventBus {
   // messages nobody has been given yet. Without a reclaim, that stream
   // entry is gone in practice even though it is still sitting in Redis.
   private readonly claimIdleMs = 15_000;
+  // Approximate cap (MAXLEN ~) applied to every topic and its .dlq partner on
+  // each XADD — without this, streams grew forever. Approximate rather than
+  // exact: Redis trims whole macro-nodes instead of counting on every write,
+  // which is the documented trade for keeping XADD cheap.
+  private readonly streamMaxLen: number;
 
-  constructor(redisUrl: string) {
+  constructor(redisUrl: string, streamMaxLen = 10_000) {
     this.client = new Redis(redisUrl, { lazyConnect: false, maxRetriesPerRequest: null });
+    this.streamMaxLen = streamMaxLen;
   }
 
   async publish(topic: string, payload: Record<string, unknown>, correlationId?: string): Promise<EventEnvelope> {
@@ -187,7 +193,15 @@ export class RedisStreamsBus implements EventBus {
     });
 
     try {
-      await this.client.xadd(topic, '*', 'envelope', JSON.stringify(envelope));
+      await this.client.xadd(
+        topic,
+        'MAXLEN',
+        '~',
+        String(this.streamMaxLen),
+        '*',
+        'envelope',
+        JSON.stringify(envelope),
+      );
       return envelope;
     } finally {
       span.end();
@@ -300,6 +314,9 @@ export class RedisStreamsBus implements EventBus {
 
       await this.client.xadd(
         dlqTopic,
+        'MAXLEN',
+        '~',
+        String(this.streamMaxLen),
         '*',
         'envelope',
         JSON.stringify(envelope),
@@ -754,6 +771,8 @@ export interface EventBusOptions {
   type?: 'memory' | 'redis' | 'kafka';
   redisUrl?: string;
   kafkaBrokers?: string[];
+  /** RedisStreamsBus only — see EVENT_STREAM_MAXLEN in @assurecode/config. */
+  streamMaxLen?: number;
 }
 
 /**
@@ -767,6 +786,7 @@ export function eventBusOptionsFromConfig(config: {
   EVENT_BUS_TYPE?: 'memory' | 'redis' | 'kafka';
   REDIS_URL: string;
   KAFKA_BROKERS: string;
+  EVENT_STREAM_MAXLEN?: number;
 }): EventBusOptions {
   const type = config.EVENT_BUS_TYPE ?? 'redis';
   // Only the field for the chosen type is populated. createEventBus() below
@@ -784,7 +804,7 @@ export function eventBusOptionsFromConfig(config: {
   if (type === 'memory') {
     return { type: 'memory' };
   }
-  return { type: 'redis', redisUrl: config.REDIS_URL };
+  return { type: 'redis', redisUrl: config.REDIS_URL, streamMaxLen: config.EVENT_STREAM_MAXLEN };
 }
 
 /**
@@ -829,7 +849,10 @@ export function createEventBus(redisUrlOrOptions?: string | EventBusOptions): Ev
     return new KafkaBus(redisUrlOrOptions.kafkaBrokers || ['localhost:9092']);
   }
   if (redisUrlOrOptions?.type === 'redis' || redisUrlOrOptions?.redisUrl) {
-    return new RedisStreamsBus(redisUrlOrOptions.redisUrl || 'redis://localhost:6379');
+    return new RedisStreamsBus(
+      redisUrlOrOptions.redisUrl || 'redis://localhost:6379',
+      redisUrlOrOptions.streamMaxLen,
+    );
   }
   return new InMemoryBus();
 }

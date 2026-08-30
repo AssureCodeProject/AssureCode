@@ -30,6 +30,9 @@ spec:
     - port: 6379
       targetPort: 6379
       name: redis
+    - port: 9121
+      targetPort: 9121
+      name: metrics
   selector:
     app: redis
 ---
@@ -87,6 +90,39 @@ spec:
           volumeMounts:
             - name: redis-data
               mountPath: /data
+        # Server-level metrics (used_memory, connected_clients, ops/sec,
+        # rejected_connections, ...) — see infra/docker-compose.yml's redis-exporter
+        # for why this exists: command-level tracing says nothing about the
+        # server itself. Same pod as redis so REDIS_ADDR can stay localhost.
+        - name: redis-exporter
+          image: oliver006/redis_exporter:v1.62.0
+          env:
+            - name: REDIS_ADDR
+              value: redis://localhost:6379
+          ports:
+            - containerPort: 9121
+              name: metrics
+          # TCP rather than an HTTP path: same reasoning as the otel-collector
+          # probe below — proving the exporter is accepting connections is the
+          # failure that matters (Prometheus reading stale/no data), without
+          # asserting a specific health route this image may or may not ship.
+          livenessProbe:
+            tcpSocket:
+              port: 9121
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
   volumeClaimTemplates:
     - metadata:
         name: redis-data

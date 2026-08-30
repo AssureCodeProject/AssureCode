@@ -382,6 +382,10 @@ export function ContractInitialization({
   const [pendingContract, setPendingContract] = useState(null);
   const [matchError, setMatchError] = useState(null);
   const [assigningId, setAssigningId] = useState(null);
+  // Set when /match fell back to trust-score-only ranking (ai-service or its
+  // graph backend was unreachable) — see server.ts's `degradedReason`. Skill
+  // and history terms in that response are genuinely unmeasured, not zero.
+  const [matchDegradedReason, setMatchDegradedReason] = useState(null);
 
   // PDF upload state. pdfRawText is the full extracted document, sent at
   // initialize time and stored in contracts.pdf_raw_text separately from
@@ -471,6 +475,7 @@ export function ContractInitialization({
 
     setIsMatching(true);
     setMatchError(null);
+    setMatchDegradedReason(null);
 
     try {
       const initResponse = await callApi('/api/contracts/initialize', 'POST', {
@@ -510,6 +515,7 @@ export function ContractInitialization({
 
       setPendingContract(initResponse);
       setCandidates(matchResponse.results || []);
+      setMatchDegradedReason(matchResponse.degraded ? matchResponse.degradedReason : null);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error('Contract initialization / matching failed:', error);

@@ -30,10 +30,10 @@ The 2.5 default threshold is a placeholder — it was never selected on data. A
 fair run of this baseline needs the threshold fit on T2 exactly as the cosine
 threshold was, otherwise the comparison is rigged against it.
 
-History: an earlier docstring described this as a component of the "QR-NGC
-Protocol" and claimed it "provides zero hierarchical distortion". QR-NGC is
-withdrawn (see docs/NEXTGEN_RESEARCH_PARADIGM.md) and the distortion claim was
-never measured. Both are removed rather than carried forward.
+History: an earlier docstring described this as a component of a since-withdrawn
+"QR-NGC Protocol" and claimed it "provides zero hierarchical distortion". The
+distortion claim was never measured. Both are removed rather than carried
+forward.
 """
 from __future__ import annotations
 

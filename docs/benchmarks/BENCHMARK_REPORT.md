@@ -10,6 +10,16 @@ falling back to simulation, so an absent report means the run did not happen.
 
 > **Redis was not configured for this run** (`readiness.redis = "not_configured"`), so the gateway used the in-process event bus. Every latency below therefore excludes network hops to a broker and understates a deployed configuration.
 
+> **Superseded scope-guard numbers.** This run predates the `chunk_text` fix
+> and threshold recalibration (`tools/calibrate_scope_threshold.py`,
+> τ 0.2731 → 0.3056). The scope-guard accuracy/precision/recall/F1 figures
+> below (36% / 100% / 20% / 33.33%) are the documented **before** state, cited
+> as such in `ARCHITECTURE.md`, `DEMO.md`, and `docs/plan2.md`, which all report
+> the current figures (68% / 100% / 60% / 75%) instead. This file has not been
+> regenerated since the fix — re-run
+> `node tools/benchmark.js && python tools/analyze_benchmark.py` to produce a
+> current report rather than trusting the prose elsewhere.
+
 ---
 
 ## 1. Run summary

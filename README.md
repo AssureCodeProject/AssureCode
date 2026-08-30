@@ -1,6 +1,6 @@
 # AssureCode (Trust-Code 2.0) — Zero-Trust Event-Driven Freelance Escrow
 
-> Version 1.0.0-alpha.0 · Node 20+ / TypeScript · Python 3.11 / FastAPI · React 18 / Vite
+> Version 1.0.0-alpha.0 · Node 22+ / TypeScript · Python 3.11 / FastAPI · React 18 / Vite
 
 AssureCode replaces subjective freelance-platform ratings with measurements a
 third party can re-derive: a tamper-evident cryptographic ledger, an ephemeral
@@ -57,8 +57,8 @@ AssureCode/
 ├── infra/
 │   ├── docker-compose.yml    Full stack: data plane + 7 services + observability
 │   ├── docker/               8 Dockerfiles
-│   ├── k8s/                  15 manifests + secrets overlays
-│   ├── migrations/postgres/  V001 … V014, forward-only
+│   ├── k8s/                  18 manifests + secrets overlays
+│   ├── migrations/postgres/  V001 … V021, forward-only
 │   └── observability/        otel-collector, Prometheus, Grafana provisioning
 │
 ├── tools/                    Evaluation, verification and benchmark harnesses
@@ -101,7 +101,7 @@ Python suites run per service, from that service's own directory — both declar
 a top-level package named `app`, so collecting them together fails:
 
 ```bash
-cd apps/ai-service  && pytest tests -q     # 78 passed, 5 skipped
+cd apps/ai-service  && pytest tests -q     # 223 passed, 20 skipped
 cd apps/scope-guard && pytest tests -q     # 29 passed ()
 ```
 
@@ -110,8 +110,8 @@ cd apps/scope-guard && pytest tests -q     # 29 passed ()
 ## Status & Limitations
 
 Measured results, the honest versions, are in
-[docs/FINAL_PROJECT_REPORT.md](docs/FINAL_PROJECT_REPORT.md). The load-bearing
-caveats:
+[docs/plan2.md](docs/plan2.md)'s "known functional gaps" and
+[docs/benchmarks/](docs/benchmarks/). The load-bearing caveats:
 
 - **The drift detector runs on a synthetic calibration set.** `/scope/drift`
   answers instead of returning 503, but the residuals it compares against are
@@ -128,10 +128,14 @@ caveats:
   weights rank 66th of 231 in the ablation.
 - **KYC approves everything.** `packages/kyc-adapter` has one implementation and
   it is `FakeKycAdapter`. No vendor is wired.
-- **There is no payout leg.** Settlement *captures* the client's authorised
-  payment to the platform. Nothing transfers it onward to the freelancer.
+- **The payout leg is proven in test mode, not production.** A real payout has
+  run end-to-end against RazorpayX's test-mode sandbox with a verified signed
+  webhook; only live (non-test) credentials remain, gated on the project
+  owner's business KYC — see `docs/PENDING_WORK.md`.
 - **Dispute/arbitration is not implemented** and the UI button says so.
-- **CI does not deploy.** Images are built and discarded (`push: false`).
+- **CI only deploys on a version tag.** `container-build` pushes images to the
+  registry when the ref is a `v*` tag; ordinary branch/PR builds still discard
+  them.
 - **17 legacy ledger rows** predate canonicalization and cannot be made
   retroactively verifiable — see `npm run ledger:legacy`, which seals rather
   than backfills them.
@@ -144,15 +148,11 @@ caveats:
 - **Tracing stops at the Python boundary** — `ai-service` and `scope-guard`
   export metrics but no OTel spans.
 
-Retracted claims — do not cite: the QR-NGC paradigm
-([docs/NEXTGEN_RESEARCH_PARADIGM.md](docs/NEXTGEN_RESEARCH_PARADIGM.md)), the
-AZK-MACP protocol
-([docs/NOVEL_RESEARCH_METHODOLOGY.md](docs/NOVEL_RESEARCH_METHODOLOGY.md)), and
-every figure in
-[docs/RESEARCH_PERFORMANCE_ANALYSIS.md](docs/RESEARCH_PERFORMANCE_ANALYSIS.md),
-which are projections rather than measurements and say so themselves. ML-DSA-87
-Merkle-root signing is the one claim from that line of work that was retained
-and made real.
+Retracted claims — do not cite: an earlier line of documentation described a
+"QR-NGC paradigm," an "AZK-MACP protocol," and performance figures that were
+projections rather than measurements. Those documents have been removed rather
+than kept around to be mis-cited. ML-DSA-87 Merkle-root signing is the one
+claim from that line of work that was retained and made real.
 
 ---
 
@@ -160,13 +160,11 @@ and made real.
 
 | Document | Purpose |
 |---|---|
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Services, data flow, and the decisions behind them |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Services, data flow, data model, formulas, and the decisions behind them |
 | [RUNBOOK.md](RUNBOOK.md) | Running, operating and debugging the stack |
-| [DEMO.md](DEMO.md) | End-to-end walkthrough |
+| [DEMO.md](DEMO.md) | End-to-end walkthrough + defending it under questions |
 | [CHANGELOG.md](CHANGELOG.md) | Release history |
+| [docs/plan.md](docs/plan.md) / [docs/plan2.md](docs/plan2.md) | Execution plan and status audit — what's built, what's not, and why |
 | [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) | Trust boundaries, attacker model, mitigations |
-| [docs/ASSURECODE_COMPLETE_TECHNICAL_SPECIFICATION.md](docs/ASSURECODE_COMPLETE_TECHNICAL_SPECIFICATION.md) | Authoritative spec — formulas, schema, results |
-| [docs/FINAL_PROJECT_REPORT.md](docs/FINAL_PROJECT_REPORT.md) | Measured results and what is not done |
-| [docs/ZERO_TRUST_LOOPHOLE_AUDIT.md](docs/ZERO_TRUST_LOOPHOLE_AUDIT.md) | Attack-vector audit |
 | [docs/benchmarks/](docs/benchmarks/) | Benchmark and matchmaking reports + raw JSON |
-| [docs/architecture_overview.md](docs/architecture_overview.md) | *Historical, superseded* |
+| [docs/PENDING_WORK.md](docs/PENDING_WORK.md) | Current functional-completeness status |

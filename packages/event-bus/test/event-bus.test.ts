@@ -98,8 +98,7 @@ describe('eventBusOptionsFromConfig', () => {
 });
 
 describe('KafkaBus — publish must never silently drop', () => {
-  // Regression guard for the bug documented in docs/HANDOFF_32GB_TESTING.md:
-  // kafkajs was loaded with require() inside this ESM package, the resulting
+  // Regression guard: kafkajs was loaded with require() inside this ESM package, the resulting
   // ReferenceError was swallowed by a catch, and `producer` stayed undefined.
   // An `if (this.producer)` guard in publish() then made every send a no-op, so
   // EVENT_BUS_TYPE=kafka discarded the whole event stream with zero errors

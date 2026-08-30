@@ -7,7 +7,7 @@
 #
 # Note on the drift endpoint: the conformal detector is uncalibrated in this
 # repository and deliberately answers 503 rather than substituting a default
-# threshold (docs/FINAL_PROJECT_REPORT.md §6). That is a correct 503, not an
+# threshold (docs/THREAT_MODEL.md T11). That is a correct 503, not an
 # unhealthy pod — which is why the probes below target /healthz and nothing
 # here treats a failing /drift as a reason to restart the container.
 # =============================================================================

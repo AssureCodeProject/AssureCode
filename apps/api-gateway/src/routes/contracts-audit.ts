@@ -17,7 +17,6 @@ import {
   serviceCallHeaders,
   latestAuditPayload,
   contractPartyOnly,
-  freelancerOwnerOnly,
 } from '../context.js';
 
 export function registerContractsAuditRoutes(server: FastifyInstance): void {
@@ -264,7 +263,7 @@ module.exports = { add };
     Params: { contractId: string };
     Body: { code?: string };
     Reply: { message: string; eventId: string } | { error: string };
-  }>('/api/contracts/:contractId/simulate-push', freelancerOwnerOnly, async (request, reply) => {
+  }>('/api/contracts/:contractId/simulate-push', contractPartyOnly, async (request, reply) => {
     const { contractId } = request.params;
     const callerCode = request.body?.code?.trim();
     const code = callerCode || SIMULATED_PUSH_DEMO_CODE;

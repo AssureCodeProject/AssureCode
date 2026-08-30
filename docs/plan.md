@@ -14,7 +14,8 @@
 >   replacement: capture moves money to the platform and there is no payout leg.
 > * **The oracle evaluates six signals, not five.** Task 5.1 describes
 >   "AST/Tests/Security/Scope/Video". There is no video signal — the visual-proof
->   mechanism was withdrawn (see `docs/NEXTGEN_RESEARCH_PARADIGM.md`).
+>   mechanism was withdrawn (it returned `verified: true` and hashed a string,
+>   not a recording; the doc describing that withdrawal has since been removed).
 >   `packages/oracle` evaluates AST, tests, security, scope, `trustScore >= 85`
 >   and `criticalVulns === 0`.
 > * **LLM providers are Cloudflare Workers AI only.** The Gemini and OpenAI

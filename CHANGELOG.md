@@ -138,10 +138,10 @@ entries existed for an adapter `get_graph_repo()` never constructed.
   `webhook-ingest`, `packages/oracle`, `razorpay-adapter`, `kyc-adapter` and
   `infra/` entirely.
 - `apps/ai-service/app/services/hyperbolic.py` docstring no longer describes the
-  module as part of the "QR-NGC Protocol" (withdrawn — see
-  `docs/NEXTGEN_RESEARCH_PARADIGM.md`) or claims "zero hierarchical distortion"
-  (never measured). It now documents the projection caveat: L2-normalised
-  embeddings all clamp to the same shell near the boundary.
+  module as part of a since-withdrawn "QR-NGC Protocol" or claims "zero
+  hierarchical distortion" (never measured). It now documents the projection
+  caveat: L2-normalised embeddings all clamp to the same shell near the
+  boundary.
 - `apps/ai-service/app/__init__.py` no longer describes the package as a
   "STUB (task 0.1)" whose real implementation "lands across Sprints 1, 2, 3, 4".
 - **The 17 legacy ledger rows are sealable, not backfillable.** They were hashed
@@ -153,14 +153,13 @@ entries existed for an adapter `get_graph_repo()` never constructed.
   verifiable entry committing to their hashes, converting "17 rows are
   unverifiable" into "17 rows are not independently verifiable but have been
   immutable since <date>".
-- The authoritative spec no longer says Stripe. Six references to
-  `stripe-adapter`, `StripeEscrowAdapter` and `capture_method: 'manual'` in
-  `docs/ASSURECODE_COMPLETE_TECHNICAL_SPECIFICATION.md` now describe Razorpay,
-  and the settlement section states that capture reaches the platform only.
-- `docs/plan.md` and `docs/architecture_overview.md` gained correction headers
-  for the claims they still carry: Stripe Connect payouts, a "5-signal oracle"
-  (it is six, and there is no video signal), and the removed Gemini/OpenAI
-  adapters.
+- The technical documentation no longer says Stripe. Six references to
+  `stripe-adapter`, `StripeEscrowAdapter` and `capture_method: 'manual'` across
+  the docs now describe Razorpay, and the settlement section states that
+  capture reaches the platform only.
+- `docs/plan.md` gained a correction header for the claims it still carried:
+  Stripe Connect payouts, a "5-signal oracle" (it is six, and there is no video
+  signal), and the removed Gemini/OpenAI adapters.
 
 ### Fixed
 - **`apps/scope-guard`'s published image could not start.** `prometheus-client`
@@ -217,11 +216,16 @@ entries existed for an adapter `get_graph_repo()` never constructed.
   LLM response with prompt instructions leaked into it.
 
 ### Deferred CI/CD work (deliberately out of scope, recorded so it is not rediscovered)
-- **No CD.** Images are still built with `push: false`; there is no registry
-  login, no deploy job, no `environment:`, no tag trigger and no release
-  workflow. Manifests are validated and never applied.
-- **Trivy is soft-failed** (`exit-code: '0'`), so CRITICAL/HIGH container
-  findings report but cannot block.
+- **No CD, though the push gate has since landed.** `container-build` now
+  pushes on a `v*` tag push (conditional on `startsWith(github.ref,
+  'refs/tags/v')`); an ordinary branch/PR build still discards its images.
+  There is still no registry login step, no deploy job, no `environment:`,
+  and no dedicated release workflow — manifests are validated and never
+  applied, and no tag has actually been cut yet to exercise the push path.
+- **Trivy now has a real gate.** A second Trivy step runs with `exit-code: '1'`
+  on `CRITICAL` findings (`ignore-unfixed`), alongside the original advisory
+  full-report scan (`exit-code: '0'`) — CRITICAL blocks the build; HIGH still
+  only reports.
 - **No Redis service in the `test` job**, so `packages/event-bus`'s retry/DLQ
   suite — the only coverage of that logic — silently skips in CI.
 - **The two `pip install -e` steps are order-dependent**: scope-guard's tests

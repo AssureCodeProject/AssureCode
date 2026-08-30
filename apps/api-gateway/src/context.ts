@@ -322,12 +322,6 @@ export const settlementGuards = {
   ],
 };
 export const freelancerOnly = { preHandler: requireRole(['freelancer']) };
-// Freelancer *and* the specific contract's assigned freelancer — for actions
-// (like triggering a simulated push into the CI pipeline) that only the
-// person actually doing the work on that contract should be able to take.
-export const freelancerOwnerOnly = {
-  preHandler: [requireRole(['freelancer']), requireContractParty(dbPool, ['freelancer'])],
-};
 // Read access shared by both sides of a contract — its client and its
 // assigned freelancer (or admin) — with no role restriction beyond that,
 // since either party legitimately needs to read the same ledger/score/oracle

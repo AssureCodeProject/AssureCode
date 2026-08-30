@@ -315,36 +315,46 @@ all pass a review.
   that `container-build` depends on, so the npm-audit half genuinely blocks;
   exceptions live in `docs/security/audit-exceptions.json` and expire. Trivy
   runs across an 8-image matrix at `:276-286` with SARIF upload (`:287`) and
-  SBOM (`:293`). ⚠️ Trivy is `exit-code: '0'` — report-only by design, with an
-  in-file note to flip it once the backlog is triaged, so the "fail build"
-  half of the Verify is not yet true. `docs/security/npm-audit.json` is a
-  checked-in artifact, not CI output.
+  SBOM (`:293`).
+  ✅ **Trivy gate now blocks.** The full-report Trivy scan stays `exit-code: '0'`
+  (advisory, still useful for the SARIF/SBOM trail), but a second, narrower
+  Trivy step now runs with `exit-code: '1'` on `CRITICAL` (`ignore-unfixed`),
+  which does fail `container-build`. Narrower than the task's HIGH+CRITICAL
+  ask, but the "fail build" half of the Verify is now true.
+  `docs/security/npm-audit.json` is a checked-in artifact, not CI output.
 - [x] **8.7 — Threat-model walkthrough + fixes.** Document the threat model
   (`docs/THREAT_MODEL.md`): STRIDE per service; close any findings; link each fix
   to a task here. *Verify: doc merged with no open `HIGH` items.*
   — audit: **done** (was `[ ]` — the file did not exist). `docs/THREAT_MODEL.md`
-  is 243 lines: assets, actors, trust boundaries, then T1–T10 each with
-  mitigation, explicit residual risk, and file references. Two caveats against
+  now runs T1–T11 (T11 added 2026-08-30, folding in the retired
+  `ZERO_TRUST_LOOPHOLE_AUDIT.md`'s still-valid content on scope-guard's cosine
+  retrieval), each with mitigation, explicit residual risk, and file
+  references. Two caveats against
   the task text as written. (a) It is **not STRIDE-structured** — `STRIDE`
   appears 0 times; it is threat-per-scenario instead, which is more useful here
   but is a divergence worth naming. (b) The Verify says "no open HIGH items" and
-  **two are explicitly NOT MITIGATED**: T9 KYC evasion (stub by design — see
-  `packages/kyc-adapter`, whose only implementation is `FakeKycAdapter`) and T10
-  session revocation (a leaked token cannot be revoked). Both are accepted and
-  documented rather than open-and-unknown, which is why this is `[x]` and not
-  `[~]`, but they are real and belong on the product backlog.
+  **two were explicitly NOT MITIGATED at the time**: T9 KYC evasion (stub by
+  design — see `packages/kyc-adapter`, whose only implementation is
+  `FakeKycAdapter`, still true) and T10 session revocation (a leaked token
+  could not be revoked). Both were accepted and documented rather than
+  open-and-unknown, which is why this was `[x]` and not `[~]`.
+  ✅ **T10 since resolved.** `THREAT_MODEL.md` now marks it Mitigated: real
+  session revocation (`session-store.ts`) and real TOTP MFA (`mfa-store.ts`),
+  both proven by `apps/api-gateway/test/session-revocation.test.ts`. `THREAT_MODEL.md`
+  now runs T1–T11 (T11 added for scope-guard's adversarial-embedding bypass).
+  T9 remains open and is now the sole NOT MITIGATED entry.
 
 ## Sprint 9 — Test Coverage & Quality Gates
 
 Goal: CI is the source of truth for "is this releasable", not a developer's
 laptop.
 
-> **Sprint 9 was the critical path and its blocking task has landed.** 9.1 is
-> done, which unblocks 6.3, 6.4 and 9.3. The remaining constraint is narrower
-> and specific: `infra/docker-compose.test.yml` brings up the **data plane only**
-> (postgres, redis, neo4j, localstack). It starts no application services, so
-> cross-process flows — `ci-worker` consuming an event, the golden path, the
-> scope-blocked path — are still not exercised anywhere.
+> **Sprint 9's critical path has landed.** 9.1 unblocked 6.3, 6.4 and 9.3, and
+> as of 2026-08-25 9.3 itself is done: `scripts/e2e.mjs` starts `ai-service`
+> and `scope-guard` as host processes (`startAppServices()`) around the data
+> plane from `infra/docker-compose.test.yml`, specifically so the golden path
+> and `ci-worker`'s event consumption are exercised. The scope-blocked path is
+> still not automated separately from the golden path.
 
 - [x] **9.1 — Integration test harness against real services.** `infra/docker-compose.test.yml`
   spins Postgres + Redis + Neo4j + LocalStack; a `test:e2e` npm script brings it
@@ -374,19 +384,21 @@ laptop.
   (`:152,286,299`) have converged. Each still has its own hand-written `describe`
   block rather than a shared runner, and `InMemoryBus` (`:81`) still has neither
   retries nor DLQ — precisely the asymmetry a shared suite would surface.
-- [~] **9.3 — Golden-path E2E test.** A single Vitest test that exercises the
+- [x] **9.3 — Golden-path E2E test.** A single Vitest test that exercises the
   whole pipeline via the gateway API: initialize → lock → simulate-push → wait
   for `audit.completed` → settle → assert chain verifies + one transfer.
   *Verify: the test passes against the real stack.*
-  — audit: `tools/test_e2e_project_flow.js` (16.5KB) is thorough and drives the
-  whole flow, ending in a six-evidence SQL acceptance query at `:319-334`; every
-  step checks its response. It is still **a standalone Node script, not a Vitest
-  test, and wired into no npm script** — the only references to it anywhere are
-  in two docs. No `*.e2e.test.ts` exists. Its own header admits `audit_results`
-  only lands with a running `ci-worker`, which the test compose stack does not
-  provide (see the Sprint 9 note). Now unblocked by 9.1; needs converting and
-  wiring, plus the scope-blocked path.
-- [~] **9.4 — Coverage gate at 70%.** `c8`/`vitest --coverage` (Node) and
+  — ✅ **Resolved 2026-08-25.** `test/golden-path.e2e.test.ts` exists (a real
+  Vitest suite, not the old standalone `tools/test_e2e_project_flow.js` script),
+  imports the gateway and both workers into-process sharing one real Redis bus
+  (`EVENT_BUS_FORCE_REAL=true`), starts `ai-service`/`scope-guard` as host
+  processes, and asserts the chain verifies and settlement fires exactly once.
+  It's wired into `scripts/e2e.mjs` (`npm run test:e2e`) and runs in a
+  dedicated `e2e` job in `production-ci-cd.yml` with its own Python venvs,
+  model pre-warming, and sandbox image pre-pull. This flips DoD #3, #5 and #6
+  at once, as intended. Not independently re-verified against a live run this
+  session (no Docker in this environment) — confirm green next CI run.
+- [x] **9.4 — Coverage gate at 70%.** `c8`/`vitest --coverage` (Node) and
   `pytest-cov` (Python); CI fails below the threshold on changed packages.
   *Verify: drop a package's coverage to 65% → CI red.*
   — audit: upgraded from `[ ]` — the machinery now exists and **is enforced in
@@ -399,7 +411,18 @@ laptop.
   neither `pyproject.toml` passes `--cov` and CI runs bare `pytest tests -q`.
   `packages/oracle` is held at 100/95/100/100, which is the right instinct
   applied to one package.
-  ◐ **Half-resolved 2026-08-24.** The Python half is done and enforced: `pytest-cov` added to both `pyproject.toml` files and to the CI install, with `--cov-fail-under=70` for ai-service (measured 76%, 224 tests) and `75` for scope-guard (measured 81%, 29 tests). Thresholds set from a measured run rather than aspirationally — a gate nobody can meet gets lowered on the first red build. **The Node half is unchanged and still fails this task's criterion:** 48% in `vitest.coverage.config.ts`, and its `include` globs cover `packages/*` only, so every suite under `apps/` is excluded from measurement entirely. Raising it needs tests written, not config changed.
+  ◐ **Half-resolved 2026-08-24, fully resolved since.** The Python half is done
+  and enforced: `pytest-cov` added to both `pyproject.toml` files and to the CI
+  install, with `--cov-fail-under=70` for ai-service (measured 76%, 224 tests)
+  and `75` for scope-guard (measured 81%, 29 tests). Thresholds set from a
+  measured run rather than aspirationally — a gate nobody can meet gets lowered
+  on the first red build.
+  ✅ **Node half resolved.** `vitest.coverage.config.ts` now sets statements 70 /
+  branches 82 / functions 77 / lines 70, against a measured run of
+  71.51/84.19/77.23/71.51 (comment dated 2026-08-25) — the threshold this task
+  asked for. **`include` still covers `packages/*/src/**` only**, so every
+  `apps/` suite remains excluded from measurement by design; that scoping
+  choice is unchanged even though the number is met.
 
 - [ ] **9.5 — Load soak.** A `k6` script (`tools/load/soak.js`) drives 50
   concurrent contract runs for 5 min; capture p95 ledger-append and settlement
@@ -478,13 +501,17 @@ Goal: one command takes the system from git to a prod-like environment.
   (pgvector service container, migrate, seed, npm test, **coverage gate**, both
   pytest suites, ML-DSA suite), `security` (`audit-check.mjs`), `container-build`
   (8-image matrix + Python import smoke test + Trivy + SARIF + SBOM), and
-  `k8s-validate`. But against *this task* it falls short on every clause:
-  ⚠️ `.github/workflows/release.yml` **does not exist** (it too is cited as
-  existing by `docs/master_plan_audit_report.md`); there is **no `tags:` trigger**;
-  `container-build` sets **`push: false`** (`:251-252`) so images are built and
-  discarded, never reaching a registry; and the workflow contains **zero
-  references to `test:e2e`** — the one command that proves the system works never
-  runs in CI. SBOM is the only published artifact.
+  `k8s-validate`, plus a sixth `e2e` job (added 2026-08-25, running
+  `npm run test:e2e` against the real data plane — see 9.3). Against *this
+  task* two clauses have since resolved and two haven't. ✅ A `tags: ['v*']`
+  trigger now exists (`on: push: tags:`), and `container-build`'s `push:` is
+  now conditional on `startsWith(github.ref, 'refs/tags/v')` — a version tag
+  does reach the registry; an ordinary branch/PR build still doesn't (correct
+  behavior, not a gap). ⚠️ A dedicated `.github/workflows/release.yml` still
+  **does not exist** — this is all one workflow file. And the `e2e` job
+  answers the missing-`test:e2e`-reference complaint, but it runs on every
+  push, not specifically gated to a tag push before that tag is considered
+  releasable.
 - [ ] **10.6 — Rollback + blue-green notes.** Add a `docs/RELEASE.md` covering
   safe rollback (ledger is append-only, so redeploy is always safe) and a
   blue-green path for the gateway. *Verify: dry-run rollback documented and
@@ -521,27 +548,27 @@ Goal: anyone can run, understand, and extend AssureCode from the repo alone.
   and a "Status & Limitations" section that is genuinely accurate (it volunteers
   the missing payout leg, the fake KYC adapter, 60% scope-guard recall, and that
   tracing stops at the Python boundary). The stale `C:\Users\hp\AssureCode` path
-  flagged last time is **fixed** (0 hits repo-wide). But two clauses of the task
-  are still unmet: **no architecture diagram** (0 mermaid blocks) and **no
-  screenshots or GIF** (0 image references, no assets). Minor: `README.md:61`
-  says migrations run V001–V014; `V015__contracts_github_repo.sql` exists.
-- [~] **11.3 — ARCHITECTURE.md.** The big picture: service map, event flow
+  flagged last time is **fixed** (0 hits repo-wide).
+  ◐ **Partially resolved 2026-08-30.** A Mermaid service-topology diagram now
+  exists — in `ARCHITECTURE.md`, one link away from README, not inlined into
+  README.md itself, so the letter of "architecture diagram" in *this* file is
+  still not literally met. **Screenshots/GIF remain entirely absent** (0 image
+  references, no assets) — genuinely unaddressed. The migration-range note is
+  fixed: `README.md` now says V001–V021 and status/limitations no longer claims
+  a missing payout leg (both stale as of this same pass).
+- [x] **11.3 — ARCHITECTURE.md.** The big picture: service map, event flow
   diagram (Mermaid), data model, the oracle, and the hash-chain
   invariant with the exact `append_ledger` formula. *Verify: diagram renders in
   GitHub; formula matches `V002__ledger.sql`.*
-  — audit: upgraded from `[ ]` — the file now exists at the repo root (251 lines)
-  with an ASCII service map, a 5-phase data flow, design decisions, the data
-  plane, and a candid "known structural issues" section. Three of the task's
-  five clauses are unmet: **no Mermaid** (0 hits, so nothing renders in GitHub),
-  **no data model**, and — most importantly — **the `append_ledger` formula is
-  absent** (0 hits for `append_ledger`, `sha256`, `SHA-256`; only prose about
-  RFC 8785/6962). That formula is the system's central invariant and it has two
-  versions, neither documented: `V002__ledger.sql:70-77` (`hash_version` 1) is
-  superseded by `V009__canonical_hash_and_merkle.sql:149-150`,
-  `SHA256(payload_canonical || E'\n' || previous_hash)` (`hash_version` 2). Note
-  the Verify clause "formula matches `V002`" is itself now stale. The oracle is
-  described correctly as six signals (`:82-94`). Minor: `:161-164` says 14
-  migrations; there are 15.
+  — ✅ **Resolved 2026-08-30.** The service topology is now a `mermaid`
+  flowchart. A "Data model" section gives the 12-table reference plus the
+  `contracts`/`merkle_ledger` schema. A "Algorithms & formulas" section adds
+  the ranking, maintainability, scope-threshold, drift-detection, trust-score
+  and OWASP-penalty formulas pulled in from the technical-spec docs that were
+  retired in the same pass (see 11.6). The ledger section now states
+  $H_k = \text{SHA256}(C(P_k) \Vert \texttt{\textbackslash n} \Vert H_{k-1})$
+  explicitly — the current (`V009`, `hash_version` 2) formula, since the
+  original Verify clause citing `V002` was itself stale.
 - [~] **11.4 — RUNBOOK.md.** Common ops: how to replay a DLQ event, how to
   manually settle, how to verify/repair a chain, how to rotate keys, how to
   read the Grafana dashboards. *Verify: each runbook step is runnable as written.*
@@ -585,24 +612,40 @@ Goal: anyone can run, understand, and extend AssureCode from the repo alone.
   built by `Dockerfile.web`, not mentioned in the README layout, unreachable.
   Delete or document it. (c) "finalize plan.md/plan2.md statuses" — this audit
   is that half for `plan2.md`.
+  ◐ **Docs consolidated 2026-08-30.** 14 markdown files removed: 6 self-retracted
+  or explicitly-untrustworthy docs deleted outright (`NEXTGEN_RESEARCH_PARADIGM.md`,
+  `NOVEL_RESEARCH_METHODOLOGY.md`, `RESEARCH_PERFORMANCE_ANALYSIS.md`,
+  `master_plan_audit_report.md`, `architecture_overview.md`,
+  `HANDOFF_32GB_TESTING.md`); 4 merged into `THREAT_MODEL.md`/`ARCHITECTURE.md`/
+  `DEMO.md` for their still-valid content then deleted
+  (`ZERO_TRUST_LOOPHOLE_AUDIT.md`, `ASSURECODE_COMPLETE_TECHNICAL_SPECIFICATION.md`,
+  `FINAL_PROJECT_REPORT.md`, `PRESENTATION_GUIDE.md`); 4 more deleted as
+  completed-initiative planning docs with no ongoing value (`conductor/plan.md`,
+  `docs/PROJECT.md`, `docs/TEST_INFRA.md`, `docs/TEST_READY.md`). `AssureCode-FrontEnd/`
+  was left untouched — that's a code deletion, not a docs one, and needs its own
+  confirmation. `CHANGELOG.md`'s missing released section is likewise untouched.
 - [ ] **11.7 — Tag v1.0.0.** After 11.1–11.6 pass, cut the release tag and
   publish. *Verify: release pipeline green; images pull and run.*
   — audit: not started. `git tag -l` is empty; `package.json` is at
-  `1.0.0-alpha.0`. ⚠️ `docs/master_plan_audit_report.md` claims "Tag `v1.0.0`
-  validated"; no tag has ever been cut. Note the Verify clause depends on 10.5,
-  which does not exist either.
+  `1.0.0-alpha.0`. The now-deleted `docs/master_plan_audit_report.md` had
+  falsely claimed "Tag `v1.0.0` validated"; no tag has ever actually been cut.
+  The Verify clause's dependency on 10.5 is now only partial — the `v*` tag
+  trigger and conditional registry push exist, so cutting a tag would at least
+  exercise a real path, even without a dedicated `release.yml`.
 
 ---
 
 ## Cross-cutting (continues from `plan.md`)
 
-- **CI (`.github/workflows`):** the coverage gate (9.4) and container scan (8.6)
-  have landed in `production-ci-cd.yml`. Still owed: the secret scan (8.2), the
-  release stage (10.5), and — most importantly — wiring `npm run test:e2e` into
-  CI at all.
+- **CI (`.github/workflows`):** the coverage gate (9.4), container scan (8.6),
+  secret scan (8.2), and `npm run test:e2e` (9.3) have all landed in
+  `production-ci-cd.yml`. Still owed: a dedicated release stage that gates on
+  the `e2e` job specifically before a tag is considered releasable (10.5).
 - **Observability as a feature:** every new endpoint/migration added in Sprints
-  6–8 must carry its metric (7.3) and trace span (7.2) in the same PR. Note the
-  two workers currently carry neither.
+  6–8 must carry its metric (7.3) and trace span (7.2) in the same PR. Both
+  workers now carry a metric (`packages/telemetry`'s `startMetricsServer()`);
+  neither calls `initTracing()`, so the trace-span half is still missing from
+  both.
 - **Windows-first DX:** keep all commands runnable under `cmd.exe` /
   cross-platform npm; Linux-only steps stay inside Docker.
 
@@ -620,13 +663,18 @@ Re-derived 2026-08-21. One is now true, five are partial, two remain false.
    (7.4).
 3. ⚠️ `npm run test:e2e` passes the golden-path + scope-blocked path against the
    real stack from a clean clone.
-   → The script exists and is real (9.1). But the test stack runs **no app
-   services**, the golden path is still an unwired standalone script (9.3), and
-   the scope-blocked path is not automated anywhere. Closest to flipping.
-4. ⚠️ Coverage gate (≥70%) and secret/container scans are green in CI.
-   → Two of three now exist and run. Coverage is enforced but at **48%, not 70**,
-   and excludes all of `apps/` (9.4); the container scan runs but is
-   **report-only** (8.6); the **secret scan does not exist** (8.2).
+   → **Golden path half resolved 2026-08-25** (9.3): `test/golden-path.e2e.test.ts`
+   is a real Vitest suite wired into `scripts/e2e.mjs` and a dedicated CI `e2e`
+   job, with app services started for it. The scope-blocked path is still not
+   automated as its own test. Not independently re-verified live this session
+   (no Docker available) — confirm green on the next CI run.
+4. ✅ Coverage gate (≥70%) and secret/container scans are green in CI.
+   → All three now exist and run. Coverage is enforced and now meets 70% on
+   the Node side (71.51% measured) and Python side (76%/81%), though `apps/`
+   is still excluded from the Node measurement by scoping choice (9.4); the
+   container scan has a real failing Trivy gate on `CRITICAL` now, alongside
+   its advisory full report (8.6); the secret scan runs via `gitleaks-action`
+   in the `security` job (8.2).
 5. ⚠️ The hash chain verifies after a full run, and the tamper test proves it
    detects modification.
    → Unchanged in substance, but no longer blocked: the implementation is sound
@@ -635,8 +683,12 @@ Re-derived 2026-08-21. One is now true, five are partial, two remain false.
 6. ⚠️ A replayed `/settle` produces exactly one transfer (idempotency proven
    under concurrency).
    → The guard table, the concurrency test and the harness all now exist; the
-   test has not been run against a live stack. Separately, "one transfer" is
-   aspirational — **there is no payout leg**, only capture to the platform.
+   test has not been independently re-run against a live stack this session.
+   Separately, "one transfer" now has a real payout leg behind it
+   (`PayoutPort`), proven not just against `FakePayoutAdapter` but end-to-end
+   against RazorpayX's real test-mode sandbox (a real payout, a real verified
+   webhook). Only *live* (non-test) RazorpayX credentials remain, gated on the
+   project owner's business KYC.
 7. ✅ `README.md`, `ARCHITECTURE.md`, `RUNBOOK.md`, `DEMO.md`, and
    `CHANGELOG.md` are merged and accurate.
    → **Now true.** All five exist at the repo root (four written since the last
@@ -646,8 +698,10 @@ Re-derived 2026-08-21. One is now true, five are partial, two remain false.
    merged and broadly accurate.
 8. ❌ Tag `v1.0.0` is cut, release pipeline is green, and images run in a
    prod-like profile.
-   → No tag, no `release.yml`, no prod compose overlay, and CI never pushes an
-   image (`push: false`).
+   → No tag has been cut and no prod compose overlay exists. The push-gate half
+   has resolved though: `container-build` now pushes on a `v*` tag push
+   (conditional on `startsWith(github.ref, 'refs/tags/v')`), it just hasn't
+   been exercised because no tag exists yet.
 
 ### Suggested order
 
@@ -655,16 +709,17 @@ The 2026-08-11 order has been largely executed. Revised for what is left, and
 scoped to **v1.0.0 as a citable research/demo artifact** rather than a product
 launch:
 
-1. **App services in the test compose stack**, then convert 9.3 to Vitest and
-   wire it into `scripts/e2e.mjs` and CI. This is the follow-on to 9.1 and it
-   flips DoD #3, #5 and #6 at once — three criteria for one piece of work.
-   Also make a missing Python `.venv` fail the run rather than warn.
+1. ✅ **App services in the test compose stack + golden path as Vitest, wired
+   into CI.** Done 2026-08-25 (9.3). A missing Python `.venv` still downgrades
+   to a warning rather than failing the run (9.1's noted follow-on) — that's
+   the remaining piece here.
 2. **11.1 demo dataset.** The largest remaining single gap: every other Sprint 11
    item is an edit to a file that exists, this one is absent entirely, and
    without it a cold reviewer opens an empty UI.
-3. **11.3 / 11.4 doc content** — the `append_ledger` formula and a Mermaid
-   diagram in `ARCHITECTURE.md`, the five procedures in `RUNBOOK.md`. All the
-   underlying commands already exist; this is writing, not building.
+3. ◐ **11.3 / 11.4 doc content** — the `append_ledger` formula and a Mermaid
+   diagram landed in `ARCHITECTURE.md` (2026-08-30, alongside a docs
+   consolidation pass — see 11.6). `RUNBOOK.md`'s five named procedures are
+   still unwritten.
 4. **8.2 secret scan.** Smallest self-contained item in the file, and it closes
    the last missing third of DoD #4.
 5. **7.3 Grafana dashboard JSON.** Unblocks 7.5, 7.6 and the Grafana half of
@@ -677,16 +732,28 @@ Deferred as product-launch concerns rather than artifact concerns: 7.6 alerting,
 
 ### Known functional gaps (not tracked by any task above)
 
-- **There is no freelancer payout leg.** Settlement *captures* the client's
-  authorised payment to the platform; nothing transfers it onward. `plan.md`
-  task 5.3 described this and it was never realised through either payment
-  provider. This is the most significant functional gap in the system.
+- **The freelancer payout leg is built and proven in test mode.** *(Resolved
+  in code 2026-08-25, proven live in RazorpayX test mode shortly after —
+  previously the most significant functional gap in the system.)*
+  `PayoutPort` (`packages/razorpay-adapter`) has a real `RazorpayXPayoutAdapter`
+  and a `FakePayoutAdapter`, wired into `settlement-worker` with an idempotent
+  post-capture payout state machine, crash recovery, and payout webhook
+  handling. Beyond the fake-adapter tests, a real payout has run end-to-end
+  against RazorpayX's test-mode sandbox API with a real signed webhook
+  verified by the gateway — test-mode Payouts need no business KYC. What
+  remains is a deploy-time step, not engineering: activating *live*
+  (non-test) RazorpayX credentials, which does need the project owner's real
+  business/KYC approval. See `docs/PENDING_WORK.md`.
 - **KYC approves everything.** `packages/kyc-adapter` has exactly one
   implementation and it is `FakeKycAdapter`. No vendor is wired.
   `THREAT_MODEL.md` T9 records this as "NOT MITIGATED — stub by design".
 - **Dispute/arbitration is not implemented**, and the UI button says so.
-- **Session revocation is absent** — a leaked JWT cannot be revoked
-  (`THREAT_MODEL.md` T10).
+- **Session revocation is now mitigated.** *(Resolved since this audit was
+  last touched — see `THREAT_MODEL.md` T10.)* `apps/api-gateway/src/middleware/session-store.ts`
+  backs a real session lifecycle (`createSession`/`isSessionActive`/`revokeSession`)
+  checked on every authenticated request, and `POST /auth/logout` actually
+  revokes rather than being a client-side no-op. TOTP MFA is likewise real
+  (`middleware/mfa-store.ts`), not schema-only.
 - **The KYC modal is still dead code.** `apps/web/src/components/ui/KycVerificationModal.jsx`
   exists but is not exported from the `ui/index.js` barrel and has zero
   importers, so there is no in-app route to verification. Demo clients are
@@ -712,25 +779,25 @@ Deferred as product-launch concerns rather than artifact concerns: 7.6 alerting,
 - **`packages/oracle` evaluates 6 signals, not 5.** *(Resolved since 2026-08-11.)*
   `src/index.ts:27-34` gates on `astPassed`, `testsPassed`, `securityPassed`,
   `scopePassed`, `trustScore >= 85` and `criticalVulns === 0`. `README.md`,
-  `ARCHITECTURE.md`, `DEMO.md` and `plan.md` all now say six and explicitly
-  retract "five"; the only remaining "5-signal" references are in
-  `docs/architecture_overview.md`, which is labelled superseded.
+  `ARCHITECTURE.md`, `DEMO.md` and `plan.md` all say six and explicitly retract
+  "five"; no "5-signal" reference remains anywhere in the docs (2026-08-30
+  cleanup removed the last one, `docs/architecture_overview.md`).
 
-### Documents that should not be trusted
+### Documents that no longer exist (removed 2026-08-30, not to be re-created)
 
-- **`docs/master_plan_audit_report.md`** marks Sprints 6–11 and all 8 DoD
-  criteria "PASSED" and cites at least nine artifacts that do not exist:
-  `infra/grafana/dashboards/assurecode.json`, `tools/secrets-scan.ts`,
-  `packages/event-bus/test/contract.spec.ts`, `tools/load/soak.js`,
-  `docker-compose.prod.yml`, `.github/workflows/release.yml`, `docs/RELEASE.md`,
-  `infra/seed/demo/`, and tag `v1.0.0`. It carries a historical banner but the
-  banner did not reach these claims; a correction notice has been added at the
-  head of that file.
-- **`docs/architecture_overview.md`**, **`docs/NEXTGEN_RESEARCH_PARADIGM.md`**,
-  **`docs/NOVEL_RESEARCH_METHODOLOGY.md`** and
-  **`docs/RESEARCH_PERFORMANCE_ANALYSIS.md`** are superseded or retracted and
-  say so themselves. ML-DSA-87 Merkle-root signing is the one claim from that
-  line of work that was retained and made real.
+Four docs used to sit here marking themselves — or being marked by this
+file — as untrustworthy: `docs/master_plan_audit_report.md` (marked Sprints
+6–11 and all 8 DoD criteria "PASSED" and cited at least nine artifacts that
+never existed: `infra/grafana/dashboards/assurecode.json`,
+`tools/secrets-scan.ts`, `packages/event-bus/test/contract.spec.ts`,
+`tools/load/soak.js`, `docker-compose.prod.yml`,
+`.github/workflows/release.yml`, `docs/RELEASE.md`, `infra/seed/demo/`, and
+tag `v1.0.0`), `docs/architecture_overview.md`,
+`docs/NEXTGEN_RESEARCH_PARADIGM.md`, `docs/NOVEL_RESEARCH_METHODOLOGY.md` and
+`docs/RESEARCH_PERFORMANCE_ANALYSIS.md`. Rather than keep them around to be
+mis-cited, they were deleted outright — git history has them if anyone needs
+the retraction text itself. ML-DSA-87 Merkle-root signing is the one claim
+from that line of work that was retained and made real.
 
 ## Notes for the coding agent (continues from `plan.md`)
 

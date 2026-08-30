@@ -4,8 +4,8 @@ An end-to-end run of the five-phase pipeline, from login to settlement. Takes
 about ten minutes. Everything runs offline on fake payment and KYC adapters —
 no credentials required, no money moves.
 
-For the oral-defence framing and expected questions, see
-[docs/PRESENTATION_GUIDE.md](docs/PRESENTATION_GUIDE.md). Read
+For expected questions and defensible answers, see
+[Defending it under questions](#defending-it-under-questions). Read
 [Honest caveats](#honest-caveats) before demonstrating this to anyone who will
 draw conclusions from it.
 
@@ -124,7 +124,7 @@ else.
 **What to point at.** `packages/oracle` is the single definition of the gate —
 `trustScore >= 85 && criticalVulns === 0` plus four CI booleans. The gateway
 reads it; the settlement worker acts on it; there is no second copy to drift.
-It has 28 unit tests at 100% statement coverage.
+It has 29 unit tests at 100% statement coverage.
 
 **Demonstrate the blocked path too.** It is more informative than the happy
 path. Send an out-of-scope message before settling, then try to release: the
@@ -132,8 +132,12 @@ verdict comes back with `scopePassed: false` and a blocker naming the rejected
 count. Settlement is refused.
 
 **Be honest.** "Release" is a Razorpay *capture* — it moves money from the client
-to the platform. There is no transfer onward to the freelancer; no payout leg
-exists in the codebase. The escrow is not, in the end, released to anyone.
+to the platform. A payout leg now exists (`PayoutPort`, wired into
+`settlement-worker` with idempotent crash recovery), and it's been proven
+end-to-end against RazorpayX's real test-mode sandbox (a real payout, a real
+signed webhook, verified by the gateway) — test-mode needs no KYC. Only *live*
+(non-test) credentials remain, gated on the project owner's real business KYC.
+See [docs/PENDING_WORK.md](docs/PENDING_WORK.md).
 
 ## Optional: prove the ledger is tamper-evident
 
@@ -159,11 +163,40 @@ Say these out loud rather than waiting to be asked:
   Arbitration is not implemented.
 - KYC approves everyone unconditionally — `FakeKycAdapter` is the only
   implementation.
-- `/drift/status` returns 503. The CUSUM parameters are null and no T2
-  calibration set exists, so no false-alarm rate can be reported.
+- The drift endpoint (`GET /scope/drift/{contract_id}`) returns 503. The CUSUM
+  parameters are null and no T2 calibration set exists, so no false-alarm rate
+  can be reported.
 - No comparison against a deployed system and no human study were performed.
 - The matchmaking pool and queries were authored in-repo, so the retrieval
   numbers measure the pipeline, not hiring outcomes.
+
+## Defending it under questions
+
+| Question | Answer |
+|---|---|
+| **How do you prove the ledger hasn't been tampered with?** | "Each row's hash is SHA-256 over the RFC 8785 canonical payload concatenated with the previous hash, computed in PostgreSQL. `verifyChainDetailed()` recomputes the chain in JavaScript and reports verified, failed, or *unverifiable* separately. On top of the chain there's an RFC 6962 Merkle tree with inclusion proofs, and the root is signed with ML-DSA-87. It is **tamper-evident**, not tamper-proof — against an adversary who can write to the table but doesn't hold the signing key. Someone with the key is outside the threat model." |
+| **Why "unverifiable" as a third state?** | "17 rows predate the canonicalization migration and have no canonical payload stored, so we cannot recompute their hash. Reporting them as verified would be a lie; reporting them as tampered would be a false alarm. They get their own category." |
+| **How does the scope guard work?** | "We resolve the contract's genesis ledger hash first — no anchor, no decision. Then we embed the message, retrieve the top-5 contract chunks from a pgvector HNSW index by cosine similarity, and compare the best match against a calibrated threshold of 0.3056. The decision is recorded against that genesis hash so it's auditable." |
+| **Where did 0.3056 come from?** | "A sweep in `tools/calibrate_scope_threshold.py` over a 6-contract, 100-message corpus, run through the real ingestion and retrieval path. The corpus is **split by contract**, so the reported numbers come from three contracts the sweep never saw: 0.792 accuracy, 0.917 recall. The sweep minimises `3*FN + FP` rather than accuracy, because blocking legitimate work holds a payment while allowing scope creep costs an amendment. On the live 50-contract benchmark: 68% accuracy, 100% precision, 60% recall — up from 36% / 100% / 20%. The corpus is authored in-repo and not dual-annotated, so treat the held-out figures as optimistic." |
+| **Isn't that a bad result?** | "Yes. It's the honest one. The failure direction is the safer one for a payment system — a false block costs a scope amendment, a false allow releases uncontracted work — but it's still a failure. Fixing it needs a larger labelled set, not a tuned constant." |
+| **How do you prevent double payouts?** | "Idempotency keys at the gateway with a bounded, TTL'd in-process cache plus a Postgres table, and an atomic claim on the `settlements` primary key in the worker — a conditional upsert, so exactly one caller gets the row and the rest return. There's a concurrency test that fires five simultaneous requests with the same key and asserts exactly one ledger entry." |
+| **Why is matchmaking not sub-millisecond?** | "It embeds text with a real transformer. 84.7 ms warm mean over 1000 candidates, 108 ms p95. An earlier benchmark reported under 3 ms because it used a hash-bucket embedder with no semantics — that number measured nothing." |
+| **How good is the matchmaking?** | "P@5 of 0.837 when the client names the technologies; 0.325 when they describe the outcome in plain language. That gap is the real finding: the system is closer to a robust keyword matcher than a semantic one." |
+| **Why 0.50 / 0.35 / 0.15 for the ranking weights?** | "They were chosen, not derived — and all 231 settings on the simplex were ablated to find out what they cost. They rank 66th of 231 on retrieval; the optimum is near 0.95 on the skill term. But that measures *retrieval*, and trust is in the score on purpose, because the product ranks who should be hired rather than who's most textually similar. The honest statement is that the split has never been measured against either goal." |
+| **What's the drift detector?** | "Per-message thresholding can't catch incremental scope creep by construction — each request is a small stretch. So it accumulates: a CUSUM statistic over per-message residuals, plus a conformal test martingale that gives an anytime-valid false-alarm bound by Ville's inequality." |
+| **Does it work?** | "The mechanism is implemented and tested. But it is **not calibrated** — the conformal guarantee needs a labelled in-scope residual set that this repository doesn't have. So the endpoint returns 503 rather than substituting a default, and any test calibration is flagged synthetic all the way into the ledger record. No false-alarm rate is claimed." |
+
+**If asked about a braid ledger, hyperbolic distance, or video proof** — earlier
+documentation described these; none of it survived. The honest answer:
+
+> "Those were in an earlier design and were removed. The Alexander polynomial
+> has no tamper-detection semantics even when implemented correctly. The
+> hyperbolic distance is still in the repo as `hyperbolic.py`, but as a
+> *baseline* — on L2-normalized sentence embeddings it saturates, so a
+> near-duplicate pair at cosine 0.94 sits at distance 11.68 while an unrelated
+> pair is at 14.52, and both published thresholds fall below the near-duplicate.
+> Every pair would classify as scope creep. That measured failure is why the
+> system uses cosine retrieval instead."
 
 ## If something goes wrong
 

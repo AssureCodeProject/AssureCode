@@ -219,8 +219,9 @@ jobs:
       - name: Run Matchmaking Smoke Test
         # Was tools/test_100_freelancers_matchmaking.py, which does not exist.
         # This script exits non-zero on scenario 3 by design — the weight
-        # ablation finding documented in docs/FINAL_PROJECT_REPORT.md §4 — so
-        # it is recorded, not gated on, until the weights are retuned.
+        # ablation finding documented in ARCHITECTURE.md's ranking formula
+        # section — so it is recorded, not gated on, until the weights are
+        # retuned.
         continue-on-error: true
         run: python tools/test-matchmaking.py
 

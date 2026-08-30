@@ -1,0 +1,24 @@
+-- =============================================================================
+-- V021__score_retry_cap.sql — bounded, self-healing XAI scoring retries
+--
+-- triggerScoring() (apps/settlement-worker/src/gateway-client.ts) gives up
+-- after a ~20s wall-clock budget and is called exactly once, synchronously,
+-- from subscribeAuditSignals(). If that one attempt fails — a cold-started
+-- ai-service taking longer than 8s to answer /xai/score, a transient network
+-- blip — nothing ever retries it: the contract's oracle_state row is left
+-- with trust_score still NULL forever, and it can only be unstuck by a human
+-- opening the XAI tab in the browser (the only other caller of GET /score).
+-- This surfaced as a real CI failure: the golden-path e2e test waits up to
+-- 120s for oracle_state.trust_score, far longer than triggerScoring's own
+-- 20s patience for the same result, so a slow-but-working ai-service reads
+-- as a permanent failure.
+--
+-- This adds a per-contract attempt counter so a periodic reconciler
+-- (reconcileMissingScores, mirroring reconcilePendingPayouts' existing
+-- pattern for the payout leg) can retry a contract stuck at trust_score IS
+-- NULL, capped the same way payouts are capped (see V019) so a permanently
+-- failing contract (e.g. a malformed audit record the scorer will always
+-- reject) does not retry identically forever.
+-- =============================================================================
+
+ALTER TABLE oracle_state ADD COLUMN IF NOT EXISTS score_attempts INT NOT NULL DEFAULT 0;

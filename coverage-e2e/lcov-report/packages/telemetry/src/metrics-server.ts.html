@@ -3,7 +3,7 @@
 <html lang="en">
 
 <head>
-    <title>Code coverage report for packages/telemetry/src/tracing.ts</title>
+    <title>Code coverage report for packages/telemetry/src/metrics-server.ts</title>
     <meta charset="utf-8" />
     <link rel="stylesheet" href="../../../prettify.css" />
     <link rel="stylesheet" href="../../../base.css" />
@@ -19,34 +19,34 @@
 <body>
 <div class='wrapper'>
     <div class='pad1'>
-        <h1><a href="../../../index.html">All files</a> / <a href="index.html">packages/telemetry/src</a> tracing.ts</h1>
+        <h1><a href="../../../index.html">All files</a> / <a href="index.html">packages/telemetry/src</a> metrics-server.ts</h1>
         <div class='clearfix'>
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">0% </span>
+                <span class="strong">48.14% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>0/29</span>
+                <span class='fraction'>13/27</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">0% </span>
+                <span class="strong">100% </span>
                 <span class="quiet">Branches</span>
-                <span class='fraction'>0/1</span>
+                <span class='fraction'>3/3</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">0% </span>
+                <span class="strong">100% </span>
                 <span class="quiet">Functions</span>
-                <span class='fraction'>0/1</span>
+                <span class='fraction'>1/1</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">0% </span>
+                <span class="strong">48.14% </span>
                 <span class="quiet">Lines</span>
-                <span class='fraction'>0/29</span>
+                <span class='fraction'>13/27</span>
             </div>
         
             
@@ -109,7 +109,10 @@
 <a name='L44'></a><a href='#L44'>44</a>
 <a name='L45'></a><a href='#L45'>45</a>
 <a name='L46'></a><a href='#L46'>46</a>
-<a name='L47'></a><a href='#L47'>47</a></td><td class="line-coverage quiet"><span class="cline-any cline-no">&nbsp;</span>
+<a name='L47'></a><a href='#L47'>47</a>
+<a name='L48'></a><a href='#L48'>48</a>
+<a name='L49'></a><a href='#L49'>49</a></td><td class="line-coverage quiet"><span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -118,89 +121,92 @@
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span></td><td class="text"><pre class="prettyprint lang-js"><span class="cstat-no" title="statement not covered" ><span class="fstat-no" title="function not covered" ><span class="branch-0 cbranch-no" title="branch not covered" >import { NodeSDK } from '@opentelemetry/sdk-node';</span></span></span>
-import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-grpc';
-import { Resource } from '@opentelemetry/resources';
-import { FastifyInstrumentation } from '@opentelemetry/instrumentation-fastify';
-import { HttpInstrumentation } from '@opentelemetry/instrumentation-http';
-import { PgInstrumentation } from '@opentelemetry/instrumentation-pg';
-import { IORedisInstrumentation } from '@opentelemetry/instrumentation-ioredis';
-import { trace, type Tracer } from '@opentelemetry/api';
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">3x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-neutral">&nbsp;</span></td><td class="text"><pre class="prettyprint lang-js">import { createServer, type Server } from 'node:http';
+import { metrics } from './metrics.js';
 &nbsp;
-<span class="cstat-no" title="statement not covered" >let sdkInstance: NodeSDK | null = null;</span>
-&nbsp;
-<span class="cstat-no" title="statement not covered" >export function initTracing(serviceName: string): Tracer {</span>
-<span class="cstat-no" title="statement not covered" >  if (!sdkInstance) {</span>
-<span class="cstat-no" title="statement not covered" >    const collectorUrl = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'http://localhost:4317';</span>
-<span class="cstat-no" title="statement not covered" >    const traceExporter = new OTLPTraceExporter({ url: collectorUrl });</span>
-&nbsp;
-<span class="cstat-no" title="statement not covered" >    sdkInstance = new NodeSDK({</span>
-<span class="cstat-no" title="statement not covered" >      resource: new Resource({</span>
-<span class="cstat-no" title="statement not covered" >        'service.name': serviceName,</span>
-<span class="cstat-no" title="statement not covered" >      }),</span>
-<span class="cstat-no" title="statement not covered" >      traceExporter,</span>
-<span class="cstat-no" title="statement not covered" >      instrumentations: [</span>
-<span class="cstat-no" title="statement not covered" >        new HttpInstrumentation(),</span>
-<span class="cstat-no" title="statement not covered" >        new FastifyInstrumentation(),</span>
-<span class="cstat-no" title="statement not covered" >        new PgInstrumentation(),</span>
-<span class="cstat-no" title="statement not covered" >        new IORedisInstrumentation(),</span>
-<span class="cstat-no" title="statement not covered" >      ],</span>
-<span class="cstat-no" title="statement not covered" >    });</span>
-&nbsp;
-<span class="cstat-no" title="statement not covered" >    try {</span>
-<span class="cstat-no" title="statement not covered" >      sdkInstance.start();</span>
-<span class="cstat-no" title="statement not covered" >    } catch (err) {</span>
-      // Use a single object arg so a non-literal in `serviceName` cannot be
-      // interpreted as a printf-style format specifier by console.warn.
-<span class="cstat-no" title="statement not covered" >      console.warn({ msg: 'OTel SDK start warning', serviceName, err });</span>
+/**
+ * Minimal `/metrics` HTTP surface for a process that otherwise has none.
+ *
+ * settlement-worker and ci-worker are pure background workers — no Fastify,
+ * no other route — so pulling in a full framework just to expose one
+ * Prometheus scrape endpoint would be a heavier dependency than the thing it
+ * serves. Everything else (readiness, liveness) stays on the existing `exec`
+ * probes those deployments already use; this exists solely so the process
+ * that runs the sandbox / moves money is not invisible to `up` and to every
+ * `assurecode_*` counter it already increments in-process but nothing was
+ * ever scraping.
+ */
+export function startMetricsServer(port: number, logger: { info: (obj: unknown, msg: string) =&gt; void; error: (obj: unknown, msg: string) =&gt; void }): Server {
+  const server = createServer(async (req, res) =&gt; {
+<span class="cstat-no" title="statement not covered" >    if (req.url === '/metrics' &amp;&amp; req.method === 'GET') {</span>
+<span class="cstat-no" title="statement not covered" >      try {</span>
+<span class="cstat-no" title="statement not covered" >        const body = await metrics.getMetrics();</span>
+<span class="cstat-no" title="statement not covered" >        res.writeHead(200, { 'Content-Type': metrics.getMetricsContentType() });</span>
+<span class="cstat-no" title="statement not covered" >        res.end(body);</span>
+<span class="cstat-no" title="statement not covered" >      } catch (err) {</span>
+<span class="cstat-no" title="statement not covered" >        res.writeHead(500, { 'Content-Type': 'text/plain' });</span>
+<span class="cstat-no" title="statement not covered" >        res.end('metrics collection failed');</span>
+<span class="cstat-no" title="statement not covered" >        logger.error({ err }, 'Failed to render /metrics');</span>
+<span class="cstat-no" title="statement not covered" >      }</span>
+<span class="cstat-no" title="statement not covered" >      return;</span>
 <span class="cstat-no" title="statement not covered" >    }</span>
+<span class="cstat-no" title="statement not covered" >    res.writeHead(404, { 'Content-Type': 'text/plain' });</span>
+<span class="cstat-no" title="statement not covered" >    res.end('not found');</span>
+  });
 &nbsp;
-<span class="cstat-no" title="statement not covered" >    process.on('SIGTERM', () =&gt; {</span>
-<span class="cstat-no" title="statement not covered" >      sdkInstance?.shutdown().catch(() =&gt; {}).finally(() =&gt; process.exit(0));</span>
-<span class="cstat-no" title="statement not covered" >    });</span>
-<span class="cstat-no" title="statement not covered" >  }</span>
+  // Without this, a bind failure (EADDRINUSE from a stray process still
+  // holding the port, most commonly) is an unhandled 'error' event — Node
+  // throws it as an uncaught exception, crashing whatever else the process
+  // happens to be doing at that moment. Metrics are advisory; a scrape
+  // endpoint that can't start should not take the worker down with it.
+  server.on('error', (err) =&gt; {
+    logger.error({ err, port }, 'Metrics server failed to start');
+  });
 &nbsp;
-<span class="cstat-no" title="statement not covered" >  return trace.getTracer(serviceName);</span>
-<span class="cstat-no" title="statement not covered" >}</span>
+  server.listen(port, () =&gt; {
+    logger.info({ port }, 'Metrics server listening on /metrics');
+  });
 &nbsp;
-export { trace };
+  return server;
+}
 &nbsp;</pre></td></tr></table></pre>
 
                 <div class='push'></div><!-- for sticky footer -->
@@ -208,7 +214,7 @@ export { trace };
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2026-08-23T12:11:53.673Z
+                at 2026-08-30T10:27:12.487Z
             </div>
         <script src="../../../prettify.js"></script>
         <script>

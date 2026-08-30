@@ -627,7 +627,17 @@ server.get('/auth/me', async (request, reply) => {
   }
   // The JWT doesn't carry display_name (it wasn't needed at sign time), so
   // this is the one auth route that reads the database rather than the token.
-  const res = await dbPool.query(`SELECT display_name FROM users WHERE user_id = $1`, [user.userId]);
+  const res = await dbPool.query(
+    `SELECT u.display_name, u.payout_account_id,
+            EXISTS (
+              SELECT 1 FROM auth_providers ap
+               WHERE ap.user_id = u.user_id
+                 AND ap.provider_type = 'GITHUB'
+                 AND ap.access_token_encrypted IS NOT NULL
+            ) AS github_connected
+       FROM users u WHERE u.user_id = $1`,
+    [user.userId],
+  );
   return reply.send({
     authenticated: true,
     userId: user.userId,
@@ -635,6 +645,8 @@ server.get('/auth/me', async (request, reply) => {
     role: user.role,
     kycStatus: user.kycStatus,
     displayName: res.rows[0]?.display_name ?? user.email,
+    githubConnected: res.rows[0]?.github_connected ?? false,
+    payoutAccountId: res.rows[0]?.payout_account_id ?? null,
   });
 });
 
@@ -1075,8 +1087,49 @@ const clientVerified = {
 const settlementGuards = {
   preHandler: [requireRole(['client', 'admin']), requireKycVerified(dbPool)],
 };
+const freelancerOnly = { preHandler: requireRole(['freelancer']) };
 
 // ── Contract Endpoints ────────────────────────────────────────────────
+
+server.get<{
+  Reply: {
+    contracts: Array<{
+      contractId: string;
+      title: string;
+      status: string;
+      budgetCents: number;
+      deadline: string;
+      clientId: string;
+      clientDisplayName: string | null;
+      createdAt: string;
+    }>;
+  };
+}>('/api/contracts/mine', freelancerOnly, async (request, reply) => {
+  const user = (request as any).user as AuthUser;
+
+  const result = await dbPool.query(
+    `SELECT c.contract_id, c.title, c.status, c.budget_cents, c.deadline,
+            c.client_id, u.display_name AS client_display_name, c.created_at
+       FROM contracts c
+       LEFT JOIN users u ON u.user_id = c.client_id
+      WHERE c.freelancer_id = $1
+      ORDER BY c.created_at DESC`,
+    [user.userId],
+  );
+
+  return reply.status(200).send({
+    contracts: result.rows.map((row) => ({
+      contractId: row.contract_id,
+      title: row.title,
+      status: row.status,
+      budgetCents: row.budget_cents,
+      deadline: row.deadline,
+      clientId: row.client_id,
+      clientDisplayName: row.client_display_name ?? null,
+      createdAt: row.created_at,
+    })),
+  });
+});
 
 server.post<{
   Body: InitializeContract;
@@ -1168,10 +1221,25 @@ server.post<{
       const data = await aiRes.json();
       return reply.send(data);
     }
+
+    logger.warn(
+      { contractId, status: aiRes.status },
+      'AI service /match returned non-OK, falling back to trust-score ranking',
+    );
   } catch (err) {
-    logger.warn({ contractId, err }, 'AI service match unreachable, querying Postgres directly');
+    logger.warn({ contractId, err }, 'AI service match unreachable, falling back to trust-score ranking');
   }
 
+  // Degraded path: no embedder reachable, so there is no semantic signal to
+  // report. Previously this hardcoded skill_score: 0.85 and history_score: 0.8
+  // — literal constants presented as if they were computed — and dumped a
+  // freelancer's entire skill list as "matched_skills" regardless of whether
+  // any of it appeared in what the client asked for. Both terms are honestly
+  // unmeasured here (0), the same "no vector, no fabricated score" convention
+  // InMemoryGraphRepo uses on the ai-service side; matched_skills is a real
+  // (if crude) keyword overlap against the requirements text, not the whole
+  // roster; and `degraded: true` lets the frontend say so instead of
+  // presenting this as an ordinary ranked result.
   const pgRes = await dbPool.query(`
     SELECT f.freelancer_id, u.display_name, f.trust_score, f.skills, f.hourly_rate_cents
     FROM freelancer_profiles f
@@ -1180,21 +1248,39 @@ server.post<{
     LIMIT $1
   `, [topK || 5]);
 
-  const results = pgRes.rows.map((row) => ({
-    freelancer_id: row.freelancer_id,
-    freelancer_name: row.display_name,
-    trust_score: parseFloat(row.trust_score || 0.5),
-    score: parseFloat(row.trust_score || 0.5),
-    explanation: {
-      skill_score: 0.85,
-      trust_score: parseFloat(row.trust_score || 0.5),
-      history_score: 0.8,
-      matched_skills: Array.isArray(row.skills) ? row.skills : [],
-    },
-    hourly_rate_cents: parseInt(row.hourly_rate_cents || 0, 10),
-  }));
+  const reqTokens = new Set(
+    (requirements || '')
+      .toLowerCase()
+      .split(/\s+/)
+      .map((t) => t.replace(/^\W+|\W+$/g, ''))
+      .filter(Boolean),
+  );
 
-  return reply.send({ results, count: results.length });
+  const results = pgRes.rows.map((row) => {
+    const trustScore = parseFloat(row.trust_score || 0.5);
+    const skills: string[] = Array.isArray(row.skills) ? row.skills : [];
+    return {
+      freelancer_id: row.freelancer_id,
+      freelancer_name: row.display_name,
+      trust_score: trustScore,
+      score: trustScore,
+      explanation: {
+        skill_score: 0,
+        trust_score: trustScore,
+        history_score: 0,
+        matched_skills: skills.filter((s) => reqTokens.has(String(s).toLowerCase())),
+      },
+      hourly_rate_cents: parseInt(row.hourly_rate_cents || 0, 10),
+    };
+  });
+
+  return reply.send({
+    results,
+    count: results.length,
+    degraded: true,
+    degradedReason:
+      'AI matching service unavailable — ranked by trust score only; skill and delivery-history terms are unmeasured, not zero-rated.',
+  });
 });
 
 server.post<{

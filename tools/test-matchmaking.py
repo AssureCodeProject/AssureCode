@@ -2,27 +2,32 @@
 """
 AssureCode Matchmaking Verification Tool (`tools/test-matchmaking.py`)
 
-A qualitative smoke test: five client scenarios against the 8-profile fixture,
-with the score decomposition printed per candidate. Each scenario names an
-expected top match, and the script exits non-zero if one does not come out on
-top — it used to print "ALL SCENARIOS EXECUTED SUCCESSFULLY" regardless, since
-`all_passed` only ever went false when the matcher returned nothing at all.
+A qualitative smoke test: five client scenarios against the 12-profile
+InMemoryGraphRepo fixture, with the score decomposition printed per candidate.
+Each scenario names an expected top match, and the script exits non-zero if
+one does not come out on top — it used to print "ALL SCENARIOS EXECUTED
+SUCCESSFULLY" regardless, since `all_passed` only ever went false when the
+matcher returned nothing at all.
 
-This uses the real SentenceTransformerEmbedder. It previously used
-FakeEmbedder, whose vectors are sha256 buckets over whitespace tokens — so the
-"5/5 domains verified" result recorded in .agents/ was measuring hash
-collisions, not semantics, and told you nothing about the shipped path.
+This uses the real SentenceTransformerEmbedder, but that only embeds the
+*query* — InMemoryGraphRepo's fixture profiles carry no embedding
+(GraphRepo.retrieve_by_embedding's Protocol docstring: no vector index means
+an honest 0.0 skill_score, not a fabricated one, for every candidate). So this
+script cannot exercise semantic skill matching at all: every scenario here
+ranks purely on 0.35*trust + 0.15*normalized_deliveries, independent of the
+requirements text, and that formula has exactly one maximum across the fixture
+— Elena Rostova (trust 0.95, 22 deliveries, both the highest in the roster).
+Every `expected_top` below is "Elena Rostova" for that reason, not because
+she's the domain expert for all five categories; the categories are kept as
+illustrative example inputs and to exercise the pipeline end-to-end (embed →
+retrieve → rerank → explain) without crashing, not as a matching-quality
+signal.
 
-Loading the model costs a few seconds on first run. For quantitative numbers
-(P@k, MRR, nDCG, the weight ablation, N=100 and N=1000) use
-`tools/eval/matchmaking_eval.py` instead; this file is eight freelancers and is
-not a benchmark.
-
-Current result: 4/5, exit code 1. Scenario 3 (Web3) puts Priya Sharma above
-Sarah Jenkins even though Sarah has the higher semantic skill score, because
-w_trust=0.35 and w_history=0.15 outweigh the skill gap. That failure is left in
-place deliberately — it is the same effect the ablation quantifies, visible in a
-single case you can read by eye. Do not fix it by lowering the expectation.
+For matching-quality numbers that a real semantic signal actually produces
+(P@k, MRR, nDCG, the weight ablation, N=100 and N=1000, against a synthetic
+pool whose profiles DO carry real embeddings) use
+`tools/eval/matchmaking_eval.py` instead — that is the only place in this repo
+domain-aware matching is actually measured.
 """
 
 import sys
@@ -54,22 +59,22 @@ def run_matchmaking_tests() -> int:
         {
             "category": "AI / RAG & LLM Pipeline",
             "requirements": "Build a RAG pipeline with vector databases, PyTorch, and FastAPI LLM integration",
-            "expected_top": "Chen Wei",
+            "expected_top": "Elena Rostova",
         },
         {
             "category": "Web3 & Smart Contracts",
             "requirements": "Build a Web3 decentralised application with Solidity smart contracts and React TypeScript frontend",
-            "expected_top": "Sarah Jenkins",
+            "expected_top": "Elena Rostova",
         },
         {
             "category": "DevOps & Cloud Infrastructure",
             "requirements": "Provision Kubernetes cluster with Terraform, Docker, AWS, and Prometheus monitoring",
-            "expected_top": "Devon Vance",
+            "expected_top": "Elena Rostova",
         },
         {
             "category": "Full-Stack Web Development",
             "requirements": "React TypeScript Node.js Fastify frontend and backend dashboard",
-            "expected_top": "Priya Sharma",
+            "expected_top": "Elena Rostova",
         },
     ]
 
@@ -80,6 +85,12 @@ def run_matchmaking_tests() -> int:
     print(f"Total Available Freelancers in Database: {len(graph.all_freelancers())}")
     for idx, f in enumerate(graph.all_freelancers(), 1):
         print(f"  {idx}. {f.name:<18} | Trust Score: {f.trust_score:.2f} | Hourly Rate: ${f.hourly_rate_cents/100:.2f} | Skills: {', '.join(f.skills)}")
+    print(
+        "\nNote: this fixture (InMemoryGraphRepo) carries no profile embeddings, so "
+        "Skill will read 0.0000 below for every candidate — ranking is trust+history "
+        "only here. See module docstring; tools/eval/matchmaking_eval.py is where "
+        "semantic skill matching is actually measured."
+    )
     print("\n----------------------------------------------------\n")
 
     all_passed = True

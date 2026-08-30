@@ -281,7 +281,7 @@ for (const [file, label] of PHASE_VIEWS) {
   // matching that text would fail the file for describing the fix.
   const source = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
-  const callsBackend = /callApi\s*\(|fetch\s*\(|new WebSocket\s*\(/.test(source);
+  const callsBackend = /callApi\s*\(|apiRequest\s*\(|fetch\s*\(|new WebSocket\s*\(/.test(source);
 
   // Math.random() driving displayed telemetry is the specific defect this check
   // exists to catch: it makes an unreachable backend render as a passing audit.

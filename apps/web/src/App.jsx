@@ -13,12 +13,14 @@ import {
 } from 'lucide-react';
 
 import ContractInitialization from './components/ContractInitialization';
+import FreelancerAssignments from './components/FreelancerAssignments';
 import VerificationDashboard from './components/VerificationDashboard';
 import XaiTrustScoreView from './components/XaiTrustScoreView';
 import EscrowSettlementView from './components/EscrowSettlementView';
 import MobileDrawer from './components/ui/MobileDrawer';
 import LoginScreen from './components/LoginScreen';
 import GithubCallback from './components/GithubCallback';
+import ConnectReturn from './components/ConnectReturn';
 import { ChainBadge, SignatureBadge } from './components/ui/LedgerBadges';
 import { useLedgerStatus } from './hooks/useLedgerStatus';
 import { useAuth } from './context/AuthContext';
@@ -109,6 +111,12 @@ export function App() {
     setContractData(data);
   };
 
+  /** Called when a freelancer picks an assignment from their list */
+  const handleAssignmentSelected = (contract) => {
+    setContractData(contract);
+    navigateTo('verification');
+  };
+
   /** Reset active contract */
   const handleResetContract = () => {
     if (window.confirm('Reset current contract workspace? This will clear active session state.')) {
@@ -137,11 +145,15 @@ export function App() {
     { id: 'escrow', label: '04. Escrow Settlement', shortLabel: '04. Escrow', icon: Lock, disabled: !contractData },
   ];
 
-  // No router in this app — GitHub redirects here as a real page navigation,
-  // so this path is checked ahead of the loading/auth gates rather than
-  // through a route table.
+  // No router in this app — GitHub and payout-onboarding redirects both land
+  // here as real page navigations, so these paths are checked ahead of the
+  // loading/auth gates rather than through a route table.
   if (window.location.pathname === '/auth/github/callback') {
     return <GithubCallback />;
+  }
+
+  if (window.location.pathname === '/connect/return' || window.location.pathname === '/connect/refresh') {
+    return <ConnectReturn />;
   }
 
   if (isLoading) {
@@ -318,17 +330,8 @@ export function App() {
           )}
 
           {activeTab === 'contract' && !isClient && (
-            <motion.div
-              key="freelancer-landing"
-              {...PHASE_TRANSITION}
-              className="max-w-2xl mx-auto bg-ink-2 border border-rule p-8 text-center font-mono text-sm text-prose-muted"
-            >
-              <p className="text-prose font-semibold mb-2">Signed in as {user?.displayName || user?.email}</p>
-              <p>
-                Freelancer accounts don't post contracts. There is no assignments list in
-                this build yet — if you have a contract ID from a client, its Phase 2–4
-                screens will work once you have contract data loaded.
-              </p>
+            <motion.div key="freelancer-landing" {...PHASE_TRANSITION}>
+              <FreelancerAssignments onSelectContract={handleAssignmentSelected} />
             </motion.div>
           )}
 

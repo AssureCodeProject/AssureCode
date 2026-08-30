@@ -48,8 +48,27 @@ export function AuthProvider({ children }) {
       .finally(() => setIsLoading(false));
   }, []);
 
+  // POST /auth/login answers one of two shapes: a real session for a
+  // password-only account, or {mfaRequired, challenge} for one enrolled in
+  // MFA — no token, no user, nothing to sign in with yet. The caller has to
+  // branch on that before treating this as "logged in" (see
+  // completeMfaChallenge for the second step).
   const login = useCallback(async (email, password) => {
     const data = await callApi('/auth/login', 'POST', { email, password });
+    if (data.mfaRequired) {
+      return { mfaRequired: true, challenge: data.challenge };
+    }
+    setAuthToken(data.token);
+    localStorage.setItem(TOKEN_STORAGE_KEY, data.token);
+    setUser(toUser(data.user));
+    return { mfaRequired: false, user: data.user };
+  }, []);
+
+  // Second step of an MFA-gated login: redeem the challenge login() returned
+  // plus a live TOTP code for the real session. Same token-storage shape as
+  // login()/completeGithubLogin() above.
+  const completeMfaChallenge = useCallback(async (challenge, code) => {
+    const data = await callApi('/auth/mfa/challenge', 'POST', { challenge, code });
     setAuthToken(data.token);
     localStorage.setItem(TOKEN_STORAGE_KEY, data.token);
     setUser(toUser(data.user));
@@ -76,8 +95,8 @@ export function AuthProvider({ children }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, isAuthenticated: !!user, isLoading, login, logout, completeGithubLogin }),
-    [user, isLoading, login, logout, completeGithubLogin],
+    () => ({ user, isAuthenticated: !!user, isLoading, login, logout, completeGithubLogin, completeMfaChallenge }),
+    [user, isLoading, login, logout, completeGithubLogin, completeMfaChallenge],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -7,6 +7,7 @@ abstracts where that data comes from:
 """
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Sequence
 from contextlib import closing
@@ -14,6 +15,8 @@ from dataclasses import dataclass, replace
 from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 def to_pgvector_literal(values: Sequence[float]) -> str:
@@ -326,6 +329,10 @@ class Neo4jGraphRepo:
             records, _, _ = self._driver.execute_query(cypher, id=freelancer_id, trust=trust_score)
             return len(records) > 0
         except Exception:
+            logger.exception(
+                "Neo4jGraphRepo.update_trust_score failed for %s, falling back to in-memory (not durably persisted)",
+                freelancer_id,
+            )
             self._fallback.update_trust_score(freelancer_id, trust_score)
             return False
 
@@ -354,6 +361,7 @@ class Neo4jGraphRepo:
                 max_transaction_retry_time=float(os.environ.get("NEO4J_RETRY_TIME", "2.0")),
             )
         except Exception:  # pragma: no cover — import/connect failures are environment-bound
+            logger.exception("Neo4jGraphRepo could not connect, degrading to InMemoryGraphRepo")
             self._driver = None
 
     def all_freelancers(self) -> Sequence[FreelancerProfile]:
@@ -363,6 +371,7 @@ class Neo4jGraphRepo:
         try:
             return self._query_freelancers()
         except Exception:  # pragma: no cover — live DB only
+            logger.exception("Neo4jGraphRepo.all_freelancers failed, degrading to InMemoryGraphRepo")
             return self._fallback.all_freelancers()
 
     #: Name of the vector index created by tools/seed-neo4j-vectors.py.
@@ -394,6 +403,10 @@ class Neo4jGraphRepo:
             # report an empty candidate set the matchmaker would treat as final.
             return rows if rows else self._fallback.retrieve_by_embedding(query_vector, limit)
         except Exception:  # pragma: no cover — live DB only
+            logger.exception(
+                "Neo4jGraphRepo.retrieve_by_embedding failed, degrading to InMemoryGraphRepo "
+                "(skill_score will read 0.0 for every candidate)"
+            )
             return self._fallback.retrieve_by_embedding(query_vector, limit)
 
     def _query_by_vector(  # pragma: no cover — live DB only
@@ -516,6 +529,7 @@ class PostgresGraphRepo:
                 return self._fallback.all_freelancers()
             return [self._profile_from_row(r) for r in rows]
         except Exception:
+            logger.exception("PostgresGraphRepo.all_freelancers failed, degrading to InMemoryGraphRepo")
             return self._fallback.all_freelancers()
 
     def update_trust_score(self, freelancer_id: str, trust_score: float) -> bool:
@@ -529,6 +543,10 @@ class PostgresGraphRepo:
                 conn.commit()
             return True
         except Exception:
+            logger.exception(
+                "PostgresGraphRepo.update_trust_score failed for %s, falling back to in-memory (not durably persisted)",
+                freelancer_id,
+            )
             return self._fallback.update_trust_score(freelancer_id, trust_score)
 
     def retrieve_by_embedding(
@@ -564,5 +582,9 @@ class PostgresGraphRepo:
                 return self._fallback.retrieve_by_embedding(query_vector, limit)
             return [(self._profile_from_row(r), float(r[7])) for r in rows]
         except Exception:
+            logger.exception(
+                "PostgresGraphRepo.retrieve_by_embedding failed, degrading to InMemoryGraphRepo "
+                "(skill_score will read 0.0 for every candidate)"
+            )
             return self._fallback.retrieve_by_embedding(query_vector, limit)
 

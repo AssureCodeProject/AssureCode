@@ -114,6 +114,11 @@ x-datastore-env: &datastore-env
   RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-rzp_test_mock}
   RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
   RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
+  # RazorpayX Payouts' source account — required on every payout API call
+  # (settlement-worker's attemptPayout/reconcilePendingPayouts). Missing this
+  # produces a real Razorpay 400 ("The account number field is required"),
+  # not a silent skip.
+  RAZORPAYX_ACCOUNT_NUMBER: ${RAZORPAYX_ACCOUNT_NUMBER:-}
   # Reached by the browser, not by a container, so this stays a host address
   # even inside compose — it ends up in redirect URLs the user follows.
   WEB_APP_URL: ${WEB_APP_URL:-http://localhost:3000}

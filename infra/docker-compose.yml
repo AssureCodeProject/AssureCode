@@ -208,6 +208,22 @@ services:
       timeout: 3s
       retries: 10
 
+  # Server-level metrics (used_memory, connected_clients, ops/sec, etc.) —
+  # nothing scraped these before. The command-level XADD/XREADGROUP spans
+  # from packages/telemetry's ioredis instrumentation say nothing about the
+  # server itself (memory pressure, rejected connections), and there is no
+  # substitute for it: INFO output isn't exposed any other way.
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.62.0
+    container_name: assurecode-redis-exporter
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    ports:
+      - "${REDIS_EXPORTER_PORT:-9121}:9121"
+    depends_on:
+      - redis
+
   localstack:
     # Pinned. `:latest` now resolves to a 2026.x build that refuses to start
     # without a LOCALSTACK_AUTH_TOKEN — it exits 55 with "License activation

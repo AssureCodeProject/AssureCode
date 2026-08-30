@@ -64,6 +64,12 @@ export const AppConfigSchema = z.object({
   // Redis
   REDIS_URL: z.string().default('redis://localhost:6379'),
 
+  // Every RedisStreamsBus topic (and its .dlq partner) is trimmed to
+  // approximately this many entries on each XADD (MAXLEN ~, so the cost is
+  // amortized rather than an exact count on every write). Without a cap here
+  // every stream grows forever — there was no trimming at all before this.
+  EVENT_STREAM_MAXLEN: z.coerce.number().default(10_000),
+
   // Event bus backend. createEventBus() only selects KafkaBus when passed an
   // options object with type:'kafka' — every caller used to pass REDIS_URL as
   // a bare string, so this env var was dead and the bus was always Redis (or

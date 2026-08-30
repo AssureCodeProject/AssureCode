@@ -253,6 +253,7 @@ function AssignmentProgress({ currentStep, completedSteps }) {
 /** Ranked matchmaker results — the client picks who gets the contract. */
 function CandidateSelection({
   candidates,
+  degradedReason,
   isProcessing,
   currentStep,
   completedSteps,
@@ -261,15 +262,25 @@ function CandidateSelection({
 }) {
   return (
     <>
-      <div className="bg-ink-2 border border-rule p-5">
-        <div className="text-xs font-mono text-prose-muted uppercase tracking-wider mb-1">
-          Ranked by the NLP matchmaker
+      {degradedReason ? (
+        <div className="bg-ink-2 border border-warn p-5">
+          <div className="flex items-center gap-2 text-warn text-xs font-mono uppercase tracking-wider mb-1">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+            <span>Degraded ranking — not a semantic match</span>
+          </div>
+          <p className="text-sm text-prose-muted">{degradedReason}</p>
         </div>
-        <p className="text-sm text-prose-muted">
-          Skill-embedding cosine similarity, trust score, and delivery history —
-          {' '}<span className="text-prose">0.50 / 0.35 / 0.15</span> weighted. Pick who gets this contract.
-        </p>
-      </div>
+      ) : (
+        <div className="bg-ink-2 border border-rule p-5">
+          <div className="text-xs font-mono text-prose-muted uppercase tracking-wider mb-1">
+            Ranked by the NLP matchmaker
+          </div>
+          <p className="text-sm text-prose-muted">
+            Skill-embedding cosine similarity, trust score, and delivery history —
+            {' '}<span className="text-prose">0.50 / 0.35 / 0.15</span> weighted. Pick who gets this contract.
+          </p>
+        </div>
+      )}
 
       {isProcessing && (
         <AssignmentProgress currentStep={currentStep} completedSteps={completedSteps} />
@@ -635,6 +646,7 @@ export function ContractInitialization({
           <motion.div key="candidates" {...PANEL_TRANSITION} className="space-y-6">
             <CandidateSelection
               candidates={candidates}
+              degradedReason={matchDegradedReason}
               isProcessing={isProcessing}
               currentStep={currentStep}
               completedSteps={completedSteps}

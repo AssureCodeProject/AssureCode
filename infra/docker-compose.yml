@@ -98,6 +98,16 @@ x-datastore-env: &datastore-env
   # Required for private repos. Public repos work without it at 60 requests per
   # hour per IP, which one audit of a small repository can exhaust on its own.
   GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+  # GitHub OAuth App (freelancer login + repo connection, server.ts:727). Unset
+  # leaves GET /auth/github unregistered and the app falls back to
+  # password-only login.
+  GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+  GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+  GITHUB_TOKEN_ENCRYPTION_KEY: ${GITHUB_TOKEN_ENCRYPTION_KEY:-}
+  # Public URL of webhook-ingest (an ngrok tunnel in dev), used to build the
+  # payload URL when auto-registering a repo's webhook on
+  # PATCH /api/contracts/:id/github-repo.
+  WEBHOOK_INGEST_PUBLIC_URL: ${WEBHOOK_INGEST_PUBLIC_URL:-}
   # Razorpay. The default key id is deliberately not a real `rzp_` key, so an
   # unconfigured stack runs on FakeRazorpayAdapter and the full escrow flow
   # still works offline. Put real rzp_test_ credentials in .env to move money.
@@ -351,6 +361,12 @@ services:
       <<: *datastore-env
       NODE_ENV: ${NODE_ENV:-development}
       GATEWAY_PORT: 4000
+      # Override the shared anchor's internal-network value (http://api-gateway:4000,
+      # used by settlement-worker to call back into the gateway). This one has to be
+      # the address a BROWSER can reach, since it's what the GitHub OAuth callback
+      # URL (server.ts:730) is built from and redirected to — the internal Docker
+      # service name is not resolvable outside the compose network.
+      GATEWAY_URL: ${GATEWAY_URL:-http://localhost:4000}
     depends_on:
       <<: *datastore-deps
       migrate:

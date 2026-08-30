@@ -123,8 +123,47 @@ function subscribeAuditSignals(): void {
     // the chain is two hops and terminates at oracle.recordScore. Keep it that
     // way -- a /score that republished AUDIT_COMPLETED would loop unbounded
     // with a real HTTP call and an LLM narrative per iteration.
-    logTriggerOutcome(logger, contractId, await triggerScoring(contractId, scoreTriggerDeps));
+    await attemptScoring(contractId);
   });
+}
+
+/**
+ * Ask the gateway to score `contractId`, recording the attempt regardless of
+ * outcome so reconcileMissingScores' cap (see its header) counts this first,
+ * synchronous try the same way it counts its own retries.
+ *
+ * Deliberately not folded into subscribeAuditSignals' handler: this is the
+ * one call site reconcileMissingScores also needs, and duplicating the
+ * increment-then-call sequence there would let the two drift.
+ */
+async function attemptScoring(contractId: string): Promise<void> {
+  if (!scoreTriggerDeps.enabled) return;
+
+  await dbPool
+    .query(`UPDATE oracle_state SET score_attempts = score_attempts + 1 WHERE contract_id = $1`, [
+      contractId,
+    ])
+    .catch((err: any) =>
+      logger.error({ contractId, err: err.message }, 'Failed to record score attempt'),
+    );
+
+  const outcome = await triggerScoring(contractId, scoreTriggerDeps);
+  logTriggerOutcome(logger, contractId, outcome);
+
+  // 'declined' is triggerScoring's own TERMINAL_STATUSES set -- its outcome
+  // log already says "will not change on retry". Jump straight to the cap
+  // instead of waiting out SCORE_MAX_ATTEMPTS sweeps to reach a conclusion
+  // this one response already reached.
+  if (outcome.kind === 'declined') {
+    await dbPool
+      .query(`UPDATE oracle_state SET score_attempts = $1 WHERE contract_id = $2`, [
+        SCORE_MAX_ATTEMPTS,
+        contractId,
+      ])
+      .catch((err: any) =>
+        logger.error({ contractId, err: err.message }, 'Failed to stop retrying a declined score'),
+      );
+  }
 }
 
 // ── 2. Trust score ───────────────────────────────────────────────────
@@ -558,6 +597,44 @@ async function reconcilePendingPayouts(): Promise<void> {
   }
 }
 
+/**
+ * Sweep for contracts whose audit completed but never acquired a trust score
+ * — attemptScoring's one synchronous try (from subscribeAuditSignals) failed
+ * or timed out, and nothing was retrying it. Before this, the only recovery
+ * was a human opening the XAI tab in the browser (the only other caller of
+ * GET /score) for that specific contract; a contract nobody looked at stayed
+ * unsettleable forever with no error visible anywhere but a log line.
+ *
+ * This is exactly reconcilePendingPayouts' shape, one level earlier in the
+ * pipeline: same "retry through the real function, capped, on an interval
+ * plus at startup" design, because the failure mode is the same one — a
+ * single synchronous attempt with no second chance.
+ *
+ * Runs more often than the payout reconciler: a missing trust score blocks
+ * the *entire* settlement gate (nothing downstream can even be attempted),
+ * where a missing payout account is a freelancer-specific wait that can
+ * legitimately take days.
+ */
+async function reconcileMissingScores(): Promise<void> {
+  if (!scoreTriggerDeps.enabled) return;
+
+  const { rows } = await dbPool.query(
+    `SELECT contract_id FROM oracle_state WHERE trust_score IS NULL AND score_attempts < $1`,
+    [SCORE_MAX_ATTEMPTS],
+  );
+  if (rows.length === 0) return;
+
+  logger.info({ count: rows.length }, 'Reconciling contracts missing an XAI trust score');
+  for (const row of rows) {
+    await attemptScoring(row.contract_id).catch((err: any) =>
+      logger.error(
+        { contractId: row.contract_id, err: err.message },
+        'Score reconciliation attempt failed',
+      ),
+    );
+  }
+}
+
 function subscribeSettlementRequests(): void {
   void eventBus.subscribe(EVENT_TOPICS.SETTLEMENT_REQUESTED, async (event: EventEnvelope) => {
     const payload = event.payload as SettlementRequested;
@@ -803,7 +880,17 @@ const PAYOUT_RECONCILE_INTERVAL_MS = 5 * 60 * 1000;
  * before a human needs to look at it.
  */
 const PAYOUT_MAX_ATTEMPTS = 5;
+/**
+ * 2 minutes — shorter than the payout reconciler's 5, because a missing
+ * trust score blocks the entire settlement gate rather than one freelancer's
+ * payout. Attempt cap kept the same as payouts' (5) for the same reason
+ * V019 gives one: distinguishing a transient failure from a permanent one
+ * without waiting so long a stuck contract looks abandoned.
+ */
+const SCORE_RECONCILE_INTERVAL_MS = 2 * 60 * 1000;
+const SCORE_MAX_ATTEMPTS = 5;
 let payoutReconcileTimer: NodeJS.Timeout | undefined;
+let scoreReconcileTimer: NodeJS.Timeout | undefined;
 let metricsServer: Server | undefined;
 
 async function start(): Promise<void> {
@@ -838,6 +925,8 @@ async function start(): Promise<void> {
   subscribeSettlementRequests();
 
   await reconcileAbandonedSettlements();
+  await reconcileMissingScores();
+  scoreReconcileTimer = setInterval(() => void reconcileMissingScores(), SCORE_RECONCILE_INTERVAL_MS);
   await reconcilePendingPayouts();
   payoutReconcileTimer = setInterval(() => void reconcilePendingPayouts(), PAYOUT_RECONCILE_INTERVAL_MS);
 
@@ -856,6 +945,7 @@ async function start(): Promise<void> {
 async function shutdown(signal: string): Promise<void> {
   logger.info(`${signal} received, shutting down...`);
   if (payoutReconcileTimer) clearInterval(payoutReconcileTimer);
+  if (scoreReconcileTimer) clearInterval(scoreReconcileTimer);
   if (metricsServer) await new Promise((resolve) => metricsServer!.close(resolve));
   await dbPool.end();
   await ledgerClient.close();
@@ -885,7 +975,9 @@ if (process.env.NODE_ENV !== 'test') {
 // for.
 // attemptPayout and reconcilePendingPayouts are exported so the payout-leg
 // test suite can exercise the real functions directly, the same reasoning
-// claimSettlement's export above already documents.
+// claimSettlement's export above already documents. attemptScoring and
+// reconcileMissingScores are exported for the same reason, one stage
+// earlier in the pipeline.
 // metricsServer is exported so a test that calls start() directly (bypassing
 // the NODE_ENV=test guard above to exercise the real startup path) has a way
 // to close the Prometheus listener afterward. Without this, the port stays
@@ -899,5 +991,8 @@ export {
   attemptPayout,
   reconcilePendingPayouts,
   PAYOUT_MAX_ATTEMPTS,
+  attemptScoring,
+  reconcileMissingScores,
+  SCORE_MAX_ATTEMPTS,
   metricsServer,
 };

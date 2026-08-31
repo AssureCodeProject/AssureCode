@@ -862,10 +862,16 @@ if (config.GITHUB_CLIENT_ID) {
 
           if ((existingProvider.rowCount ?? 0) > 0) {
             userId = existingProvider.rows[0].user_id;
+            // Keep the shown name in sync with GitHub on every login -- it
+            // was only ever set once at row-creation time otherwise, so a
+            // renamed/re-mapped GitHub identity would keep showing a stale
+            // name indefinitely.
+            await client.query(`UPDATE users SET display_name = $2 WHERE user_id = $1`, [userId, displayName]);
           } else {
             const existingUser = await client.query(`SELECT user_id FROM users WHERE email = $1`, [email]);
             if ((existingUser.rowCount ?? 0) > 0) {
               userId = existingUser.rows[0].user_id;
+              await client.query(`UPDATE users SET display_name = $2 WHERE user_id = $1`, [userId, displayName]);
             } else {
               userId = randomUUID();
               isNewUser = true;

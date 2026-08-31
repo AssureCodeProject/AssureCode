@@ -100,17 +100,25 @@ describe('audit persistence', () => {
     // to Layer 1. "No findings" from half a scan is not the same claim as no
     // findings, and must not be able to release money — so `passed` stays
     // false and the degradation is recorded rather than being invisible.
-    const store = new InMemoryAuditStore();
-    await processCodePush('c-halfscan', 'corr-3', code, { auditStore: store });
-
-    const saved = store.saved[0] as unknown as {
-      securityScanComplete: boolean;
-      layersRun: string[];
-      passed: boolean;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      throw new TypeError('fetch failed');
     };
-    expect(saved.securityScanComplete).toBe(false);
-    expect(saved.layersRun).toEqual(['static']);
-    expect(saved.passed).toBe(false);
+    try {
+      const store = new InMemoryAuditStore();
+      await processCodePush('c-halfscan', 'corr-3', code, { auditStore: store });
+
+      const saved = store.saved[0] as unknown as {
+        securityScanComplete: boolean;
+        layersRun: string[];
+        passed: boolean;
+      };
+      expect(saved.securityScanComplete).toBe(false);
+      expect(saved.layersRun).toEqual(['static']);
+      expect(saved.passed).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it('does not publish AUDIT_COMPLETED when the audit cannot be persisted', async () => {

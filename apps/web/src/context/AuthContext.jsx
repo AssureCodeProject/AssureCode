@@ -17,6 +17,18 @@ function clearStoredToken() {
 }
 
 /**
+ * App.jsx persists the active contract workspace to localStorage, unscoped
+ * to any particular user (see App.jsx's assurecode_active_tab /
+ * assurecode_contract_data effects). Without this, a second person signing
+ * in on the same browser inherits whatever contract the previous session
+ * left behind — wrong topic, wrong trust score, wrong freelancer context.
+ */
+function clearStoredContractWorkspace() {
+  localStorage.removeItem('assurecode_contract_data');
+  localStorage.removeItem('assurecode_active_tab');
+}
+
+/**
  * Auth state for the whole app. The token itself lives in memory (see
  * utils/api.js) and is only persisted to localStorage so a page refresh
  * doesn't force a re-login — the same pattern App.jsx already uses for
@@ -60,6 +72,7 @@ export function AuthProvider({ children }) {
     }
     setAuthToken(data.token);
     localStorage.setItem(TOKEN_STORAGE_KEY, data.token);
+    clearStoredContractWorkspace();
     setUser(toUser(data.user));
     return { mfaRequired: false, user: data.user };
   }, []);
@@ -71,6 +84,7 @@ export function AuthProvider({ children }) {
     const data = await callApi('/auth/mfa/challenge', 'POST', { challenge, code });
     setAuthToken(data.token);
     localStorage.setItem(TOKEN_STORAGE_KEY, data.token);
+    clearStoredContractWorkspace();
     setUser(toUser(data.user));
     return data.user;
   }, []);
@@ -82,6 +96,7 @@ export function AuthProvider({ children }) {
     const data = await callApi('/auth/github/exchange', 'POST', { code });
     setAuthToken(data.token);
     localStorage.setItem(TOKEN_STORAGE_KEY, data.token);
+    clearStoredContractWorkspace();
     setUser(toUser(data.user));
     return data.user;
   }, []);
@@ -91,6 +106,7 @@ export function AuthProvider({ children }) {
     // not block clearing the local session.
     callApi('/auth/logout', 'POST').catch(() => {});
     clearStoredToken();
+    clearStoredContractWorkspace();
     setUser(null);
   }, []);
 

@@ -128,7 +128,7 @@ function loadingStepClasses(isComplete, isActive) {
 }
 
 /** The locked contract: its ledger hash, terms summary, and the way forward. */
-function LockedContractPanel({ lockedData, copiedHash, onCopyHash, onProceedToPhase2 }) {
+function LockedContractPanel({ lockedData, copiedHash, onCopyHash, onProceedToPhase2, onProceedToEscrow }) {
   const displayBudget =
     lockedData.budgetCents != null ? lockedData.budgetCents / 100 : Number(lockedData.budget || 0);
 
@@ -210,16 +210,37 @@ function LockedContractPanel({ lockedData, copiedHash, onCopyHash, onProceedToPh
         </div>
       </div>
 
-      {/* Primary Action to Phase 2 */}
-      <button
-        id="btn-proceed-phase2"
-        onClick={onProceedToPhase2}
-        className="w-full py-4 bg-signal text-ink font-mono font-bold text-sm tracking-wider uppercase
-                   hover:opacity-90 active:scale-[0.99] transition-all flex items-center justify-center gap-2"
-      >
-        <span>Proceed to Zero-Trust Verification</span>
-        <ArrowRight className="w-4 h-4" />
-      </button>
+      {/* Two ways forward, not a forced sequence: CI/CD and the trust score
+          only gate the *release* of escrow funds, never the funding itself
+          (see EscrowFundingPanel / contracts-escrow.ts). Real freelance
+          platforms fund escrow right after the contract is agreed, before any
+          code exists to push — so running "Simulate GitHub Push" against a
+          repo that was just provisioned empty is optional, not a prerequisite. */}
+      <div className="flex flex-col sm:flex-row gap-3">
+        <button
+          id="btn-proceed-phase2"
+          onClick={onProceedToPhase2}
+          className="flex-1 py-4 bg-signal text-ink font-mono font-bold text-sm tracking-wider uppercase
+                     hover:opacity-90 active:scale-[0.99] transition-all flex items-center justify-center gap-2"
+        >
+          <span>Proceed to Zero-Trust Verification</span>
+          <ArrowRight className="w-4 h-4" />
+        </button>
+        <button
+          id="btn-proceed-escrow"
+          onClick={onProceedToEscrow}
+          className="flex-1 py-4 bg-ink border border-signal text-signal font-mono font-bold text-sm tracking-wider uppercase
+                     hover:bg-signal/10 active:scale-[0.99] transition-all flex items-center justify-center gap-2"
+        >
+          <span>Fund Escrow Now</span>
+          <ArrowRight className="w-4 h-4" />
+        </button>
+      </div>
+      <p className="text-xs text-prose-muted font-sans">
+        Funding authorises and holds the budget on Razorpay — it does not release anything. Funds
+        are only ever captured once CI/CD and the trust score clear the settlement gate, whichever
+        order you visit these phases in.
+      </p>
     </>
   );
 }
@@ -355,6 +376,7 @@ export function ContractInitialization({
   onContractLocked,
   contractData,
   onProceedToPhase2,
+  onProceedToEscrow,
 }) {
   // Form state
   const [formData, setFormData] = useState({
@@ -612,6 +634,7 @@ export function ContractInitialization({
               copiedHash={copiedHash}
               onCopyHash={handleCopyHash}
               onProceedToPhase2={onProceedToPhase2}
+              onProceedToEscrow={onProceedToEscrow}
             />
           </motion.div>
         )}

@@ -325,6 +325,7 @@ export function App() {
                 onContractLocked={handleContractLocked}
                 contractData={contractData}
                 onProceedToPhase2={() => navigateTo('verification')}
+                onProceedToEscrow={() => navigateTo('escrow')}
               />
             </motion.div>
           )}

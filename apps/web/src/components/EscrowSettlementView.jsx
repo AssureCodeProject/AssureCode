@@ -353,6 +353,7 @@ export function EscrowSettlementView({ contractData, onResetWorkflow }) {
         <EscrowFundingPanel
           contractId={contractId}
           existingEscrow={data.escrow}
+          defaultAmountCents={contractData?.budgetCents}
           onFunded={() => {
             setToastMessage('Escrow funded. Funds are authorised and held pending the oracle verdict.');
             void load();

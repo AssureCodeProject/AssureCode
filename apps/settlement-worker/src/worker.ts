@@ -327,10 +327,11 @@ function subscribeContractLocked(): void {
     if (!contractId) return;
 
     const contractRes = await dbPool.query(
-      `SELECT freelancer_id FROM contracts WHERE contract_id = $1`,
+      `SELECT freelancer_id, title FROM contracts WHERE contract_id = $1`,
       [contractId],
     );
     const freelancerId: string | null = contractRes.rows[0]?.freelancer_id ?? null;
+    const title: string = contractRes.rows[0]?.title ?? contractId;
     if (!freelancerId) {
       // Shouldn't happen given the current UI's combined assign+lock
       // sequence, but a contract can in principle be locked before
@@ -340,27 +341,28 @@ function subscribeContractLocked(): void {
     }
 
     const identityRes = await dbPool.query(
-      `SELECT github_login FROM auth_providers WHERE user_id = $1 AND provider_type = 'GITHUB'`,
+      `SELECT ap.github_login, u.display_name
+         FROM users u
+         LEFT JOIN auth_providers ap ON ap.user_id = u.user_id AND ap.provider_type = 'GITHUB'
+        WHERE u.user_id = $1`,
       [freelancerId],
     );
     const githubLogin: string | null = identityRes.rows[0]?.github_login ?? null;
+    const freelancerDisplayName: string = identityRes.rows[0]?.display_name ?? 'freelancer';
 
     if (!githubLogin) {
       // Cannot provision a repo for an identity we don't have. Recorded as a
       // terminal row (not retried) so this is visible without silently
       // leaving the contract stuck at LOCKED forever -- see
       // reconcileStuckProvisioning's WHERE clause, which excludes 'FAILED'.
-      await dbPool
-        .query(
-          `INSERT INTO repo_provisioning
-             (contract_id, github_org, repo_name, freelancer_user_id, freelancer_github_login, status, last_error)
-           VALUES ($1, $2, $3, $4, '', 'FAILED', 'GITHUB_ACCOUNT_REQUIRED')
-           ON CONFLICT (contract_id) DO NOTHING`,
-          [contractId, config.GITHUB_ORG, repoNameFor(contractId), freelancerId],
-        )
-        .catch((err: any) =>
-          logger.error({ contractId, err: err.message }, 'Failed to record GITHUB_ACCOUNT_REQUIRED'),
-        );
+      await insertProvisioningRow({
+        contractId,
+        freelancerId,
+        githubLogin: '',
+        title,
+        freelancerDisplayName,
+        terminal: { status: 'FAILED', lastError: 'GITHUB_ACCOUNT_REQUIRED' },
+      }).catch((err: any) => logger.error({ contractId, err: err.message }, 'Failed to record GITHUB_ACCOUNT_REQUIRED'));
       logger.warn(
         { contractId, freelancerId },
         'Freelancer has no linked GitHub identity; repo provisioning blocked (GITHUB_ACCOUNT_REQUIRED)',
@@ -374,8 +376,82 @@ function subscribeContractLocked(): void {
   });
 }
 
-function repoNameFor(contractId: string): string {
-  return `assurecode-contract-${contractId.toLowerCase()}`;
+/**
+ * GitHub repo names allow letters, digits, '-', '_', '.'; original casing is
+ * preserved (GitHub does not force lowercase). Never returns an empty
+ * string -- a title/name that slugifies to nothing (e.g. all-emoji) still
+ * needs a valid path segment.
+ */
+function slugifyComponent(s: string, maxLen: number): string {
+  return s.trim().replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, maxLen) || 'x';
+}
+
+const REPO_NAME_MAX_ATTEMPTS = 5;
+
+/**
+ * Compute a human-readable, numbered repo name ("<Title>-<FirstName>-01")
+ * and insert the repo_provisioning row with it, retrying with the next
+ * number on a genuine collision (the repo_provisioning_repo_name_key unique
+ * constraint from V023) rather than silently reusing someone else's name.
+ *
+ * Deliberately the only place a repo_name is ever chosen: unlike the old
+ * assurecode-contract-<contract-id> scheme, this name is not a pure
+ * function of the contract id (it depends on how many other repos already
+ * exist for the same title+freelancer), so it must be decided exactly once
+ * and persisted -- every later retry has to read row.repo_name back out of
+ * the database rather than recomputing it, or a retry could compute a
+ * different name than the one already used to create the real GitHub repo.
+ *
+ * `ON CONFLICT (contract_id) DO NOTHING` still gives the same "start
+ * provisioning" idempotency the old scheme had: calling this again for a
+ * contract that already has a row is a clean no-op regardless of what name
+ * this particular call computed.
+ */
+async function insertProvisioningRow(args: {
+  contractId: string;
+  freelancerId: string;
+  githubLogin: string;
+  title: string;
+  freelancerDisplayName: string;
+  terminal?: { status: 'FAILED'; lastError: string };
+}): Promise<void> {
+  const firstName = (args.freelancerDisplayName || 'freelancer').trim().split(/\s+/)[0] ?? 'freelancer';
+  const base = `${slugifyComponent(args.title, 40)}-${slugifyComponent(firstName, 20)}`;
+
+  for (let attempt = 1; attempt <= REPO_NAME_MAX_ATTEMPTS; attempt++) {
+    const countRes = await dbPool.query(`SELECT COUNT(*)::int AS n FROM repo_provisioning WHERE repo_name LIKE $1`, [
+      `${base}-%`,
+    ]);
+    const num = Number(countRes.rows[0].n) + attempt;
+    const repoName = `${base}-${String(num).padStart(2, '0')}`;
+
+    try {
+      if (args.terminal) {
+        await dbPool.query(
+          `INSERT INTO repo_provisioning
+             (contract_id, github_org, repo_name, freelancer_user_id, freelancer_github_login, status, last_error)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (contract_id) DO NOTHING`,
+          [args.contractId, config.GITHUB_ORG, repoName, args.freelancerId, args.githubLogin, args.terminal.status, args.terminal.lastError],
+        );
+      } else {
+        await dbPool.query(
+          `INSERT INTO repo_provisioning (contract_id, github_org, repo_name, freelancer_user_id, freelancer_github_login)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (contract_id) DO NOTHING`,
+          [args.contractId, config.GITHUB_ORG, repoName, args.freelancerId, args.githubLogin],
+        );
+      }
+      return;
+    } catch (err: any) {
+      // 23505 = unique_violation. ON CONFLICT above only targets contract_id,
+      // so a repo_name collision (a real race against another contract
+      // computing the same candidate) surfaces as a normal thrown error here
+      // rather than being silently absorbed -- retry with the next number.
+      if (err?.code === '23505' && attempt < REPO_NAME_MAX_ATTEMPTS) continue;
+      throw err;
+    }
+  }
 }
 
 /**
@@ -394,22 +470,26 @@ async function attemptProvisioning(
 ): Promise<void> {
   if (!provisioningEnabled) return;
 
-  const repoName = repoNameFor(contractId);
+  // contract_id is the PK, so two processes racing the same CONTRACT_LOCKED
+  // event (or a reconciler sweep overlapping a live subscription) can only
+  // ever produce one row -- but unlike the old pure-function-of-contractId
+  // name, the numbered name has to be *decided*, not just inserted, so that
+  // only happens once, right here, the first time this contract has no row
+  // yet. Every later call (including every retry) skips straight to reading
+  // row.repo_name back out rather than recomputing anything.
+  let rowRes = await dbPool.query(`SELECT * FROM repo_provisioning WHERE contract_id = $1`, [contractId]);
+  if (rowRes.rowCount === 0) {
+    const contractRes = await dbPool.query(`SELECT title FROM contracts WHERE contract_id = $1`, [contractId]);
+    const title: string = contractRes.rows[0]?.title ?? contractId;
+    const freelancerRes = await dbPool.query(`SELECT display_name FROM users WHERE user_id = $1`, [freelancerId]);
+    const freelancerDisplayName: string = freelancerRes.rows[0]?.display_name ?? 'freelancer';
 
-  // INSERT ... ON CONFLICT DO NOTHING is the free idempotency for "start
-  // provisioning": contract_id is the PK, so two processes racing the same
-  // CONTRACT_LOCKED event (or a reconciler sweep overlapping a live
-  // subscription) can only ever produce one row, and therefore one repo.
-  await dbPool
-    .query(
-      `INSERT INTO repo_provisioning (contract_id, github_org, repo_name, freelancer_user_id, freelancer_github_login)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (contract_id) DO NOTHING`,
-      [contractId, config.GITHUB_ORG, repoName, freelancerId, githubLogin],
-    )
-    .catch((err: any) => logger.error({ contractId, err: err.message }, 'Failed to start repo provisioning'));
+    await insertProvisioningRow({ contractId, freelancerId, githubLogin, title, freelancerDisplayName }).catch(
+      (err: any) => logger.error({ contractId, err: err.message }, 'Failed to start repo provisioning'),
+    );
+    rowRes = await dbPool.query(`SELECT * FROM repo_provisioning WHERE contract_id = $1`, [contractId]);
+  }
 
-  const rowRes = await dbPool.query(`SELECT * FROM repo_provisioning WHERE contract_id = $1`, [contractId]);
   const row = rowRes.rows[0];
   if (!row || row.status === 'COMPLETE' || row.status === 'FAILED') return;
 
@@ -420,7 +500,7 @@ async function attemptProvisioning(
   try {
     let repoFullName: string = row.repo_full_name;
     if (!repoFullName) {
-      const created = await createOrgRepo(repoName, provisionerDeps);
+      const created = await createOrgRepo(row.repo_name, provisionerDeps);
       await dbPool.query(
         `UPDATE repo_provisioning
             SET repo_id = $1, repo_full_name = $2, repo_html_url = $3, status = 'REPO_CREATED', updated_at = NOW()

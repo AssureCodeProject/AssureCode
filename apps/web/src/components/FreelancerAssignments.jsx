@@ -37,14 +37,48 @@ function formatDeadline(deadline) {
  * linked GitHub identity is required before a contract can be provisioned a
  * repository at all (GITHUB_ACCOUNT_REQUIRED in worker.ts).
  */
+/** Surfaced from the OAuth callback's redirect back here on failure (?error=...). */
+function githubLinkErrorMessage(code) {
+  if (code === 'github_already_linked') {
+    return 'That GitHub account is already connected to a different AssureCode account.';
+  }
+  if (code === 'github_no_email') return 'That GitHub account has no email address AssureCode can use.';
+  if (code === 'github_oauth_failed') return 'GitHub connection failed. Please try again.';
+  return null;
+}
+
 function GithubConnectCard() {
   const [status, setStatus] = useState(null); // null = loading
+  const [isStarting, setIsStarting] = useState(false);
+  const [error, setError] = useState(
+    githubLinkErrorMessage(new URLSearchParams(window.location.search).get('error')) || '',
+  );
 
   useEffect(() => {
     callApi('/api/freelancer/github-status')
       .then((data) => setStatus(data.status))
       .catch(() => setStatus(null));
   }, []);
+
+  // Deliberately not a plain <a href="/auth/github">: that route is
+  // unauthenticated and has no idea who was already logged in when clicked,
+  // so on a browser with an existing GitHub session for a *different*
+  // AssureCode account, it silently logs the caller into that other
+  // account instead of linking GitHub to the one they're using. This fetches
+  // an authenticated link-mode URL (bearer token attached, same as any other
+  // API call) that carries the current user id through the OAuth round-trip,
+  // then navigates the browser to it.
+  const handleConnect = async () => {
+    setIsStarting(true);
+    setError('');
+    try {
+      const data = await callApi('/auth/github/link-url');
+      window.location.href = data.url;
+    } catch (err) {
+      setError(err.message || 'Failed to start GitHub connection');
+      setIsStarting(false);
+    }
+  };
 
   if (status === null) return null;
 
@@ -68,15 +102,19 @@ function GithubConnectCard() {
         {isReconnect
           ? "Your linked GitHub account could no longer be found — reconnect so you can be added to your contract's repository."
           : "Connect GitHub to prove your identity — required before you can be assigned a contract that provisions a repository."}
+        {error && <span className="text-fail block mt-1">{error}</span>}
       </div>
-      <a
-        href="/auth/github"
-        className="inline-flex items-center gap-2 px-3 py-1.5 font-mono text-xs font-bold uppercase tracking-wider
-                   border border-rule text-prose hover:border-rule-hi hover:bg-ink-3/40 transition-colors shrink-0"
+      <FuturisticButton
+        variant="secondary"
+        size="sm"
+        icon={Github}
+        loading={isStarting}
+        loadingText="Starting..."
+        onClick={handleConnect}
+        className="shrink-0"
       >
-        <Github className="w-3.5 h-3.5" />
-        <span>{isReconnect ? 'Reconnect GitHub' : 'Connect GitHub'}</span>
-      </a>
+        {isReconnect ? 'Reconnect GitHub' : 'Connect GitHub'}
+      </FuturisticButton>
     </GlassCard>
   );
 }

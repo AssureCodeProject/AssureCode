@@ -81,12 +81,18 @@ describe.skipIf(!available)('repo provisioning reconciliation', () => {
     }
   });
 
-  async function seedContractAndFreelancer(contractId: string, freelancerId: string, githubLogin: string): Promise<void> {
+  async function seedContractAndFreelancer(
+    contractId: string,
+    freelancerId: string,
+    githubLogin: string,
+    options: { title?: string; displayName?: string } = {},
+  ): Promise<void> {
+    const displayName = options.displayName ?? freelancerId;
     await pool.query(
       `INSERT INTO users (user_id, email, password_hash, role, display_name)
-       VALUES ($1, $1 || '@example.com', 'unusable-no-login', 'freelancer', $1)
+       VALUES ($1, $1 || '@example.com', 'unusable-no-login', 'freelancer', $2)
        ON CONFLICT (user_id) DO NOTHING`,
-      [freelancerId],
+      [freelancerId, displayName],
     );
     await pool.query(
       `INSERT INTO auth_providers (user_id, provider_type, provider_user_id, github_login, token_valid)
@@ -96,9 +102,9 @@ describe.skipIf(!available)('repo provisioning reconciliation', () => {
     );
     await pool.query(
       `INSERT INTO contracts (contract_id, client_id, freelancer_id, title, requirements, budget_cents, deadline, status)
-       VALUES ($1, 'legacy-client', $2, 'repo provisioning test', 'n/a', 100000, '2026-12-31', 'LOCKED')
+       VALUES ($1, 'legacy-client', $2, $3, 'n/a', 100000, '2026-12-31', 'LOCKED')
        ON CONFLICT (contract_id) DO NOTHING`,
-      [contractId, freelancerId],
+      [contractId, freelancerId, options.title ?? 'repo provisioning test'],
     );
   }
 
@@ -122,7 +128,13 @@ describe.skipIf(!available)('repo provisioning reconciliation', () => {
     expect(row.rows[0].status).toBe('COMPLETE');
     expect(row.rows[0].collaborator_status).toBe('INVITED');
     expect(row.rows[0].webhook_status).toBe('ATTACHED');
-    expect(row.rows[0].repo_full_name).toBe(`${TEST_ORG}/assurecode-contract-${contractId.toLowerCase()}`);
+    // "repo provisioning test" slugified, plus a slugified freelancer
+    // component (the display name here is just freelancerId, no spaces --
+    // see insertProvisioningRow's firstName split), plus a running sequence
+    // number. Not asserting the exact freelancer segment, since it gets
+    // truncated to slugifyComponent's 20-char cap.
+    expect(row.rows[0].repo_name).toMatch(/^repo-provisioning-test-.+-\d{2}$/);
+    expect(row.rows[0].repo_full_name).toBe(`${TEST_ORG}/${row.rows[0].repo_name}`);
 
     const contractRow = await pool.query(`SELECT status, github_repo_full_name FROM contracts WHERE contract_id = $1`, [contractId]);
     expect(contractRow.rows[0].status).toBe('ACTIVE');
@@ -192,5 +204,35 @@ describe.skipIf(!available)('repo provisioning reconciliation', () => {
 
     collaboratorMode = 'invited';
     await cleanup(contractId, freelancerId);
+  });
+
+  it('two contracts with the same title and freelancer first name get sequential -01/-02 repo names', async () => {
+    const suffix = Date.now();
+    // Keep the title short enough that slugifyComponent's 40-char cap
+    // doesn't truncate part of the uniqueness suffix out of the name this
+    // test asserts on exactly.
+    const shortSuffix = String(suffix).slice(-6);
+    const title = `Fintech Dashboard ${shortSuffix}`;
+    const contractId1 = `AC-SEQ-A-${suffix}`;
+    const contractId2 = `AC-SEQ-B-${suffix}`;
+    const freelancerId1 = `freelancer-seq-a-${suffix}`;
+    const freelancerId2 = `freelancer-seq-b-${suffix}`;
+    // Both freelancers share a first name ("Priya") so the two repos land in
+    // the same title+name numbering bucket -- the point of this test.
+    await seedContractAndFreelancer(contractId1, freelancerId1, 'octocat', { title, displayName: 'Priya Sharma' });
+    await seedContractAndFreelancer(contractId2, freelancerId2, 'octocat', { title, displayName: 'Priya Patel' });
+
+    await worker.attemptProvisioning(contractId1, freelancerId1, 'octocat');
+    await worker.attemptProvisioning(contractId2, freelancerId2, 'octocat');
+
+    const row1 = await pool.query(`SELECT repo_name FROM repo_provisioning WHERE contract_id = $1`, [contractId1]);
+    const row2 = await pool.query(`SELECT repo_name FROM repo_provisioning WHERE contract_id = $1`, [contractId2]);
+
+    const expectedBase = `Fintech-Dashboard-${shortSuffix}-Priya`;
+    expect(row1.rows[0].repo_name).toBe(`${expectedBase}-01`);
+    expect(row2.rows[0].repo_name).toBe(`${expectedBase}-02`);
+
+    await cleanup(contractId1, freelancerId1);
+    await cleanup(contractId2, freelancerId2);
   });
 });

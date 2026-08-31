@@ -48,6 +48,73 @@ function stubGeneratedTests(contractId: string): { statusCode: number; contractI
   };
 }
 
+/** Shape shared by both /match response paths (ai-service's real MatchItem and the degraded fallback below). */
+interface MatchItem {
+  freelancer_id: string;
+  freelancer_name: string;
+  trust_score: number;
+  score: number;
+  explanation: { skill_score: number; trust_score: number; history_score: number; matched_skills: string[] };
+  hourly_rate_cents: number;
+}
+
+/**
+ * A freelancer who registered for real and has a currently-valid GitHub
+ * connection must always be a candidate, regardless of skill match — a
+ * brand-new account has no skills on file, so it can never win a real
+ * ranking, and would otherwise be permanently invisible to every client.
+ * Seeded demo accounts (tools/seed-users.py) never get an auth_providers
+ * GITHUB row unless someone deliberately connects one, so this JOIN only
+ * ever pulls in real, currently-connected freelancers — it does not change
+ * how the 12 seeded accounts rank.
+ *
+ * Deliberately does NOT require a freelancer_profiles row to exist
+ * (LEFT JOIN, not JOIN): that row is only created best-effort, via a call
+ * to ai-service's embedder at OAuth time (auth.ts's ensureFreelancerProfile)
+ * -- a real freelancer whose embed call happened to fail or time out at
+ * connect time would otherwise be silently and permanently invisible here
+ * too, exactly the "irrespective of skills" guarantee this function exists
+ * to provide. Missing trust_score/hourly_rate just fall back to honest
+ * defaults instead.
+ *
+ * token_valid = TRUE deliberately excludes a freelancer whose GitHub link
+ * has gone stale (RECONNECTION_REQUIRED, see /api/freelancer/github-status)
+ * — consistent with the rest of the system treating that state as "not
+ * really connected right now."
+ *
+ * Called from both /match response paths (the real ai-service result and
+ * the degraded trust-score fallback) so the guarantee holds either way.
+ */
+async function withAlwaysVisibleFreelancers(results: MatchItem[]): Promise<MatchItem[]> {
+  const present = new Set(results.map((r) => r.freelancer_id));
+  const { rows } = await dbPool.query(`
+    SELECT u.user_id AS freelancer_id, u.display_name, f.trust_score, f.hourly_rate_cents
+      FROM users u
+      JOIN auth_providers ap ON ap.user_id = u.user_id
+                             AND ap.provider_type = 'GITHUB' AND ap.token_valid = TRUE
+      LEFT JOIN freelancer_profiles f ON f.freelancer_id = u.user_id
+     WHERE u.role = 'freelancer'
+  `);
+
+  const extras: MatchItem[] = rows
+    .filter((row) => !present.has(row.freelancer_id))
+    .map((row) => {
+      const trustScore = parseFloat(row.trust_score || 0.5);
+      return {
+        freelancer_id: row.freelancer_id,
+        freelancer_name: row.display_name,
+        trust_score: trustScore,
+        score: trustScore,
+        // Honestly unmeasured, same convention the degraded path already
+        // uses -- this candidate isn't here because of a skill match.
+        explanation: { skill_score: 0, trust_score: trustScore, history_score: 0, matched_skills: [] },
+        hourly_rate_cents: parseInt(row.hourly_rate_cents || 0, 10),
+      };
+    });
+
+  return [...results, ...extras];
+}
+
 export function registerContractsLifecycleRoutes(server: FastifyInstance): void {
   server.get<{
     Reply: {
@@ -176,8 +243,9 @@ export function registerContractsLifecycleRoutes(server: FastifyInstance): void 
       });
 
       if (aiRes.ok) {
-        const data = await aiRes.json();
-        return reply.send(data);
+        const data = (await aiRes.json()) as { results?: MatchItem[]; [key: string]: unknown };
+        const results = await withAlwaysVisibleFreelancers(data.results ?? []);
+        return reply.send({ ...data, results, count: results.length });
       }
 
       logger.warn(
@@ -214,7 +282,7 @@ export function registerContractsLifecycleRoutes(server: FastifyInstance): void 
         .filter(Boolean),
     );
 
-    const results = pgRes.rows.map((row) => {
+    const rankedResults = pgRes.rows.map((row) => {
       const trustScore = parseFloat(row.trust_score || 0.5);
       const skills: string[] = Array.isArray(row.skills) ? row.skills : [];
       return {
@@ -231,6 +299,7 @@ export function registerContractsLifecycleRoutes(server: FastifyInstance): void 
         hourly_rate_cents: parseInt(row.hourly_rate_cents || 0, 10),
       };
     });
+    const results = await withAlwaysVisibleFreelancers(rankedResults);
 
     return reply.send({
       results,

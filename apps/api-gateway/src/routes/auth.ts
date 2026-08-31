@@ -401,24 +401,36 @@ export function registerAuthRoutes(server: FastifyInstance): void {
     // CSRF guard for the redirect round-trip to GitHub: an HMAC over a random
     // nonce + timestamp, keyed on JWT_SECRET (already a required, always-set
     // secret — no new key needed just to sign a short-lived nonce).
-    function signState(): string {
+    //
+    // Optionally carries the *currently authenticated* user's id through the
+    // round-trip (link mode) -- GitHub's redirect back to our callback has no
+    // Authorization header, so this signed state is the only way the callback
+    // can know "attach this GitHub identity to the account that was already
+    // logged in," as opposed to plain login mode (no linkUserId), where the
+    // callback resolves whichever account the GitHub identity matches. The
+    // HMAC is what makes this trustworthy -- only this server could have
+    // produced a state naming that user, so no server-side session storage is
+    // needed for it.
+    function signState(linkUserId?: string): string {
       const nonce = randomUUID();
       const ts = Date.now().toString();
-      const payload = `${nonce}.${ts}`;
+      const payload = `${nonce}.${ts}.${linkUserId ?? ''}`;
       const sig = createHmac('sha256', config.JWT_SECRET).update(payload).digest('base64url');
       return `${payload}.${sig}`;
     }
 
-    function verifyState(state: string): boolean {
+    function verifyState(state: string): { valid: boolean; linkUserId: string | null } {
+      const invalid = { valid: false, linkUserId: null };
       const parts = state.split('.');
-      if (parts.length !== 3) return false;
-      const [nonce, ts, sig] = parts;
-      const expected = createHmac('sha256', config.JWT_SECRET).update(`${nonce}.${ts}`).digest('base64url');
+      if (parts.length !== 4) return invalid;
+      const [nonce, ts, linkUserId, sig] = parts;
+      const expected = createHmac('sha256', config.JWT_SECRET).update(`${nonce}.${ts}.${linkUserId}`).digest('base64url');
       const sigBuf = Buffer.from(sig);
       const expectedBuf = Buffer.from(expected);
-      if (sigBuf.length !== expectedBuf.length || !timingSafeEqual(sigBuf, expectedBuf)) return false;
+      if (sigBuf.length !== expectedBuf.length || !timingSafeEqual(sigBuf, expectedBuf)) return invalid;
       const age = Date.now() - Number(ts);
-      return age >= 0 && age < OAUTH_STATE_TTL_MS;
+      if (age < 0 || age >= OAUTH_STATE_TTL_MS) return invalid;
+      return { valid: true, linkUserId: linkUserId || null };
     }
 
     // The callback redirects into the SPA rather than handing back a JWT
@@ -433,6 +445,51 @@ export function registerAuthRoutes(server: FastifyInstance): void {
       const payload = `${userId}.${ts}.${nonce}`;
       const sig = createHmac('sha256', config.JWT_SECRET).update(payload).digest('base64url');
       return `${payload}.${sig}`;
+    }
+
+    // Matchmaking visibility for any GitHub-connected freelancer, regardless
+    // of *when* they connected -- not just one created fresh by this
+    // callback (isNewUser). A freelancer who registers via /auth/register
+    // first and links GitHub afterward (link mode) hits the
+    // existingUser/linkToUserId branches below, never isNewUser, and would
+    // otherwise never get a freelancer_profiles row at all: checking
+    // existence directly, rather than inferring it from which branch just
+    // ran, covers GitHub-first signup, register-then-link, and reconnect
+    // (already has a row -> no-op) uniformly.
+    //
+    // freelancer_profiles.profile_embedding is NOT NULL with no default
+    // (tools/seed-users.py always computes a real one), so a row can't be
+    // inserted without calling out to ai-service's embedder. Best-effort --
+    // a failure here still leaves a working login, just not yet
+    // matchmaking-visible via skill search (contracts-lifecycle.ts's /match
+    // route separately guarantees GitHub-connected freelancers show up
+    // regardless of skills once this row exists at all).
+    async function ensureFreelancerProfile(userId: string, displayName: string, githubLogin: string | null): Promise<void> {
+      const existing = await dbPool.query(`SELECT 1 FROM freelancer_profiles WHERE freelancer_id = $1`, [userId]);
+      if ((existing.rowCount ?? 0) > 0) return;
+
+      try {
+        const profileText = `${displayName} (GitHub: ${githubLogin ?? userId})`;
+        const embedRes = await fetch(`${aiServiceUrl}/embed`, {
+          method: 'POST',
+          headers: serviceCallHeaders(),
+          body: JSON.stringify({ text: profileText }),
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (embedRes.ok) {
+          const { vector } = (await embedRes.json()) as { vector: number[] };
+          await dbPool.query(
+            `INSERT INTO freelancer_profiles (freelancer_id, skills, profile_text, profile_embedding)
+             VALUES ($1, $2, $3, $4::vector)
+             ON CONFLICT (freelancer_id) DO NOTHING`,
+            [userId, [], profileText, `[${vector.join(',')}]`],
+          );
+        } else {
+          logger.warn({ userId, status: embedRes.status }, 'ai-service /embed non-OK; freelancer_profiles row not created');
+        }
+      } catch (err) {
+        logger.warn({ userId, err }, 'Failed to create freelancer_profiles row for GitHub-connected freelancer (non-blocking)');
+      }
     }
 
     function verifyExchangeCode(code: string): string | null {
@@ -462,13 +519,39 @@ export function registerAuthRoutes(server: FastifyInstance): void {
       return reply.redirect(`https://github.com/login/oauth/authorize?${params.toString()}`);
     });
 
+    // The authenticated counterpart to /auth/github above: called by the
+    // freelancer dashboard's "Connect GitHub" button (already logged in) so
+    // the callback links the new identity to *this* account instead of
+    // resolving to whichever account that GitHub identity happens to match
+    // (which could silently log the caller into someone else's account, as
+    // /auth/github's plain-link/no-session design would). Returns the
+    // authorize URL as JSON rather than redirecting directly, because the
+    // caller needs the current bearer token attached to reach this route at
+    // all -- a plain `<a href>` navigation can't carry an Authorization
+    // header, so the frontend fetches this first, then navigates the browser
+    // to the URL it returns.
+    server.get('/auth/github/link-url', async (request, reply) => {
+      const user = (request as any).user as AuthUser | undefined;
+      if (!user) return reply.status(401).send({ error: 'Unauthorized' });
+
+      const params = new URLSearchParams({
+        client_id: config.GITHUB_CLIENT_ID!,
+        scope: 'read:user user:email',
+        state: signState(user.userId),
+        redirect_uri: githubCallbackUrl,
+      });
+      return reply.send({ url: `https://github.com/login/oauth/authorize?${params.toString()}` });
+    });
+
     server.get<{ Querystring: { code?: string; state?: string; error?: string } }>(
       '/auth/github/callback',
       async (request, reply) => {
         const { code, state, error } = request.query;
-        if (error || !code || !state || !verifyState(state)) {
+        const stateResult = state ? verifyState(state) : { valid: false, linkUserId: null };
+        if (error || !code || !state || !stateResult.valid) {
           return reply.redirect(`${config.WEB_APP_URL}/?error=github_oauth_failed`);
         }
+        const linkToUserId = stateResult.linkUserId;
 
         try {
           const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
@@ -510,9 +593,58 @@ export function registerAuthRoutes(server: FastifyInstance): void {
           const providerUserId = String(ghUser.id);
           const displayName: string = ghUser.name || ghUser.login || email;
 
+          // Link mode: attach this GitHub identity to the account that was
+          // already logged in when "Connect GitHub" was clicked. Never falls
+          // through to the email-match-onto-a-different-account path login
+          // mode uses below -- that path is exactly what silently swapped a
+          // freelancer into someone else's account when their browser
+          // already had an active GitHub session for a different identity.
+          if (linkToUserId) {
+            const existingProvider = await dbPool.query(
+              `SELECT user_id FROM auth_providers WHERE provider_type = 'GITHUB' AND provider_user_id = $1`,
+              [providerUserId],
+            );
+            if ((existingProvider.rowCount ?? 0) > 0 && existingProvider.rows[0].user_id !== linkToUserId) {
+              logger.warn(
+                { linkToUserId, conflictingUserId: existingProvider.rows[0].user_id },
+                'GitHub identity already linked to a different account; refusing to swap the caller\'s session',
+              );
+              return reply.redirect(`${config.WEB_APP_URL}/?error=github_already_linked`);
+            }
+
+            const encryptedToken = config.GITHUB_TOKEN_ENCRYPTION_KEY
+              ? (await dbPool.query(`SELECT pgp_sym_encrypt($1, $2) AS enc`, [accessToken, config.GITHUB_TOKEN_ENCRYPTION_KEY])).rows[0].enc
+              : null;
+
+            await dbPool.query(
+              `INSERT INTO auth_providers (user_id, provider_type, provider_user_id, access_token_encrypted, token_scopes, github_login, token_valid, connected_at)
+               VALUES ($1, 'GITHUB', $2, $3, $4, $5, TRUE, now())
+               ON CONFLICT (provider_type, provider_user_id) DO UPDATE
+                 SET access_token_encrypted = EXCLUDED.access_token_encrypted,
+                     token_scopes = EXCLUDED.token_scopes,
+                     github_login = EXCLUDED.github_login,
+                     token_valid = TRUE,
+                     connected_at = now()`,
+              [linkToUserId, providerUserId, encryptedToken, tokenJson.scope ?? null, ghUser.login ?? null],
+            );
+            await dbPool.query(`UPDATE users SET display_name = $2 WHERE user_id = $1`, [linkToUserId, displayName]);
+            await ensureFreelancerProfile(linkToUserId, displayName, ghUser.login ?? null);
+
+            await logSecurityAudit(dbPool, {
+              userId: linkToUserId,
+              action: 'GITHUB_LINKED',
+              resource: 'auth',
+              ipAddress: request.ip,
+              status: 'SUCCESS',
+            });
+
+            // Already authenticated -- no exchange code to redeem, just
+            // return to the app. The caller's existing session is untouched.
+            return reply.redirect(`${config.WEB_APP_URL}/`);
+          }
+
           const client = await dbPool.connect();
           let userId: string;
-          let isNewUser = false;
           try {
             await client.query('BEGIN');
 
@@ -535,7 +667,6 @@ export function registerAuthRoutes(server: FastifyInstance): void {
                 await client.query(`UPDATE users SET display_name = $2 WHERE user_id = $1`, [userId, displayName]);
               } else {
                 userId = randomUUID();
-                isNewUser = true;
                 // Sentinel password_hash: no argon2 hash will ever verify
                 // against it, matching the 'unusable-no-login' convention
                 // V012 already established for accounts with no password.
@@ -571,36 +702,12 @@ export function registerAuthRoutes(server: FastifyInstance): void {
             client.release();
           }
 
-          // Matchmaking visibility for a brand-new GitHub-first freelancer:
-          // freelancer_profiles.profile_embedding is NOT NULL with no default
-          // (tools/seed-users.py always computes a real one), so a row can't be
-          // inserted without calling out to ai-service's embedder the same way
-          // that script does. Best-effort — a failure here still leaves a
-          // working login, just not yet matchmaking-visible.
-          if (isNewUser) {
-            try {
-              const profileText = `${displayName} (GitHub: ${ghUser.login ?? providerUserId})`;
-              const embedRes = await fetch(`${aiServiceUrl}/embed`, {
-                method: 'POST',
-                headers: serviceCallHeaders(),
-                body: JSON.stringify({ text: profileText }),
-                signal: AbortSignal.timeout(10_000),
-              });
-              if (embedRes.ok) {
-                const { vector } = (await embedRes.json()) as { vector: number[] };
-                await dbPool.query(
-                  `INSERT INTO freelancer_profiles (freelancer_id, skills, profile_text, profile_embedding)
-                   VALUES ($1, $2, $3, $4::vector)
-                   ON CONFLICT (freelancer_id) DO NOTHING`,
-                  [userId, [], profileText, `[${vector.join(',')}]`],
-                );
-              } else {
-                logger.warn({ userId, status: embedRes.status }, 'ai-service /embed non-OK; freelancer_profiles row not created');
-              }
-            } catch (err) {
-              logger.warn({ userId, err }, 'Failed to create freelancer_profiles row for new GitHub-login freelancer (non-blocking)');
-            }
-          }
+          // Covers a brand-new GitHub-first signup and the existingUser
+          // email-match branch above (a password account that never
+          // connected GitHub before) uniformly -- see ensureFreelancerProfile's
+          // own header for why "does a row exist" is checked directly rather
+          // than inferred from which branch just ran.
+          await ensureFreelancerProfile(userId, displayName, ghUser.login ?? null);
 
           await logSecurityAudit(dbPool, {
             userId,

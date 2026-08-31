@@ -40,9 +40,17 @@ export const formatMinor = (minor, currency = 'INR') =>
 /** Rupees typed by the user → the paise Razorpay expects. */
 const rupeesToMinor = (rupees) => Math.round(Number(rupees) * 100);
 
-export function EscrowFundingPanel({ contractId, existingEscrow, onFunded }) {
+export function EscrowFundingPanel({ contractId, existingEscrow, defaultAmountCents, onFunded }) {
   const { user } = useAuth();
-  const [amountRupees, setAmountRupees] = useState('');
+  // Pre-filled from the budget the client already committed to at Contract
+  // Initialization (contractData.budgetCents) -- previously this started
+  // blank and made the client retype an amount they'd already entered once.
+  // Still a plain editable input, not locked: funding a different amount
+  // than the original budget is a real, if unusual, thing a client might
+  // want to do (e.g. a milestone smaller than the full contract).
+  const [amountRupees, setAmountRupees] = useState(
+    defaultAmountCents != null ? (defaultAmountCents / 100).toFixed(2) : '',
+  );
   const [phase, setPhase] = useState('idle'); // idle | creating | paying | verifying
   const [error, setError] = useState(null);
   // Funding is gated on KYC by requireKycVerified in the gateway. The modal

@@ -22,7 +22,7 @@
  * EVENT_BUS_TYPE) and ci-worker running. Without that, this script will
  * correctly report the audit step as never landing rather than pretending it
  * did — the same "fail loud, don't fabricate" rule the rest of this codebase
- * follows. See docs/PRESENTATION_GUIDE.md for what's running where.
+ * follows. See DEMO.md for what's running where.
  */
 import pg from 'pg';
 import fs from 'node:fs';

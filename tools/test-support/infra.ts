@@ -56,6 +56,18 @@ export function redisAvailable(): Promise<boolean> {
   return canConnect(host, port);
 }
 
+/**
+ * KAFKA_BROKERS is a comma-separated `host:port` list (see
+ * eventBusOptionsFromConfig), not a single URL — take the first entry rather
+ * than reusing endpointFrom's URL parser, which would fail on a bare
+ * `host:port` string with no scheme.
+ */
+export function kafkaAvailable(): Promise<boolean> {
+  const first = (process.env.KAFKA_BROKERS ?? '').split(',')[0]?.trim();
+  const [host, portStr] = first ? first.split(':') : [];
+  return canConnect(host || '127.0.0.1', Number(portStr) || 9092);
+}
+
 /** Docker needs a responsive daemon, not just a binary on PATH. */
 export function dockerAvailable(): boolean {
   const probe = spawnSync('docker', ['info', '--format', '{{.ServerVersion}}'], {

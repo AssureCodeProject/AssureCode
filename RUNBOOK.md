@@ -102,8 +102,13 @@ cd apps/scope-guard && pytest tests -q
   contract end to end, grep logs for its correlation id rather than its
   contract id; the id propagates across services and the bus.
 
-Only `api-gateway` and `webhook-ingest` expose `/metrics`. The Python services
-have no instrumentation, so their latency does not appear in Prometheus.
+All six services expose `/metrics` — `api-gateway`, `webhook-ingest`,
+`ci-worker` and `settlement-worker` via `packages/telemetry`, `ai-service` and
+`scope-guard` via `app/ports/telemetry.py` — sharing the `assurecode_*` prefix
+so a dashboard can sum across both tiers. What's still missing is OpenTelemetry
+*tracing* on the Python side: `ai-service` and `scope-guard` have no OTel
+spans, so a trace crossing into them stops at the boundary even though their
+metrics show up fine.
 
 ## Troubleshooting
 
@@ -143,7 +148,7 @@ resolves to the caller's own container. Every one of these calls has a fallback,
 so the failure is quiet — matchmaking, test generation, RAG ingest and XAI
 scoring all degrade rather than error.
 
-### `/drift/status` returns 503
+### `GET /scope/drift/{contract_id}` returns 503
 
 Working as intended. `configs/c1_rules.json` has `kappa` and `h` null and
 `status: PRE_DATA`; no T2 calibration set exists, so no anytime-valid
@@ -273,13 +278,16 @@ exporter fails quietly and the application is unaffected.
 
 ## Deployment
 
-`infra/k8s/` holds 15 manifests with a strong security posture — `runAsNonRoot`,
+`infra/k8s/` holds 18 manifests with a strong security posture — `runAsNonRoot`,
 `seccompProfile: RuntimeDefault`, `drop: ["ALL"]`, no automounted service
-account tokens, 9 NetworkPolicies, resource limits and probes on every workload.
+account tokens, 15 NetworkPolicies, resource limits and probes on every workload.
 
-**There is no CD pipeline.** CI builds all 8 images with `push: false` and
-discards them; every manifest uses `:latest` with no registry prefix; every
-secret is `REPLACE_ME`. A real deployment needs a registry, image tags pinned to
+**There is still no proven CD pipeline, though the push gate now exists.**
+CI's `container-build` pushes images only when the ref is a `v*` tag
+(`startsWith(github.ref, 'refs/tags/v')`); an ordinary branch/PR build still
+discards them. No tag has been cut yet, so this path is unexercised. Every
+manifest uses `:latest` with no registry prefix; every secret is `REPLACE_ME`.
+A real deployment needs a registry, image tags pinned to
 a commit, and one of the secret paths in
 `infra/k8s/overlays/` (External Secrets, Sealed Secrets, or a local untracked
 override). Do not put live values in `01-configmap-secrets.yaml` — it is tracked.

@@ -5,8 +5,8 @@
 # This StatefulSet exists so the stack can be stood up end-to-end on a single
 # cluster with no external dependencies — a demo, a review environment, CI.
 # It is NOT a production database: one replica, no automated backup, no PITR,
-# no failover. The ledger it holds is the system's source of truth for money
-# movement, and `docs/FINAL_PROJECT_REPORT.md` lists backups as not done.
+# no failover — and the ledger it holds is the system's source of truth for
+# money movement.
 #
 # For anything real, delete this file and point DATABASE_URL at RDS / Cloud
 # SQL / Neon. Nothing else in the manifests needs to change: every workload

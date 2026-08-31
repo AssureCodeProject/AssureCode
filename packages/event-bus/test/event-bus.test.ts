@@ -1,13 +1,17 @@
-import { describe, it, expect } from 'vitest';
-import { InMemoryBus, KafkaBus, RedisStreamsBus, eventBusOptionsFromConfig } from '../src/index.js';
+import { describe, it, expect, afterAll } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { InMemoryBus, KafkaBus, RedisStreamsBus, createEventBus, eventBusOptionsFromConfig } from '../src/index.js';
 import { EVENT_TOPICS } from '@assurecode/shared';
-import { redisAvailable, announceSkip } from '../../../tools/test-support/infra.js';
+import { redisAvailable, kafkaAvailable, announceSkip } from '../../../tools/test-support/infra.js';
 
 // Probed once at module load: the RedisStreamsBus suite drives a live Redis
 // connection, and without one ioredis emits an unhandled 'error' that kills the
 // vitest worker outright rather than failing a single test.
 const REDIS_UP = await redisAvailable();
 if (!REDIS_UP) announceSkip('RedisStreamsBus — Bounded Retries & DLQ', 'a running Redis on REDIS_URL');
+
+const KAFKA_UP = await kafkaAvailable();
+if (!KAFKA_UP) announceSkip('KafkaBus — live broker', 'a running Kafka on KAFKA_BROKERS');
 
 describe('InMemoryBus', () => {
   it('publishes and delivers events to subscribers', async () => {
@@ -94,8 +98,7 @@ describe('eventBusOptionsFromConfig', () => {
 });
 
 describe('KafkaBus — publish must never silently drop', () => {
-  // Regression guard for the bug documented in docs/HANDOFF_32GB_TESTING.md:
-  // kafkajs was loaded with require() inside this ESM package, the resulting
+  // Regression guard: kafkajs was loaded with require() inside this ESM package, the resulting
   // ReferenceError was swallowed by a catch, and `producer` stayed undefined.
   // An `if (this.producer)` guard in publish() then made every send a no-op, so
   // EVENT_BUS_TYPE=kafka discarded the whole event stream with zero errors
@@ -170,6 +173,16 @@ describe('KafkaBus — Bounded Retries & DLQ', () => {
         eachMessage = cfg.eachMessage;
       },
       disconnect: async () => {},
+      // subscribe() now waits for a GROUP_JOIN event before resolving (see
+      // packages/event-bus/src/index.ts) to close the real race where a
+      // caller's publish() could land before the consumer's fetch position
+      // was assigned. This suite drives eachMessage directly and does not
+      // exercise join timing, so the fake fires it immediately.
+      events: { GROUP_JOIN: 'group-join', CRASH: 'crash' },
+      on: (event: string, cb: () => void) => {
+        if (event === 'group-join') queueMicrotask(cb);
+        return () => {};
+      },
     });
 
     await bus.subscribe('test.poison', handler);
@@ -420,6 +433,70 @@ describe('RedisStreamsBus — processEntry (no live Redis required)', () => {
     expect(xaddCalls[0][0]).toBe('t.dlq');
     expect(xackCalls).toEqual([['t', 'assurecode', '2-0']]);
   });
+});
+
+describe.skipIf(!KAFKA_UP)('KafkaBus — live broker', () => {
+  // Goes through the real factory path (eventBusOptionsFromConfig +
+  // createEventBus), not `new KafkaBus(...)` directly — deliberately, because
+  // the regression this guards against was in that wiring, not in KafkaBus's
+  // own logic. Every service used to call `createEventBus(config.REDIS_URL)`
+  // with a bare string, which the factory only ever resolved to
+  // RedisStreamsBus: EVENT_BUS_TYPE=kafka silently produced a working Redis
+  // bus and no Kafka topic ever saw a message, with nothing anywhere failing
+  // loudly. The "KafkaBus — Bounded Retries & DLQ" suite above, against a
+  // mocked kafkajs client, could not have caught that — it never asks which
+  // class got constructed, only what the class does once it exists.
+  //
+  // createEventBus() defaults to InMemoryBus under NODE_ENV=test unless
+  // EVENT_BUS_FORCE_REAL=true — the same opt-in the golden-path e2e suite
+  // uses — so this suite sets it for its own duration and restores whatever
+  // was there before, rather than assuming no other file in this run cares.
+  const previousForceReal = process.env.EVENT_BUS_FORCE_REAL;
+
+  afterAll(() => {
+    if (previousForceReal === undefined) delete process.env.EVENT_BUS_FORCE_REAL;
+    else process.env.EVENT_BUS_FORCE_REAL = previousForceReal;
+  });
+
+  it(
+    'createEventBus(EVENT_BUS_TYPE=kafka) round-trips a real publish through a real broker',
+    async () => {
+      process.env.EVENT_BUS_FORCE_REAL = 'true';
+
+      const options = eventBusOptionsFromConfig({
+        EVENT_BUS_TYPE: 'kafka',
+        REDIS_URL: 'redis://localhost:6379',
+        KAFKA_BROKERS: process.env.KAFKA_BROKERS ?? 'localhost:9092',
+      });
+      const bus = createEventBus(options);
+      // The assertion that actually matters: given EVENT_BUS_TYPE=kafka, the
+      // factory built a Kafka bus, not a Redis or in-memory one.
+      expect(bus).toBeInstanceOf(KafkaBus);
+
+      const topic = `test.kafka-live.${randomUUID()}`;
+      const received: unknown[] = [];
+      const unsubscribe = await bus.subscribe(topic, async (event) => {
+        received.push(event.payload);
+      });
+
+      try {
+        await bus.publish(topic, { marker: 'live-kafka-roundtrip' });
+
+        // Consumer group join and partition assignment are not instantaneous
+        // on a cold broker — poll rather than assume a fixed sleep covers it.
+        const deadline = Date.now() + 15_000;
+        while (received.length === 0 && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 200));
+        }
+      } finally {
+        await unsubscribe();
+        await bus.close?.();
+      }
+
+      expect(received).toEqual([{ marker: 'live-kafka-roundtrip' }]);
+    },
+    20_000,
+  );
 });
 
 describe('RedisStreamsBus — reclaimStale (no live Redis required)', () => {

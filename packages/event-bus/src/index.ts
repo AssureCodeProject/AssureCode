@@ -676,6 +676,29 @@ export class KafkaBus implements EventBus {
     await consumer.subscribe({ topic, fromBeginning: false });
     this.consumers.set(consumerId, consumer);
 
+    // consumer.run() sets up the run loop and resolves immediately — the
+    // actual join-group/sync-group handshake that assigns this consumer a
+    // starting offset happens afterward, asynchronously. With
+    // fromBeginning: false that starting offset is the log-end-offset at
+    // whenever the assignment lands, not at connect() time, so a caller that
+    // publishes right after subscribe() resolves can win the race: the
+    // message lands before the consumer's fetch position is established and
+    // is then permanently behind it, not merely delayed — no amount of
+    // polling for delivery afterward recovers it. Waiting for GROUP_JOIN
+    // here closes that window for every caller, not just one test.
+    const ready = new Promise<void>((resolve, reject) => {
+      const removeJoin = consumer.on(consumer.events.GROUP_JOIN, () => {
+        removeJoin();
+        removeCrash();
+        resolve();
+      });
+      const removeCrash = consumer.on(consumer.events.CRASH, ({ payload }: { payload: { error: Error } }) => {
+        removeJoin();
+        removeCrash();
+        reject(payload.error);
+      });
+    });
+
     await consumer.run({
       eachMessage: async ({
         partition,
@@ -736,6 +759,8 @@ export class KafkaBus implements EventBus {
         }
       },
     });
+
+    await ready;
 
     return async () => {
       try {

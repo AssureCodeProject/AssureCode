@@ -1,12 +1,10 @@
 # Architecture
 
-How AssureCode is put together and why. For measured results see
-[docs/FINAL_PROJECT_REPORT.md](docs/FINAL_PROJECT_REPORT.md); for the formal
-spec see
-[docs/ASSURECODE_COMPLETE_TECHNICAL_SPECIFICATION.md](docs/ASSURECODE_COMPLETE_TECHNICAL_SPECIFICATION.md).
-This document supersedes `docs/architecture_overview.md`, which is retained as a
-historical snapshot and is wrong in several places (it still describes Stripe
-Connect payouts and a "5-signal oracle").
+How AssureCode is put together and why. For measured results (matchmaking,
+scope-guard accuracy, benchmark latencies) see
+[docs/plan2.md](docs/plan2.md)'s "known functional gaps" and
+[docs/benchmarks/](docs/benchmarks/); for the attacker model see
+[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
 ## The problem
 
@@ -22,23 +20,15 @@ not observe the transaction must be able to check the outcome.**
 
 ## Service topology
 
-```
-                      ┌──────────────┐
-   browser ─────────▶ │     web      │  React 18 / Vite, no mock data modules
-                      └──────┬───────┘
-                             │ REST + WebSocket
-                      ┌──────▼───────┐
-                      │ api-gateway  │  Fastify · JWT/RBAC · idempotency · rate limit
-                      └──┬────────┬──┘
-              publishes  │        │  synchronous calls
-                         │        ├──────────────▶ ai-service   (:8000)
-                         │        └──────────────▶ scope-guard  (:8001)
-                    ┌────▼─────┐
-                    │ event bus│  Redis Streams (default) · outbox relay
-                    └────┬─────┘
-          ┌──────────────┼────────────────┐
-          ▼              ▼                ▼
-     ci-worker    settlement-worker   webhook-ingest
+```mermaid
+flowchart TD
+    browser["browser"] -->|REST + WebSocket| gateway["api-gateway<br/>Fastify · JWT/RBAC · idempotency · rate limit"]
+    gateway -->|synchronous call| ai["ai-service :8000"]
+    gateway -->|synchronous call| scope["scope-guard :8001"]
+    gateway -->|publishes| bus["event bus<br/>Redis Streams (default) · outbox relay"]
+    bus --> ci["ci-worker"]
+    bus --> settlement["settlement-worker"]
+    bus --> webhook["webhook-ingest"]
 ```
 
 `ci-worker`, `settlement-worker` and `webhook-ingest` have no inbound API from
@@ -135,8 +125,34 @@ decisions it summarises, and a previous version did exactly that.
 Scheme) before hashing, and builds RFC 6962 Merkle trees with domain separation
 between leaf and interior nodes. Without canonicalisation, two semantically
 identical payloads with different key order hash differently and the chain
-cannot be re-derived by anyone else — which defeats the point. Merkle roots are
-signed with FIPS 204 ML-DSA-87.
+cannot be re-derived by anyone else — which defeats the point.
+
+Each row's hash, computed in Postgres over the canonical JSON:
+
+$$H_k = \operatorname{SHA256}\big(C(P_k) \mathbin{\Vert} \texttt{\\n} \mathbin{\Vert} H_{k-1}\big), \qquad H_0 = \texttt{'GENESIS'}$$
+
+where $C(\cdot)$ is the JCS serialization. `append_ledger` takes this as
+**TEXT**, not JSONB — binding it as JSONB would let Postgres re-render it,
+producing different bytes and therefore a different hash. The canonical string
+is stored alongside the JSONB in `payload_canonical`, with a CHECK constraint
+(`payload_canonical::jsonb = payload`) so the bytes that were hashed cannot
+silently diverge from the queryable payload.
+
+Merkle leaves and nodes follow RFC 6962: `leaf(d) = SHA256(0x00 ‖ d)`,
+`node(l,r) = SHA256(0x01 ‖ l ‖ r)`, promoting odd nodes rather than duplicating
+them (avoiding CVE-2012-2459). Roots are signed with FIPS 204 ML-DSA-87 via
+`dilithium-py` (2592-byte public key, 4896-byte private key, 4627-byte
+signature), deterministically derived from a seed with the context string
+`assurecode/merkle-root/v1` for domain separation.
+
+**Threat model, stated plainly:** the ledger is tamper-*evident*, not
+tamper-*proof* — against an adversary who can write to `merkle_ledger` but does
+not hold the ML-DSA private key. Such an adversary can mutate rows; they cannot
+produce a chain that re-verifies, nor a valid signature over the resulting
+root. An adversary holding the signing key is outside this model.
+`verify_root` requires the caller to supply the expected public key — there is
+no mode that verifies against a key stored next to the signature, which would
+verify nothing.
 
 17 rows predate this migration and are reported `unverifiable` rather than
 assumed good.
@@ -166,11 +182,13 @@ An egress guard blocks network access from audited code.
 
 ### Idempotency is enforced at two layers
 
-An LRU cache in front of a Postgres `idempotency_keys` table. The database is
-what makes it correct across replicas and restarts; the cache is what keeps it
-cheap. Razorpay webhook redelivery is deduplicated separately by a unique index
-on `provider_event_id`, inserted-then-checked so two concurrent redeliveries
-cannot both pass a read-first check.
+A bounded, TTL'd in-process cache (a plain `Map`, evicted oldest-inserted-first
+— FIFO, not LRU: it never reorders on read) in front of a Postgres
+`idempotency_keys` table. The database is what makes it correct across
+replicas and restarts; the cache is what keeps it cheap. Razorpay webhook
+redelivery is deduplicated separately by a unique index on `provider_event_id`,
+inserted-then-checked so two concurrent redeliveries cannot both pass a
+read-first check.
 
 ### Database TLS pins a CA rather than disabling verification
 
@@ -181,10 +199,11 @@ at this point in a project.
 
 ## Data plane
 
-- **PostgreSQL 17.6 + pgvector 0.8.2** — the system of record. 14 forward-only
-  migrations, `V001__init.sql` … `V014__razorpay_escrow.sql`, applied by
+- **PostgreSQL 17.6 + pgvector 0.8.2** — the system of record. 21 forward-only
+  migrations, `V001__init.sql` … `V021__score_retry_cap.sql`, applied by
   `tools/migrate.ts`. No ORM: raw parameterised queries in both TypeScript and
-  Python. No down-migrations.
+  Python. No down-migrations (`V016` drops the `jobs` table outright once it
+  was superseded, rather than ever needing to be rolled back).
 - **Redis** — event bus streams and consumer groups.
 - **LocalStack S3** — artifact storage (test bundles). The local-disk fallback is
   opt-in and off in production, because with multiple replicas a disk write
@@ -214,6 +233,116 @@ at this point in a project.
   structure the seed builds — `(Freelancer)-[:COMPLETED]->(Project)-[:REQUIRES]->(Skill)`
   — is what would justify it, and nothing walks those edges yet.
 
+## Data model
+
+19 tables across the Postgres migrations (20 created, `jobs` later dropped by
+`V016` once superseded):
+
+| Table | Purpose |
+|---|---|
+| `contracts` | Core contract registry |
+| `merkle_ledger` | Tamper-evident hash chain |
+| `merkle_roots` | Per-contract Merkle roots and ML-DSA signatures |
+| `rag_embeddings` | 384-D HNSW vector store |
+| `scope_checks` | Recorded scope decisions (drift detector input) |
+| `escrow` | Razorpay escrow payments (amounts in paise) |
+| `settlements` | Settlement records (single-fire guard, payout state) |
+| `oracle_state` | Durable oracle state (was an in-process `Map`) |
+| `audit_results` | CI telemetry and trust-score inputs |
+| `idempotency_keys` | Gateway request reservation |
+| `outbox` | Transactional outbox for the event bus |
+| `users`, `freelancer_profiles` | Identity and matchmaking profile data (`V010`) |
+| `payment_events` | Audit log of money-movement events (`V010`) |
+| `kyc_verifications` | KYC decisions (stub adapter — see `THREAT_MODEL.md` T9) |
+| `user_sessions`, `auth_providers`, `mfa_credentials`, `security_audit_logs` | Session revocation, OAuth, MFA, audit trail (`V011`, `V020`) |
+
+The two tables that carry the ledger's own integrity constraint:
+
+```sql
+CREATE TABLE contracts (
+    contract_id          TEXT PRIMARY KEY,
+    client_id            TEXT NOT NULL DEFAULT 'anonymous',
+    freelancer_id        TEXT NULL,
+    title                TEXT NOT NULL,
+    requirements         TEXT NOT NULL,
+    pdf_raw_text          TEXT NULL,
+    budget_cents         INTEGER NOT NULL,
+    deadline             DATE NOT NULL,
+    status               TEXT NOT NULL DEFAULT 'DRAFT'
+                         CHECK (status IN ('DRAFT','LOCKED','IN_PROGRESS','COMPLETED','DISPUTED')),
+    hidden_tests_s3_key   TEXT NULL,
+    github_repo_full_name TEXT NULL,      -- V015
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+    -- plus FK constraints to `users` added in V012
+);
+
+CREATE TABLE merkle_ledger (
+    ledger_id         BIGSERIAL PRIMARY KEY,
+    contract_id       TEXT NOT NULL REFERENCES contracts(contract_id) ON DELETE CASCADE,
+    action_type       TEXT NOT NULL,
+    payload           JSONB NOT NULL,
+    payload_canonical TEXT NULL,          -- V009: the RFC 8785 bytes that were hashed
+    hash_version      SMALLINT NOT NULL DEFAULT 1,
+    previous_hash     TEXT NOT NULL DEFAULT 'GENESIS',
+    current_hash      TEXT NOT NULL,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (payload_canonical IS NULL OR payload_canonical::jsonb = payload)
+);
+```
+
+Rows written before `V009` carry `hash_version = 1` and no canonical payload;
+`verifyChainDetailed()` reports them as **unverifiable** — a state distinct
+from both *verified* and *failed*. Recomputing their hashes under the current
+formula would make them all "verify" and would destroy the property the ledger
+exists for, since recomputation is exactly what rewriting history looks like.
+
+## Algorithms & formulas
+
+**Freelancer ranking** (`apps/ai-service/app/services/matchmaker.py`):
+$$\text{Score} = 0.50\cdot\cos(\mathbf u,\mathbf v) + 0.35\cdot\text{TrustScore} + 0.15\cdot\text{CompletionRate}$$
+Embeddings are L2-normalized, so cosine reduces to a dot product. These weights
+were ablated over all 231 simplex settings; the shipped split ranks 66th of 231
+against pure retrieval. That's expected, not a bug — trust and completion rate
+are properties of the freelancer, not the query, so they reorder a domain
+match but can't sharpen it, and the product deliberately ranks *who should be
+hired*, not *who is most textually similar*.
+
+**Maintainability index** (`apps/ci-worker/src/ast-analyzer.ts`), implemented
+exactly as published, from a real Babel AST traversal (no control-flow graph is
+built; cyclomatic complexity $M = 1 + \sum d(n)$ over decision-point nodes is
+cited as the standard equivalent, not derived from one):
+$$\text{MI} = \max\!\left(0,\ \frac{171 - 5.2\ln V - 0.23M - 16.2\ln L}{171}\times 100\right)$$
+
+**Scope decision threshold** (`apps/scope-guard`):
+$$\text{allowed} \iff \max_{r\in R_c}\cos(e(m),r) \ge \tau,\qquad \tau = 0.3056$$
+Measured, not chosen — `tools/calibrate_scope_threshold.py` sweeps it against
+the real ingest-and-retrieve path, split by contract, minimizing
+$3\cdot\text{FN}+\text{FP}$ (a false allow costs more than a false block for a
+payment system). See `docs/plan2.md`'s known gaps for the held-out accuracy
+this actually achieves.
+
+**Cumulative scope drift** (`apps/scope-guard/app/services/drift_detector.py`)
+— per-message thresholding can't catch incremental creep by construction, so
+residuals accumulate via CUSUM (Page, 1954) and are tested against a conformal
+$p$-value / test martingale (Vovk, 2003), which by Ville's inequality (1939) is
+anytime-valid — bounded false-alarm rate at any stopping time, distribution-free:
+$$S_t=\max(0,\,S_{t-1}+(s_t-\kappa)), \qquad M_t=\prod_{i\le t}\varepsilon\,p_i^{\varepsilon-1},\ \text{alarm when } M_t>1/\delta$$
+The detector refuses to construct without real calibration residuals rather
+than invent a default — the shipped calibration set is synthetic and every
+response using it says so (`SCOPE_DRIFT_CALIBRATION_SYNTHETIC`).
+
+**Trust score** (`apps/ai-service`), an interpretable-by-design linear model,
+not post-hoc attribution — each term reports its own input, weight and
+contribution, and a term with no measured input is excluded and the rest
+renormalized rather than defaulted:
+$$T = 0.40\,S_{\text{test}} + 0.25\,S_{\text{maint}} + 0.20\,S_{\text{sec}} + 0.15\,S_{\text{scope}}, \qquad T\in[0,100]$$
+
+**OWASP penalty** (`apps/ci-worker/src/security-auditor.ts`) — note
+$N_{\text{total}}$ includes the critical/high findings already charged, so one
+critical finding costs 45 points, not 40. Documented rather than silently
+"corrected," since fixing it would change every historical score:
+$$S_{\text{sec}} = \max(0,\ 100 - 40N_{\text{critical}} - 20N_{\text{high}} - 5N_{\text{total}})$$
+
 ## Observability
 
 `packages/telemetry` provides OpenTelemetry tracing (OTLP/gRPC, with
@@ -226,10 +355,13 @@ Metrics deliberately exclude `contract_id` as a label — an unbounded label is 
 cardinality explosion, and per-contract data belongs in traces.
 
 `infra/docker-compose.yml` and `infra/k8s/15-observability.yaml` run an OTel
-collector, Jaeger, Prometheus and Grafana. All four instrumented services expose
-`/metrics`: the Node pair via `packages/telemetry` (prom-client), the Python
-pair via `app/ports/telemetry.py` (prometheus_client), which shares the
-`assurecode_*` name prefix so a dashboard can sum a family across both tiers.
+collector, Jaeger, Prometheus and Grafana. All six services expose `/metrics`:
+`api-gateway`, `webhook-ingest`, `ci-worker` and `settlement-worker` via
+`packages/telemetry` (prom-client — the two workers via a dedicated
+`startMetricsServer()` rather than piggybacking on a request-serving HTTP
+server, since neither runs one), and `ai-service`/`scope-guard` via
+`app/ports/telemetry.py` (prometheus_client), which shares the `assurecode_*`
+name prefix so a dashboard can sum a family across both tiers.
 
 Two asymmetries remain. The Python services emit no OTel spans, so a trace
 crossing into them stops at the boundary. And `ci-worker` is deliberately
@@ -245,11 +377,12 @@ somebody has to find.
 1. **`scope-guard` shares `ai-service`'s package namespace.** It has no
    `app/ports/` of its own; `apps/scope-guard/app/__init__.py` deliberately
    extends `__path__` so that names it does not define — `app.ports.*` — resolve
-   against ai-service. This is stated rather than accidental, and three modules
-   now travel that way (`ledger_anchor`, `service_auth`, `telemetry`). It is
-   still why CI must run the two pytest suites from separate working
-   directories, and it means a grep scoped to ai-service makes those modules
-   look orphaned. A real shared package would be better.
+   against ai-service. This is stated rather than accidental, and seven modules
+   now travel that way (`embedder`, `ledger_anchor`, `rag_store`, `scope_log`,
+   `readiness`, `service_auth`, `telemetry`). It is still why CI must run the
+   two pytest suites from separate working directories, and it means a grep
+   scoped to ai-service makes those modules look orphaned. A real shared
+   package would be better.
 2. **The GitHub webhook path is off by default.** `webhook-ingest` publishes
    `code.push.received` with repository coordinates but no file contents, so
    ci-worker fetches the commit itself
@@ -271,10 +404,20 @@ somebody has to find.
    (structural via `npm run seed:neo4j`, then vectors via
    `tools/seed-neo4j-vectors.py`), and the structural half still has no
    in-cluster Job — `infra/k8s/16-seed-neo4j-job.yaml` covers only the vectors.
-4. **Kafka is implemented but unexercised** — no k8s manifest, and Redis is the
-   default everywhere.
-5. **No payout leg.** Capture moves money from the client to the platform; there
-   is no RazorpayX/Route transfer onward to the freelancer.
+4. **Kafka works but Redis is the default everywhere.** A KRaft-mode manifest
+   exists (`infra/k8s/17-kafka.yaml`, gated behind `EVENT_BUS_TYPE=kafka`) and
+   CI runs a live-broker `KafkaBus` round-trip test against a real Kafka
+   service container — it's exercised, just not the shipped default.
+5. **The payout leg exists and is proven in test mode, not yet in production.**
+   `PayoutPort` (`packages/razorpay-adapter`) has a real `RazorpayXPayoutAdapter`
+   alongside `FakePayoutAdapter`, wired into `settlement-worker` with an
+   idempotent post-capture payout state machine and crash recovery. Beyond the
+   fake-adapter tests, a real payout has been run end-to-end against
+   RazorpayX's test-mode sandbox API with a real signed webhook verified by
+   the gateway — test-mode Payouts need no business KYC. What remains is a
+   deploy-time step: the project owner activating *live* (non-test)
+   credentials, which does need real business/KYC on Razorpay's side. See
+   [docs/PENDING_WORK.md](docs/PENDING_WORK.md).
 6. **The rate limiter is per-process**, so the effective limit scales with
    replica count. A shared Redis store is the fix.
 7. **Tracing stops at the Python boundary.** `ai-service` and `scope-guard`

@@ -1,16 +1,21 @@
 # Security scanning
 
-Local security tooling for AssureCode. Two scanners are wired up; both are run
-on demand from the repo root via `npm run`.
+Local security tooling for AssureCode.
 
-## `npm run scan:audit` — npm audit
+## `npm run audit` — dependency gate
 
-Runs `npm audit --json`, writes the full report to
-`docs/security/npm-audit.json`, and prints a severity breakdown plus the
-top 25 advisories to the terminal.
-
-The exit code is non-zero if vulnerabilities are present — wire this into CI
-to fail builds on new advisories.
+Runs `scripts/audit-check.mjs`, not a bare `npm audit --json` — a bare gate
+had been red on every run for months, which trains everyone to ignore it. This
+version: audits **production** dependencies only (`--omit=dev`; dev-tool
+advisories are reported but not gated on, since exploiting them needs
+attacker-controlled code already running on a developer's machine); fails on
+any high/critical production advisory not listed in
+`docs/security/audit-exceptions.json`; and fails on an **expired** or
+**stale** (no-longer-firing) exception, so an accepted risk has a deadline
+instead of being permanent by default. It does not write
+`docs/security/npm-audit.json` — that file is a separately-generated,
+point-in-time snapshot (see Triage notes below), not this script's output.
+Already wired into the `security` job in `production-ci-cd.yml`.
 
 To apply fixes (read the changelog first; `--force` includes breaking changes):
 
@@ -19,20 +24,21 @@ npm audit fix          # safe fixes only
 npm audit fix --force  # includes breaking upgrades
 ```
 
-## `npm run scan:semgrep` — Semgrep (SAST)
+## `node tools/scan-semgrep.mjs` — Semgrep (SAST)
 
 Runs Semgrep with the `p/default` curated ruleset against
 `apps/`, `packages/`, `tools/`, and `scripts/`. Fails (exit 1) on any
-finding at or above the configured severity.
+finding at or above the configured severity. **Not currently wired into CI** —
+run it locally or add it as a step yourself.
 
-The wrapper (`tools/scan-semgrep.mjs`) locates the `semgrep` binary
-automatically — it checks `PATH` first, then the standard Windows
-`pip --user` Scripts dir. No need to add anything to PATH for it to work.
+The wrapper locates the `semgrep` binary automatically — it checks `PATH`
+first, then the standard Windows `pip --user` Scripts dir. No need to add
+anything to PATH for it to work.
 
 Common invocations:
 
 ```bash
-npm run scan:semgrep                                    # default ruleset
+node tools/scan-semgrep.mjs                             # default ruleset
 node tools/scan-semgrep.mjs --config p/owasp-top-ten    # OWASP Top 10
 node tools/scan-semgrep.mjs --config p/security-audit   # security audit rules
 node tools/scan-semgrep.mjs --config p/typescript       # TS-specific
@@ -63,22 +69,19 @@ node tools/scan-semgrep.mjs --version
 
 ## CI integration
 
-Suggested gate (add to `.github/workflows/ci.yml` or equivalent):
-
-```yaml
-- run: npm ci
-- run: npm run scan:audit
-- run: npm run scan:semgrep
-```
-
-`scan:audit` will fail on any new critical/high advisory; `scan:semgrep` will
-fail on any blocking finding. Both are exit-code driven, so a non-zero exit
-blocks the pipeline.
+`npm run audit` already runs in the `security` job of
+`production-ci-cd.yml`, which `container-build` depends on — a new
+unaccepted high/critical production advisory genuinely blocks a merge.
+Semgrep is not in that job; add a step running `node tools/scan-semgrep.mjs`
+there if you want it gated too.
 
 ## Triage notes
 
-The most recent scan (`docs/security/npm-audit.json`) reports 29 advisories
-(1 critical, 7 high, 20 moderate, 1 low). Highlights to address first:
+A snapshot scan from 2026-07-30 (`docs/security/npm-audit.json`, run by hand
+via `npm audit --json`, not by `scripts/audit-check.mjs`) reported 29
+advisories (1 critical, 7 high, 20 moderate, 1 low) — a point-in-time
+artifact, not live CI output; re-run `npm audit --json > docs/security/npm-audit.json`
+to refresh it. Highlights to address first, as of that snapshot:
 
 - **postcss ≤ 8.5.17** — path traversal via `sourceMappingURL` (arbitrary
   `.map` file disclosure). Upgrade in apps that build with postcss.

@@ -1,9 +1,6 @@
 # Threat Model
 
 Trust boundaries, attacker capabilities, and what is and is not mitigated.
-Complements [ZERO_TRUST_LOOPHOLE_AUDIT.md](ZERO_TRUST_LOOPHOLE_AUDIT.md), which
-walks specific attack vectors; this document states the model those vectors are
-evaluated against.
 
 **Scope.** This is an academic artifact. Several mitigations below are absent by
 design because the corresponding component is deliberately a stub. Those are
@@ -89,12 +86,16 @@ NetworkPolicy — so the blast radius is the pod, not the node.
 
 ### T2 — Forged or replayed settlement
 
-**Mitigated.** Settlement is guarded by a Postgres advisory lock (single-fire),
-and mutating routes are idempotent via an LRU cache in front of an
-`idempotency_keys` table — the table is what makes it correct across replicas
-and restarts. Razorpay webhook redelivery is deduplicated by a unique index on
-`provider_event_id`, inserted-then-checked so two concurrent redeliveries cannot
-both pass a read-first check.
+**Mitigated.** Settlement is guarded by an atomic conditional-upsert claim on
+the `settlements` table's primary key (`INSERT ... ON CONFLICT (contract_id)
+DO UPDATE ... WHERE settlements.status = 'FAILED'`) — single-fire without an
+advisory lock; the `pg_advisory_lock` calls elsewhere in the codebase
+serialize *ledger appends*, a different subsystem. Mutating routes are
+idempotent via a bounded, TTL'd in-process cache (FIFO eviction by insertion
+order, not LRU) in front of an `idempotency_keys` table — the table is what
+makes it correct across replicas and restarts. Razorpay webhook redelivery is
+deduplicated by a unique index on `provider_event_id`, inserted-then-checked
+so two concurrent redeliveries cannot both pass a read-first check.
 
 *Residual risk:* idempotency under concurrency is asserted by
 `idempotency-concurrency.test.ts`, which requires live Postgres and therefore
@@ -178,7 +179,7 @@ replica count. A shared Redis store is the fix.
 
 ### T8 — Lateral movement from a compromised service
 
-**Partially mitigated.** 9 NetworkPolicies restrict pod-to-pod traffic; every
+**Partially mitigated.** 15 NetworkPolicies restrict pod-to-pod traffic; every
 workload runs non-root with a dedicated ServiceAccount and
 `automountServiceAccountToken: false`.
 
@@ -209,11 +210,45 @@ the JWT claim — the plumbing is right, the verification is a stub.
 
 ### T10 — Session hijacking / inability to revoke
 
-**NOT MITIGATED.** JWTs are stateless with no refresh, rotation, or revocation.
-Logout is a client-side no-op. The `user_sessions`, `auth_providers` and
-`mfa_credentials` tables exist in `V011` with **zero code references** — MFA and
-SSO are schema-only. A leaked token is valid until it expires and cannot be
-revoked.
+**Mitigated.** `apps/api-gateway/src/middleware/session-store.ts` backs a real
+session lifecycle against `user_sessions` — `createSession` / `isSessionActive`
+/ `revokeSession` — checked on every authenticated request via the auth
+middleware's `onRequest` hook, not just at login. `POST /auth/logout` calls
+`revokeSession` for real rather than being a client-side no-op, so a revoked
+token is rejected on its very next use, before expiry. TOTP MFA is likewise
+real, not schema-only: `apps/api-gateway/src/middleware/mfa-store.ts`
+implements the full enroll → verify → challenge lifecycle against
+`mfa_credentials` and gates login on it. A dedicated regression suite,
+`apps/api-gateway/test/session-revocation.test.ts`, proves both halves: logout
+revokes, and an expired/revoked session is rejected.
+
+*Residual risk:* this closes the "cannot be revoked" gap, not session security
+generally — a still-active token remains a bearer credential for its lifetime,
+same as any JWT. `auth_providers` (OAuth/SSO) has real callers via GitHub OAuth
+login, not independently re-verified here as thoroughly as the session/MFA
+path.
+
+### T11 — Scope-guard bypass via adversarial chat input
+
+**Partially mitigated.** `apps/scope-guard/app/main.py` retrieves the top-k
+indexed contract chunks and scores an incoming chat message by plain cosine
+similarity over Sentence-BERT embeddings — there is no hyperbolic-geometry or
+Poincaré-ball scoring anywhere in the codebase, despite an earlier (now
+removed) doc revision claiming otherwise. Off-scope messages below the
+similarity threshold are rejected with `403`.
+
+*Residual risk:* the threshold's held-out accuracy is a known weakness, not a
+strong guarantee — see `docs/plan2.md`'s "known functional gaps" (scope-guard
+recall ~60% over 50 live contracts, calibration synthetic by default). An
+adversarial paraphrase close enough in embedding space to an in-scope chunk can
+still pass.
+
+**Historical hardening, for context.** Three resource-exhaustion bugs from an
+earlier audit are fixed and worth naming since they touch this trust boundary
+indirectly: a double pool-connection acquisition in `verifyChain()` (now
+wrapped in `finally`), a WebSocket chat listener leak (unsubscribe callbacks
+now run on `socket.on('close')`), and an unbounded idempotency `Map` (now a
+bounded, 10,000-entry, TTL'd cache with FIFO eviction).
 
 ## Summary
 
@@ -228,11 +263,12 @@ revoked.
 | T7 Brute force | Mitigated — per-process limiter |
 | T8 Lateral movement | Mitigated — `x-service-token` on both Python services |
 | **T9 KYC evasion** | **NOT MITIGATED — stub by design** |
-| **T10 Session revocation** | **NOT MITIGATED** |
+| T10 Session revocation | Mitigated |
+| T11 Scope-guard embedding bypass | Partial — cosine threshold, ~60% recall |
 
 Ordered by what a reviewer should ask about first: **T9** (KYC approves
-everyone), **T10** (a leaked token cannot be revoked), then T5's residual
-suppression vector and T1's sandbox choice.
+everyone — the one remaining NOT MITIGATED entry), then T5's residual
+suppression vector, T1's sandbox choice, and T11's recall.
 
 On T3: the 17 legacy rows can be *sealed* but not retroactively verified — see
 `packages/ledger-client/src/legacy-anchor.ts` and `npm run ledger:legacy`.

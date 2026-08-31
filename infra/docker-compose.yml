@@ -98,6 +98,11 @@ x-datastore-env: &datastore-env
   # Required for private repos. Public repos work without it at 60 requests per
   # hour per IP, which one audit of a small repository can exhaust on its own.
   GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+  # The GitHub org settlement-worker provisions one private repo into per
+  # locked contract (github-provisioner-client.ts). GITHUB_TOKEN above must
+  # have 'repo' scope and repo-creation rights in this org. Unset leaves
+  # provisioning disabled (logged, non-fatal) even if GITHUB_TOKEN is set.
+  GITHUB_ORG: ${GITHUB_ORG:-}
   # GitHub OAuth App (freelancer login + repo connection, server.ts:727). Unset
   # leaves GET /auth/github unregistered and the app falls back to
   # password-only login.

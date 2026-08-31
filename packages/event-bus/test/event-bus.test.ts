@@ -173,6 +173,16 @@ describe('KafkaBus — Bounded Retries & DLQ', () => {
         eachMessage = cfg.eachMessage;
       },
       disconnect: async () => {},
+      // subscribe() now waits for a GROUP_JOIN event before resolving (see
+      // packages/event-bus/src/index.ts) to close the real race where a
+      // caller's publish() could land before the consumer's fetch position
+      // was assigned. This suite drives eachMessage directly and does not
+      // exercise join timing, so the fake fires it immediately.
+      events: { GROUP_JOIN: 'group-join', CRASH: 'crash' },
+      on: (event: string, cb: () => void) => {
+        if (event === 'group-join') queueMicrotask(cb);
+        return () => {};
+      },
     });
 
     await bus.subscribe('test.poison', handler);

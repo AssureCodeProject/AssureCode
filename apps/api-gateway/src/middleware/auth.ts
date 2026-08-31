@@ -27,6 +27,7 @@ const PUBLIC_PATHS = new Set([
   '/readyz',
   '/metrics',
   '/auth/login',
+  '/auth/register',
   // The second half of an MFA-gated login: the caller holds a short-lived
   // challenge from /auth/login, not a session — there is nothing to verify a
   // bearer token against yet.

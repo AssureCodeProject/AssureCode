@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { LogIn, Loader2, AlertCircle, Github, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { RegisterScreen } from './RegisterScreen';
 
 /** Surfaced from GithubCallback's redirect back here on failure (?error=...). */
 function githubErrorMessage(code) {
@@ -24,6 +25,7 @@ export function LoginScreen() {
   const [password, setPassword] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState(null);
+  const [showRegister, setShowRegister] = useState(false);
 
   // Set once POST /auth/login answers {mfaRequired: true, challenge} instead
   // of a session — the form below swaps to a code prompt while this is set,
@@ -72,6 +74,10 @@ export function LoginScreen() {
     setMfaCode('');
     setError(null);
   };
+
+  if (showRegister) {
+    return <RegisterScreen onSwitchToLogin={() => setShowRegister(false)} />;
+  }
 
   return (
     <div className="min-h-screen bg-ink text-prose flex items-center justify-center font-sans px-4">
@@ -235,10 +241,20 @@ export function LoginScreen() {
         )}
 
         {!mfaChallenge && (
-          <p className="text-center font-mono text-[11px] text-prose-dim mt-4">
-            Demo accounts sign in above — seeded via tools/seed-users.py. Freelancers can also
-            continue with GitHub, no self-signup needed either way.
-          </p>
+          <>
+            <p className="text-center font-mono text-[11px] text-prose-dim mt-4">
+              Demo accounts sign in above — seeded via tools/seed-users.py. Freelancers can also
+              continue with GitHub.
+            </p>
+            <button
+              id="btn-show-register"
+              type="button"
+              onClick={() => setShowRegister(true)}
+              className="w-full text-center font-mono text-[11px] text-prose-muted hover:text-prose transition-colors mt-2"
+            >
+              New here? Create an account →
+            </button>
+          </>
         )}
       </motion.div>
     </div>

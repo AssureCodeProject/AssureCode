@@ -33,6 +33,12 @@ import {
   logTriggerOutcome,
   type TriggerDeps,
 } from './gateway-client.js';
+import {
+  createOrgRepo,
+  addOutsideCollaborator,
+  attachWebhook,
+  type ProvisionerDeps,
+} from './github-provisioner-client.js';
 
 const config = loadConfig();
 const logger = createLogger('settlement-worker', config.LOG_LEVEL);
@@ -56,6 +62,17 @@ const scoreTriggerDeps: TriggerDeps = {
   gatewayUrl: config.GATEWAY_URL,
   serviceToken: config.SERVICE_TOKEN,
   enabled: config.ENABLE_AUTO_SCORING === 'true',
+};
+
+// Both GITHUB_ORG and GITHUB_TOKEN must be set for org-owned repo
+// provisioning to run at all -- the same "on requires both" pattern
+// context.ts's assertProductionSecrets already uses for GITHUB_CLIENT_ID.
+// Off by default so the app still boots (and settles contracts without a
+// GitHub repo requirement) when this feature isn't configured.
+const provisioningEnabled = Boolean(config.GITHUB_ORG && config.GITHUB_TOKEN);
+const provisionerDeps: ProvisionerDeps = {
+  org: config.GITHUB_ORG ?? '',
+  token: config.GITHUB_TOKEN ?? '',
 };
 
 /** Mark the contract's settlement row failed. Callers decide whether to swallow. */
@@ -288,6 +305,239 @@ function subscribeEscrowEvents(): void {
       'Escrow event observed; no state change',
     );
   });
+}
+
+// ── 3c. GitHub org repo provisioning ────────────────────────────────
+//
+// Replaces the old model (client manually types an existing owner/repo,
+// freelancer's own OAuth token registers the webhook) with AssureCode
+// owning the whole thing: create a private repo under GITHUB_ORG, add the
+// assigned freelancer as an outside collaborator (push only, never an org
+// member), attach the same webhook shape freelancer-owned repos already
+// used, then flip the contract ACTIVE. Hooked off CONTRACT_LOCKED rather
+// than a new event off /assign: in the current UI flow assignment always
+// happens as part of the same assign -> generate-tests -> lock sequence, so
+// by the time CONTRACT_LOCKED fires the contract's freelancer_id is already
+// set, and /assign itself does not publish an outbox event to hook instead.
+function subscribeContractLocked(): void {
+  void eventBus.subscribe(EVENT_TOPICS.CONTRACT_LOCKED, async (event: EventEnvelope) => {
+    if (!provisioningEnabled) return;
+    const payload = event.payload as { contractId?: string };
+    const contractId = payload.contractId;
+    if (!contractId) return;
+
+    const contractRes = await dbPool.query(
+      `SELECT freelancer_id FROM contracts WHERE contract_id = $1`,
+      [contractId],
+    );
+    const freelancerId: string | null = contractRes.rows[0]?.freelancer_id ?? null;
+    if (!freelancerId) {
+      // Shouldn't happen given the current UI's combined assign+lock
+      // sequence, but a contract can in principle be locked before
+      // assignment -- nothing to provision for yet, not an error.
+      logger.info({ contractId }, 'Contract locked with no freelancer assigned yet; skipping repo provisioning');
+      return;
+    }
+
+    const identityRes = await dbPool.query(
+      `SELECT github_login FROM auth_providers WHERE user_id = $1 AND provider_type = 'GITHUB'`,
+      [freelancerId],
+    );
+    const githubLogin: string | null = identityRes.rows[0]?.github_login ?? null;
+
+    if (!githubLogin) {
+      // Cannot provision a repo for an identity we don't have. Recorded as a
+      // terminal row (not retried) so this is visible without silently
+      // leaving the contract stuck at LOCKED forever -- see
+      // reconcileStuckProvisioning's WHERE clause, which excludes 'FAILED'.
+      await dbPool
+        .query(
+          `INSERT INTO repo_provisioning
+             (contract_id, github_org, repo_name, freelancer_user_id, freelancer_github_login, status, last_error)
+           VALUES ($1, $2, $3, $4, '', 'FAILED', 'GITHUB_ACCOUNT_REQUIRED')
+           ON CONFLICT (contract_id) DO NOTHING`,
+          [contractId, config.GITHUB_ORG, repoNameFor(contractId), freelancerId],
+        )
+        .catch((err: any) =>
+          logger.error({ contractId, err: err.message }, 'Failed to record GITHUB_ACCOUNT_REQUIRED'),
+        );
+      logger.warn(
+        { contractId, freelancerId },
+        'Freelancer has no linked GitHub identity; repo provisioning blocked (GITHUB_ACCOUNT_REQUIRED)',
+      );
+      return;
+    }
+
+    await attemptProvisioning(contractId, freelancerId, githubLogin).catch((err: any) =>
+      logger.error({ contractId, err: err.message }, 'Repo provisioning attempt failed'),
+    );
+  });
+}
+
+function repoNameFor(contractId: string): string {
+  return `assurecode-contract-${contractId.toLowerCase()}`;
+}
+
+/**
+ * Walk the provisioning state machine, resuming from whatever step is
+ * already recorded rather than redoing it -- mirrors attemptScoring's
+ * increment-then-call shape, one step further along. Each of the three
+ * external calls is itself idempotent against GitHub's own state (see
+ * github-provisioner-client.ts's header), so even a duplicate invocation
+ * racing this one converges on the same repo/collaborator/webhook rather
+ * than creating a second of any of them.
+ */
+async function attemptProvisioning(
+  contractId: string,
+  freelancerId: string,
+  githubLogin: string,
+): Promise<void> {
+  if (!provisioningEnabled) return;
+
+  const repoName = repoNameFor(contractId);
+
+  // INSERT ... ON CONFLICT DO NOTHING is the free idempotency for "start
+  // provisioning": contract_id is the PK, so two processes racing the same
+  // CONTRACT_LOCKED event (or a reconciler sweep overlapping a live
+  // subscription) can only ever produce one row, and therefore one repo.
+  await dbPool
+    .query(
+      `INSERT INTO repo_provisioning (contract_id, github_org, repo_name, freelancer_user_id, freelancer_github_login)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (contract_id) DO NOTHING`,
+      [contractId, config.GITHUB_ORG, repoName, freelancerId, githubLogin],
+    )
+    .catch((err: any) => logger.error({ contractId, err: err.message }, 'Failed to start repo provisioning'));
+
+  const rowRes = await dbPool.query(`SELECT * FROM repo_provisioning WHERE contract_id = $1`, [contractId]);
+  const row = rowRes.rows[0];
+  if (!row || row.status === 'COMPLETE' || row.status === 'FAILED') return;
+
+  await dbPool.query(`UPDATE repo_provisioning SET attempts = attempts + 1, updated_at = NOW() WHERE contract_id = $1`, [
+    contractId,
+  ]);
+
+  try {
+    let repoFullName: string = row.repo_full_name;
+    if (!repoFullName) {
+      const created = await createOrgRepo(repoName, provisionerDeps);
+      await dbPool.query(
+        `UPDATE repo_provisioning
+            SET repo_id = $1, repo_full_name = $2, repo_html_url = $3, status = 'REPO_CREATED', updated_at = NOW()
+          WHERE contract_id = $4`,
+        [created.repoId, created.repoFullName, created.repoHtmlUrl, contractId],
+      );
+      repoFullName = created.repoFullName;
+      logger.info({ contractId, repoFullName }, 'GitHub repo created for contract');
+    }
+
+    if (row.collaborator_status !== 'INVITED' && row.collaborator_status !== 'ACCEPTED') {
+      const outcome = await addOutsideCollaborator(repoFullName, githubLogin, provisionerDeps);
+      if (outcome.kind === 'unknown-login') {
+        // The github_login on file no longer resolves to a real account --
+        // the freelancer needs to reconnect, not have this retried forever.
+        await dbPool.query(
+          `UPDATE repo_provisioning
+              SET collaborator_status = 'FAILED', last_error = 'unknown-login', updated_at = NOW()
+            WHERE contract_id = $1`,
+          [contractId],
+        );
+        await dbPool.query(`UPDATE auth_providers SET token_valid = FALSE WHERE user_id = $1 AND provider_type = 'GITHUB'`, [
+          freelancerId,
+        ]);
+        logger.error(
+          { contractId, freelancerId, githubLogin },
+          'Collaborator invite failed: unknown GitHub login. Freelancer must reconnect GitHub.',
+        );
+        return;
+      }
+      const collaboratorStatus = outcome.kind === 'invited' ? 'INVITED' : 'ACCEPTED';
+      await dbPool.query(
+        `UPDATE repo_provisioning
+            SET collaborator_status = $1, status = 'COLLABORATOR_ADDED', updated_at = NOW()
+          WHERE contract_id = $2`,
+        [collaboratorStatus, contractId],
+      );
+      logger.info({ contractId, githubLogin, outcome: outcome.kind }, 'Freelancer added as outside collaborator');
+    }
+
+    if (row.webhook_status !== 'ATTACHED') {
+      const callbackUrl = `${config.WEBHOOK_INGEST_PUBLIC_URL ?? config.GATEWAY_URL}/webhooks/github`;
+      const attached = await attachWebhook(repoFullName, callbackUrl, config.GITHUB_WEBHOOK_SECRET, provisionerDeps);
+      await dbPool.query(
+        `UPDATE repo_provisioning
+            SET webhook_id = $1, webhook_status = 'ATTACHED', status = 'COMPLETE', updated_at = NOW()
+          WHERE contract_id = $2`,
+        [attached.webhookId, contractId],
+      );
+      logger.info({ contractId, repoFullName }, 'Webhook attached; repo provisioning complete');
+
+      await dbPool.query(`UPDATE contracts SET github_repo_full_name = $1, status = 'ACTIVE' WHERE contract_id = $2`, [
+        repoFullName,
+        contractId,
+      ]);
+      await ledgerClient
+        .appendWithOutbox(
+          contractId,
+          'REPOSITORY_PROVISIONED',
+          { repoFullName, githubLogin },
+          EVENT_TOPICS.REPOSITORY_PROVISIONED,
+          { contractId, repoFullName },
+          randomUUID(),
+        )
+        .catch((err: any) =>
+          logger.error({ contractId, err: err.message }, 'Failed to publish REPOSITORY_PROVISIONED'),
+        );
+    }
+  } catch (err: any) {
+    await dbPool
+      .query(`UPDATE repo_provisioning SET last_error = $1, updated_at = NOW() WHERE contract_id = $2`, [
+        err.message,
+        contractId,
+      ])
+      .catch(() => undefined);
+    throw err;
+  }
+}
+
+/**
+ * Sweep for contracts whose repo provisioning didn't finish in one pass --
+ * same shape as reconcileMissingScores/reconcilePendingPayouts: retry
+ * through the real attemptProvisioning, capped, on an interval plus at
+ * startup. Exceeding the cap flips the row to 'FAILED' (excluded by this
+ * query's own WHERE clause going forward), mirroring the payout leg's
+ * FAILED_TERMINAL.
+ */
+async function reconcileStuckProvisioning(): Promise<void> {
+  if (!provisioningEnabled) return;
+
+  const { rows } = await dbPool.query(
+    `SELECT contract_id, freelancer_user_id, freelancer_github_login, attempts
+       FROM repo_provisioning
+      WHERE status NOT IN ('COMPLETE', 'FAILED')`,
+  );
+  if (rows.length === 0) return;
+
+  logger.info({ count: rows.length }, 'Reconciling stuck repo provisioning');
+  for (const row of rows) {
+    if (row.attempts >= PROVISIONING_MAX_ATTEMPTS) {
+      await dbPool
+        .query(`UPDATE repo_provisioning SET status = 'FAILED', updated_at = NOW() WHERE contract_id = $1`, [
+          row.contract_id,
+        ])
+        .catch((err: any) =>
+          logger.error({ contractId: row.contract_id, err: err.message }, 'Failed to mark provisioning FAILED'),
+        );
+      logger.error(
+        { contractId: row.contract_id, attempts: row.attempts },
+        `Repo provisioning exceeded ${PROVISIONING_MAX_ATTEMPTS} attempts; stopped auto-retrying. Needs manual review.`,
+      );
+      continue;
+    }
+    await attemptProvisioning(row.contract_id, row.freelancer_user_id, row.freelancer_github_login).catch(
+      (err: any) => logger.error({ contractId: row.contract_id, err: err.message }, 'Provisioning reconciliation attempt failed'),
+    );
+  }
 }
 
 // ── 4. Settlement ────────────────────────────────────────────────────
@@ -889,8 +1139,18 @@ const PAYOUT_MAX_ATTEMPTS = 5;
  */
 const SCORE_RECONCILE_INTERVAL_MS = 2 * 60 * 1000;
 const SCORE_MAX_ATTEMPTS = 5;
+/**
+ * 3 minutes -- between the score reconciler's 2 and the payout reconciler's
+ * 5: a stuck repo provisioning blocks the freelancer from starting work at
+ * all (more urgent than a payout retry, which can legitimately wait days for
+ * onboarding), but each attempt makes up to three real GitHub API calls
+ * where a score attempt makes one gateway call.
+ */
+const PROVISIONING_RECONCILE_INTERVAL_MS = 3 * 60 * 1000;
+const PROVISIONING_MAX_ATTEMPTS = 5;
 let payoutReconcileTimer: NodeJS.Timeout | undefined;
 let scoreReconcileTimer: NodeJS.Timeout | undefined;
+let provisioningReconcileTimer: NodeJS.Timeout | undefined;
 let metricsServer: Server | undefined;
 
 async function start(): Promise<void> {
@@ -918,10 +1178,17 @@ async function start(): Promise<void> {
     );
   }
 
+  if (provisioningEnabled) {
+    logger.info({ org: config.GITHUB_ORG }, 'GitHub org repo provisioning enabled');
+  } else {
+    logger.warn('GITHUB_ORG/GITHUB_TOKEN not both set. Contracts will not get auto-provisioned repos.');
+  }
+
   subscribeAuditSignals();
   subscribeTrustScore();
   subscribeScopeDecisions();
   subscribeEscrowEvents();
+  subscribeContractLocked();
   subscribeSettlementRequests();
 
   await reconcileAbandonedSettlements();
@@ -929,6 +1196,8 @@ async function start(): Promise<void> {
   scoreReconcileTimer = setInterval(() => void reconcileMissingScores(), SCORE_RECONCILE_INTERVAL_MS);
   await reconcilePendingPayouts();
   payoutReconcileTimer = setInterval(() => void reconcilePendingPayouts(), PAYOUT_RECONCILE_INTERVAL_MS);
+  await reconcileStuckProvisioning();
+  provisioningReconcileTimer = setInterval(() => void reconcileStuckProvisioning(), PROVISIONING_RECONCILE_INTERVAL_MS);
 
   logger.info('Settlement oracle ready.');
 }
@@ -946,6 +1215,7 @@ async function shutdown(signal: string): Promise<void> {
   logger.info(`${signal} received, shutting down...`);
   if (payoutReconcileTimer) clearInterval(payoutReconcileTimer);
   if (scoreReconcileTimer) clearInterval(scoreReconcileTimer);
+  if (provisioningReconcileTimer) clearInterval(provisioningReconcileTimer);
   if (metricsServer) await new Promise((resolve) => metricsServer!.close(resolve));
   await dbPool.end();
   await ledgerClient.close();
@@ -983,6 +1253,10 @@ if (process.env.NODE_ENV !== 'test') {
 // to close the Prometheus listener afterward. Without this, the port stays
 // bound past the test file's own process and collides with the next test or
 // suite that also calls start() — this is what happens.
+// attemptProvisioning and reconcileStuckProvisioning are exported for the
+// same reason attemptScoring/reconcileMissingScores are: the repo
+// provisioning test suite exercises the real functions directly rather than
+// a re-typed copy of their SQL.
 export {
   start,
   oracle,
@@ -994,5 +1268,8 @@ export {
   attemptScoring,
   reconcileMissingScores,
   SCORE_MAX_ATTEMPTS,
+  attemptProvisioning,
+  reconcileStuckProvisioning,
+  PROVISIONING_MAX_ATTEMPTS,
   metricsServer,
 };

@@ -97,6 +97,10 @@ describe.skipIf(!PG_UP)('GitHub OAuth', () => {
     expect(location.origin + location.pathname).toBe('https://github.com/login/oauth/authorize');
     expect(location.searchParams.get('client_id')).toBe(TEST_CLIENT_ID);
     expect(location.searchParams.get('state')).toBeTruthy();
+    // No 'public_repo': repos are org-provisioned by AssureCode's own
+    // credential now (settlement-worker's github-provisioner-client), so
+    // this connection only needs enough to identify who the freelancer is.
+    expect(location.searchParams.get('scope')).toBe('read:user user:email');
   });
 
   it('GET /auth/github/callback rejects a tampered state', async () => {
@@ -130,12 +134,17 @@ describe.skipIf(!PG_UP)('GitHub OAuth', () => {
     createdUserId = userRow.rows[0].user_id;
 
     const providerRow = await pool.query(
-      `SELECT pgp_sym_decrypt(access_token_encrypted, $2) AS token
+      `SELECT pgp_sym_decrypt(access_token_encrypted, $2) AS token, github_login, token_valid
          FROM auth_providers WHERE user_id = $1 AND provider_type = 'GITHUB'`,
       [createdUserId, TEST_TOKEN_KEY],
     );
     expect(providerRow.rowCount).toBe(1);
     expect(providerRow.rows[0].token).toBe(GITHUB_ACCESS_TOKEN);
+    // Needed to invite this freelancer as an outside collaborator on their
+    // assigned contract's provisioned repo (GitHub's collaborator-invite
+    // endpoint takes a login, not the numeric id already stored above).
+    expect(providerRow.rows[0].github_login).toBe(GITHUB_LOGIN);
+    expect(providerRow.rows[0].token_valid).toBe(true);
 
     const profileRow = await pool.query(`SELECT freelancer_id FROM freelancer_profiles WHERE freelancer_id = $1`, [createdUserId]);
     expect(profileRow.rowCount).toBe(1);
@@ -181,5 +190,42 @@ describe.skipIf(!PG_UP)('GitHub OAuth', () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual([{ name: 'widget-api', full_name: `${GITHUB_LOGIN}/widget-api`, private: false }]);
+  });
+
+  it('GET /api/freelancer/github-status reports CONNECTED for the linked account', async () => {
+    const res = await server.inject({
+      method: 'GET',
+      url: '/api/freelancer/github-status',
+      headers: { authorization: `Bearer ${sessionToken}` },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: 'CONNECTED', githubLogin: GITHUB_LOGIN });
+  });
+
+  it('reconnecting via GitHub resets token_valid after a provisioning failure flagged it stale', async () => {
+    // Simulate what settlement-worker's attemptProvisioning does on a
+    // 404 "unknown login" adding this freelancer as a repo collaborator.
+    await pool.query(`UPDATE auth_providers SET token_valid = FALSE WHERE user_id = $1 AND provider_type = 'GITHUB'`, [
+      createdUserId,
+    ]);
+    const staleStatusRes = await server.inject({
+      method: 'GET',
+      url: '/api/freelancer/github-status',
+      headers: { authorization: `Bearer ${sessionToken}` },
+    });
+    expect(staleStatusRes.json().status).toBe('RECONNECTION_REQUIRED');
+
+    const authRes = await server.inject({ method: 'GET', url: '/auth/github' });
+    const state = new URL(authRes.headers.location as string).searchParams.get('state')!;
+    const callbackRes = await server.inject({
+      method: 'GET',
+      url: `/auth/github/callback?code=fake_github_code_reconnect&state=${encodeURIComponent(state)}`,
+    });
+    expect(callbackRes.statusCode).toBe(302);
+
+    const row = await pool.query(`SELECT token_valid FROM auth_providers WHERE user_id = $1 AND provider_type = 'GITHUB'`, [
+      createdUserId,
+    ]);
+    expect(row.rows[0].token_valid).toBe(true);
   });
 });

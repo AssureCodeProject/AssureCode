@@ -58,6 +58,7 @@ export const EVENT_TOPICS = {
   SETTLEMENT_REJECTED: 'settlement.rejected',
   SETTLEMENT_COMPLETED: 'settlement.completed',
   ESCROW_LOCKED: 'escrow.locked',
+  REPOSITORY_PROVISIONED: 'repository.provisioned',
 } as const;
 
 export type EventTopic = (typeof EVENT_TOPICS)[keyof typeof EVENT_TOPICS];

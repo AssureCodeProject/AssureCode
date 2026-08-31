@@ -77,6 +77,17 @@ export function AuthProvider({ children }) {
     return { mfaRequired: false, user: data.user };
   }, []);
 
+  // POST /auth/register always returns a real session (no MFA path exists
+  // for a brand-new account) — same token-storage shape as login() above.
+  const register = useCallback(async (email, password, role) => {
+    const data = await callApi('/auth/register', 'POST', { email, password, role });
+    setAuthToken(data.token);
+    localStorage.setItem(TOKEN_STORAGE_KEY, data.token);
+    clearStoredContractWorkspace();
+    setUser(toUser(data.user));
+    return data.user;
+  }, []);
+
   // Second step of an MFA-gated login: redeem the challenge login() returned
   // plus a live TOTP code for the real session. Same token-storage shape as
   // login()/completeGithubLogin() above.
@@ -111,8 +122,8 @@ export function AuthProvider({ children }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, isAuthenticated: !!user, isLoading, login, logout, completeGithubLogin, completeMfaChallenge }),
-    [user, isLoading, login, logout, completeGithubLogin, completeMfaChallenge],
+    () => ({ user, isAuthenticated: !!user, isLoading, login, register, logout, completeGithubLogin, completeMfaChallenge }),
+    [user, isLoading, login, register, logout, completeGithubLogin, completeMfaChallenge],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

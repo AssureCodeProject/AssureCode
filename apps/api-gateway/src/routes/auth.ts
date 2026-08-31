@@ -6,7 +6,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { randomUUID, createHmac, timingSafeEqual } from 'node:crypto';
 import { config, logger, dbPool, aiServiceUrl, serviceCallHeaders } from '../context.js';
 import { logSecurityAudit, type AuthUser } from '../middleware/rbac.js';
-import { verifyPassword } from '../middleware/auth.js';
+import { verifyPassword, hashPassword } from '../middleware/auth.js';
 import { createSession, newSessionId, revokeSession } from '../middleware/session-store.js';
 import {
   startEnrollment,
@@ -142,6 +142,62 @@ export function registerAuthRoutes(server: FastifyInstance): void {
     }
 
     return reply.send(await issueSession(row, request));
+  });
+
+  // Self-service account creation. There is no email-verification step and
+  // no admin/auditor option here on purpose -- those roles stay
+  // seed-script-only (see V013's own comment on why there is deliberately no
+  // seeded admin). Rate-limited the same bucket as login: it is also
+  // unauthenticated and does the same expensive argon2id work.
+  server.post<{
+    Body: { email: string; password: string; role: 'client' | 'freelancer' };
+  }>('/auth/register', {
+    config: {
+      rateLimit: {
+        max: Number(process.env.RATE_LIMIT_LOGIN_MAX ?? 10),
+        timeWindow: '1 minute',
+        keyGenerator: (request: FastifyRequest) => request.ip,
+      },
+    },
+  }, async (request, reply) => {
+    const { email, password, role } = request.body || {};
+    if (!email || !password) {
+      return reply.status(400).send({ error: 'email and password are required' });
+    }
+    if (role !== 'client' && role !== 'freelancer') {
+      return reply.status(400).send({ error: "role must be 'client' or 'freelancer'" });
+    }
+    if (password.length < 8) {
+      return reply.status(400).send({ error: 'password must be at least 8 characters' });
+    }
+
+    const existing = await dbPool.query(`SELECT user_id FROM users WHERE email = $1`, [email]);
+    if ((existing.rowCount ?? 0) > 0) {
+      return reply.status(409).send({ error: 'An account with this email already exists' });
+    }
+
+    const userId = randomUUID();
+    const passwordHash = await hashPassword(password);
+    // kyc_status left at its column default (UNVERIFIED, see V011) --
+    // escrow/settle routes already gate on requireKycVerified, so a freshly
+    // registered client correctly cannot fund a contract until KYC clears
+    // through the existing (separately gapped) verification path.
+    const inserted = await dbPool.query(
+      `INSERT INTO users (user_id, email, password_hash, role, display_name)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING user_id, email, role, display_name, kyc_status, mfa_enabled`,
+      [userId, email, passwordHash, role, email],
+    );
+
+    await logSecurityAudit(dbPool, {
+      userId,
+      action: 'REGISTER',
+      resource: 'auth',
+      ipAddress: request.ip,
+      status: 'SUCCESS',
+    });
+
+    return reply.status(201).send(await issueSession(inserted.rows[0], request));
   });
 
   // The second step of an MFA-gated login: redeem the challenge from
@@ -395,7 +451,11 @@ export function registerAuthRoutes(server: FastifyInstance): void {
     server.get('/auth/github', async (_request, reply) => {
       const params = new URLSearchParams({
         client_id: config.GITHUB_CLIENT_ID!,
-        scope: 'read:user user:email public_repo',
+        // No 'public_repo' scope: repos are now org-provisioned by
+        // AssureCode's own credential (see settlement-worker's
+        // github-provisioner-client), so this connection only needs enough
+        // to identify who the freelancer is, not access to their own repos.
+        scope: 'read:user user:email',
         state: signState(),
         redirect_uri: githubCallbackUrl,
       });
@@ -492,13 +552,15 @@ export function registerAuthRoutes(server: FastifyInstance): void {
               : null;
 
             await client.query(
-              `INSERT INTO auth_providers (user_id, provider_type, provider_user_id, access_token_encrypted, token_scopes, connected_at)
-               VALUES ($1, 'GITHUB', $2, $3, $4, now())
+              `INSERT INTO auth_providers (user_id, provider_type, provider_user_id, access_token_encrypted, token_scopes, github_login, token_valid, connected_at)
+               VALUES ($1, 'GITHUB', $2, $3, $4, $5, TRUE, now())
                ON CONFLICT (provider_type, provider_user_id) DO UPDATE
                  SET access_token_encrypted = EXCLUDED.access_token_encrypted,
                      token_scopes = EXCLUDED.token_scopes,
+                     github_login = EXCLUDED.github_login,
+                     token_valid = TRUE,
                      connected_at = now()`,
-              [userId, providerUserId, encryptedToken, tokenJson.scope ?? null],
+              [userId, providerUserId, encryptedToken, tokenJson.scope ?? null, ghUser.login ?? null],
             );
 
             await client.query('COMMIT');
@@ -627,6 +689,29 @@ export function registerAuthRoutes(server: FastifyInstance): void {
         logger.warn({ userId: user.userId, err }, 'GitHub /user/repos call threw');
         return reply.status(502).send({ error: 'Failed to list GitHub repositories' });
       }
+    });
+
+    // Drives the freelancer dashboard's connection badge (Not connected /
+    // Connected / Reconnection required). RECONNECTION_REQUIRED means a
+    // repo-provisioning attempt hit a 404 "unknown user" adding this
+    // freelancer's github_login as a collaborator — the identity on file has
+    // gone stale (renamed/deleted GitHub account) and needs reconnecting.
+    server.get('/api/freelancer/github-status', async (request, reply) => {
+      const user = (request as any).user as AuthUser | undefined;
+      if (!user) return reply.status(401).send({ error: 'Unauthorized' });
+
+      const res = await dbPool.query(
+        `SELECT github_login, token_valid FROM auth_providers WHERE user_id = $1 AND provider_type = 'GITHUB'`,
+        [user.userId],
+      );
+      if (res.rowCount === 0) {
+        return reply.send({ status: 'NOT_CONNECTED' });
+      }
+      const row = res.rows[0];
+      return reply.send({
+        status: row.token_valid ? 'CONNECTED' : 'RECONNECTION_REQUIRED',
+        githubLogin: row.github_login,
+      });
     });
   }
 }

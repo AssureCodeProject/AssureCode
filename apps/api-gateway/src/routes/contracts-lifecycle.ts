@@ -384,6 +384,38 @@ export function registerContractsLifecycleRoutes(server: FastifyInstance): void 
     });
   });
 
+  // Read-only status for the auto-provisioned repo (settlement-worker's
+  // attemptProvisioning, hooked off CONTRACT_LOCKED — see worker.ts). Used
+  // by both the freelancer dashboard (to show the clone link once ready)
+  // and the client's own view of contract progress. No auth-role
+  // restriction beyond being logged in: either party on the contract has a
+  // legitimate reason to see whether the workspace is ready yet.
+  server.get<{ Params: { contractId: string } }>(
+    '/api/contracts/:contractId/repo-provisioning',
+    async (request, reply) => {
+      const { contractId } = request.params;
+      const res = await dbPool.query(
+        `SELECT status, repo_full_name, repo_html_url, collaborator_status, webhook_status, last_error, updated_at
+           FROM repo_provisioning WHERE contract_id = $1`,
+        [contractId],
+      );
+      if (res.rowCount === 0) {
+        return reply.status(404).send({ error: 'Not Found', message: `No provisioning record for ${contractId}` });
+      }
+      const row = res.rows[0];
+      return reply.send({
+        contractId,
+        status: row.status,
+        repoFullName: row.repo_full_name,
+        repoHtmlUrl: row.repo_html_url,
+        collaboratorStatus: row.collaborator_status,
+        webhookStatus: row.webhook_status,
+        lastError: row.last_error,
+        updatedAt: row.updated_at,
+      });
+    },
+  );
+
   server.post<{
     Params: { contractId: string };
     Body: { title: string; requirements: string; framework?: string };

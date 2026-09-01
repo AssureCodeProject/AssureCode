@@ -10,10 +10,12 @@ import {
   RotateCcw,
   CheckCircle2,
   LogOut,
+  FolderKanban,
 } from 'lucide-react';
 
 import ContractInitialization from './components/ContractInitialization';
 import FreelancerAssignments from './components/FreelancerAssignments';
+import ClientContracts from './components/ClientContracts';
 import ClientNotifications from './components/ClientNotifications';
 import VerificationDashboard from './components/VerificationDashboard';
 import XaiTrustScoreView from './components/XaiTrustScoreView';
@@ -22,6 +24,8 @@ import MobileDrawer from './components/ui/MobileDrawer';
 import LoginScreen from './components/LoginScreen';
 import GithubCallback from './components/GithubCallback';
 import ConnectReturn from './components/ConnectReturn';
+import ResetPasswordScreen from './components/ResetPasswordScreen';
+import VerifyEmailScreen from './components/VerifyEmailScreen';
 import { ChainBadge, SignatureBadge } from './components/ui/LedgerBadges';
 import { useLedgerStatus } from './hooks/useLedgerStatus';
 import { useAuth } from './context/AuthContext';
@@ -141,6 +145,7 @@ export function App() {
 
   const navItems = [
     { id: 'contract', label: '01. Contract Initialization', shortLabel: '01. Contract', icon: FileText, disabled: !isClient },
+    { id: 'contracts', label: 'My Contracts', shortLabel: 'Contracts', icon: FolderKanban, disabled: !isClient },
     { id: 'verification', label: '02. CI/CD Verification', shortLabel: '02. Verification', icon: Activity, disabled: !contractData },
     { id: 'xai', label: '03. XAI Trust Score', shortLabel: '03. Trust Score', icon: BrainCircuit, disabled: !contractData },
     { id: 'escrow', label: '04. Escrow Settlement', shortLabel: '04. Escrow', icon: Lock, disabled: !contractData },
@@ -155,6 +160,14 @@ export function App() {
 
   if (window.location.pathname === '/connect/return' || window.location.pathname === '/connect/refresh') {
     return <ConnectReturn />;
+  }
+
+  if (window.location.pathname === '/reset-password') {
+    return <ResetPasswordScreen />;
+  }
+
+  if (window.location.pathname === '/verify-email') {
+    return <VerifyEmailScreen />;
   }
 
   if (isLoading) {
@@ -336,6 +349,12 @@ export function App() {
           {activeTab === 'contract' && !isClient && (
             <motion.div key="freelancer-landing" {...PHASE_TRANSITION}>
               <FreelancerAssignments onSelectContract={handleAssignmentSelected} />
+            </motion.div>
+          )}
+
+          {activeTab === 'contracts' && isClient && (
+            <motion.div key="client-contracts" {...PHASE_TRANSITION}>
+              <ClientContracts />
             </motion.div>
           )}
 

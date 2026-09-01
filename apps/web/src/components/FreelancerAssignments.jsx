@@ -10,7 +10,8 @@ import { useAuth } from '../context/AuthContext';
 import { GlassCard } from './ui/GlassCard';
 import { StatusBadge } from './ui/StatusBadge';
 import { FuturisticButton } from './ui/FuturisticButton';
-import { MobileDrawer } from './ui/MobileDrawer';
+import { ContractDetailsDrawer } from './ContractDetailsDrawer';
+import { ContactParticipantButton } from './ContactParticipantButton';
 
 const STATUS_VARIANT = {
   DRAFT: 'neutral',
@@ -294,112 +295,6 @@ const REJECTION_REASONS = [
   { code: 'OTHER', label: 'Other' },
 ];
 
-function DetailRow({ label, value }) {
-  return (
-    <div className="flex justify-between gap-3 border-b border-rule pb-1.5">
-      <span className="text-prose-muted shrink-0">{label}</span>
-      <span className="text-prose text-right break-words">{value ?? '—'}</span>
-    </div>
-  );
-}
-
-/**
- * ContractDetailsDrawer — full read-only contract view, fetched from
- * GET /api/contracts/:id/assignment-details on open. Reuses MobileDrawer
- * (the app's one drawer/modal primitive) rather than introducing a new one.
- */
-function ContractDetailsDrawer({ contractId, isOpen, onClose }) {
-  const [details, setDetails] = useState(null);
-  const [error, setError] = useState('');
-  const [downloading, setDownloading] = useState(false);
-
-  useEffect(() => {
-    if (!isOpen || !contractId) return;
-    setDetails(null);
-    setError('');
-    callApi(`/api/contracts/${contractId}/assignment-details`)
-      .then(setDetails)
-      .catch((err) => setError(err.message || 'Failed to load contract details'));
-  }, [isOpen, contractId]);
-
-  const handleDownload = async () => {
-    setDownloading(true);
-    setError('');
-    try {
-      await downloadFile(`/api/contracts/${contractId}/assignment-pdf`, `${contractId}-assignment.pdf`);
-    } catch (err) {
-      setError(err.message || 'Failed to download PDF');
-    } finally {
-      setDownloading(false);
-    }
-  };
-
-  return (
-    <MobileDrawer
-      isOpen={isOpen}
-      onClose={onClose}
-      title="Contract Details"
-      subtitle={contractId}
-      position="right"
-      footer={
-        <FuturisticButton
-          variant="secondary"
-          size="sm"
-          icon={Download}
-          fullWidth
-          loading={downloading}
-          loadingText="Preparing..."
-          onClick={handleDownload}
-        >
-          Download Contract PDF
-        </FuturisticButton>
-      }
-    >
-      {error && <div className="mb-3 font-mono text-xs text-fail">{error}</div>}
-      {!details && !error && <div className="font-mono text-xs text-prose-muted">Loading...</div>}
-      {details && (
-        <div className="space-y-4 font-mono text-xs">
-          <DetailRow label="Title" value={details.title} />
-          <DetailRow label="Contract ID" value={details.contractId} />
-          <DetailRow label="Client" value={details.clientDisplayName || details.clientId} />
-          <DetailRow label="Freelancer" value={details.freelancerDisplayName || details.freelancerId} />
-          <DetailRow label="Contract Status" value={details.status} />
-          <DetailRow label="Agreed Amount" value={`$${formatBudget(details.budgetCents)} USD`} />
-          <DetailRow label="Due Date" value={formatDeadline(details.deadline)} />
-          <DetailRow
-            label="Contract Created"
-            value={details.createdAt ? new Date(details.createdAt).toLocaleString() : null}
-          />
-          {details.assignment && (
-            <>
-              <DetailRow label="Assignment Status" value={details.assignment.status} />
-              <DetailRow
-                label="Assigned"
-                value={details.assignment.assignedAt ? new Date(details.assignment.assignedAt).toLocaleString() : null}
-              />
-              {details.assignment.decidedAt && (
-                <DetailRow label="Decided" value={new Date(details.assignment.decidedAt).toLocaleString()} />
-              )}
-            </>
-          )}
-          <div>
-            <div className="text-prose-muted mb-1">Requirements &amp; Scope</div>
-            <div className="text-prose whitespace-pre-wrap bg-ink border border-rule p-3">
-              {details.requirements || 'No requirements on file.'}
-            </div>
-          </div>
-          <div>
-            <div className="text-prose-muted mb-1">Integrity Reference (Genesis Hash / H0)</div>
-            <div className="text-prose break-all bg-ink border border-rule p-3">
-              {details.genesisHash || 'Not yet recorded'}
-            </div>
-          </div>
-        </div>
-      )}
-    </MobileDrawer>
-  );
-}
-
 /**
  * AssignmentActions — the "AWAITING YOUR DECISION" card body: View Details /
  * Download PDF / Reject / Accept, plus each decision's inline confirmation
@@ -456,13 +351,14 @@ function AssignmentActions({ contract, onDecided }) {
             size="sm"
             icon={Download}
             onClick={() =>
-              downloadFile(`/api/contracts/${contract.contractId}/assignment-pdf`, `${contract.contractId}-assignment.pdf`).catch(
-                (err) => setError(err.message || 'Failed to download PDF'),
+              downloadFile(`/api/contracts/${contract.contractId}/assignment-pdf`, `${contract.contractId}-contract-record.pdf`).catch(
+                (err) => setError(err.message || 'Failed to download Contract Record'),
               )
             }
           >
-            Download Contract PDF
+            Download Contract Record
           </FuturisticButton>
+          <ContactParticipantButton contractId={contract.contractId} viewerRole="freelancer" />
           <div className="flex-1 min-w-[8px]" />
           <FuturisticButton variant="danger" size="sm" icon={XCircle} onClick={() => setMode('confirmReject')}>
             Reject Contract
@@ -550,6 +446,7 @@ function AssignmentActions({ contract, onDecided }) {
         contractId={contract.contractId}
         isOpen={detailsOpen}
         onClose={() => setDetailsOpen(false)}
+        viewerRole="freelancer"
       />
     </div>
   );

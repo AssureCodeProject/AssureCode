@@ -17,7 +17,7 @@ import {
 } from '@assurecode/shared';
 import { withIdempotency } from '../middleware/idempotency.js';
 import { generateContractPdf } from '../services/contract-pdf.js';
-import { type AuthUser, logSecurityAudit } from '../middleware/rbac.js';
+import { type AuthUser, logSecurityAudit, requireRole } from '../middleware/rbac.js';
 import {
   config,
   logger,
@@ -175,6 +175,74 @@ export function registerContractsLifecycleRoutes(server: FastifyInstance): void 
         assignmentStatus: row.assignment_status ?? null,
         assignmentId: row.assignment_id ?? null,
         requirementsSummary: row.requirements_summary ?? null,
+      })),
+    });
+  });
+
+  /**
+   * The client-side analog of /api/contracts/mine — "My Contracts": every
+   * contract this client owns, with its current assignment decision and
+   * repo-provisioning state, so the client's dashboard doesn't need N+1
+   * calls to assignment-details for the list view. requireRole(['client'])
+   * alone is the correct guard here (not clientOnly / requireContractParty,
+   * which expect a :contractId route param this list route doesn't have) —
+   * ownership is the WHERE c.client_id = $1 clause itself, the same shape
+   * /api/contracts/mine already uses for freelancers.
+   */
+  server.get<{
+    Reply: {
+      contracts: Array<{
+        contractId: string;
+        title: string;
+        status: string;
+        budgetCents: number;
+        deadline: string;
+        freelancerId: string | null;
+        freelancerDisplayName: string | null;
+        createdAt: string;
+        assignmentStatus: string | null;
+        assignmentId: number | null;
+        decidedAt: string | null;
+        rejectionReasonText: string | null;
+        repositoryStatus: string | null;
+      }>;
+    };
+  }>('/api/contracts/owned', { preHandler: requireRole(['client']) }, async (request, reply) => {
+    const user = (request as any).user as AuthUser;
+
+    const result = await dbPool.query(
+      `SELECT c.contract_id, c.title, c.status, c.budget_cents, c.deadline,
+              c.freelancer_id, fu.display_name AS freelancer_display_name, c.created_at,
+              ca.status AS assignment_status, ca.assignment_id, ca.decided_at, ca.rejection_reason_text,
+              rp.status AS repository_status
+         FROM contracts c
+         LEFT JOIN users fu ON fu.user_id = c.freelancer_id
+         LEFT JOIN LATERAL (
+           SELECT status, assignment_id, decided_at, rejection_reason_text FROM contract_assignments
+            WHERE contract_id = c.contract_id
+            ORDER BY assignment_id DESC LIMIT 1
+         ) ca ON true
+         LEFT JOIN repo_provisioning rp ON rp.contract_id = c.contract_id
+        WHERE c.client_id = $1
+        ORDER BY c.created_at DESC`,
+      [user.userId],
+    );
+
+    return reply.status(200).send({
+      contracts: result.rows.map((row) => ({
+        contractId: row.contract_id,
+        title: row.title,
+        status: row.status,
+        budgetCents: row.budget_cents,
+        deadline: row.deadline,
+        freelancerId: row.freelancer_id,
+        freelancerDisplayName: row.freelancer_display_name ?? null,
+        createdAt: row.created_at,
+        assignmentStatus: row.assignment_status ?? null,
+        assignmentId: row.assignment_id ?? null,
+        decidedAt: row.decided_at ?? null,
+        rejectionReasonText: row.rejection_reason_text ?? null,
+        repositoryStatus: row.repository_status ?? null,
       })),
     });
   });
@@ -453,8 +521,8 @@ export function registerContractsLifecycleRoutes(server: FastifyInstance): void 
 
       const contractRes = await dbPool.query(
         `SELECT c.contract_id, c.title, c.requirements, c.budget_cents, c.deadline, c.status,
-                c.client_id, cu.display_name AS client_display_name,
-                c.freelancer_id, fu.display_name AS freelancer_display_name,
+                c.client_id, cu.display_name AS client_display_name, cu.email AS client_email,
+                c.freelancer_id, fu.display_name AS freelancer_display_name, fu.email AS freelancer_email,
                 c.created_at
            FROM contracts c
            LEFT JOIN users cu ON cu.user_id = c.client_id
@@ -485,6 +553,12 @@ export function registerContractsLifecycleRoutes(server: FastifyInstance): void 
         [contractId],
       );
 
+      const repoRes = await dbPool.query(
+        `SELECT status, repo_full_name, repo_html_url, last_error FROM repo_provisioning WHERE contract_id = $1`,
+        [contractId],
+      );
+      const repo = repoRes.rows[0];
+
       return reply.send({
         contractId: c.contract_id,
         title: c.title,
@@ -494,10 +568,24 @@ export function registerContractsLifecycleRoutes(server: FastifyInstance): void 
         status: c.status,
         clientId: c.client_id,
         clientDisplayName: c.client_display_name ?? null,
+        // Emails are safe to include here specifically because this route is
+        // already gated to this contract's own client/assigned-freelancer/
+        // admin by contractPartyOnly — there is no broader endpoint that
+        // returns them, and an unrelated user never reaches this handler.
+        clientEmail: c.client_email ?? null,
         freelancerId: c.freelancer_id,
         freelancerDisplayName: c.freelancer_display_name ?? null,
+        freelancerEmail: c.freelancer_email ?? null,
         createdAt: c.created_at,
         genesisHash: h0Res.rows[0]?.current_hash ?? null,
+        repository: repo
+          ? {
+              status: repo.status,
+              repoFullName: repo.repo_full_name,
+              repoHtmlUrl: repo.repo_html_url,
+              lastError: repo.last_error,
+            }
+          : null,
         assignment: a
           ? {
               assignmentId: a.assignment_id,
@@ -546,7 +634,8 @@ export function registerContractsLifecycleRoutes(server: FastifyInstance): void 
       const c = contractRes.rows[0];
 
       const assignmentRes = await dbPool.query(
-        `SELECT status, locked_ledger_hash, assigned_at FROM contract_assignments
+        `SELECT status, locked_ledger_hash, assigned_at, decided_at, rejection_reason_text
+           FROM contract_assignments
           WHERE contract_id = $1 ORDER BY assignment_id DESC LIMIT 1`,
         [contractId],
       );
@@ -556,6 +645,8 @@ export function registerContractsLifecycleRoutes(server: FastifyInstance): void 
         `SELECT current_hash FROM merkle_ledger WHERE contract_id = $1 ORDER BY ledger_id ASC LIMIT 1`,
         [contractId],
       );
+
+      const repoRes = await dbPool.query(`SELECT status FROM repo_provisioning WHERE contract_id = $1`, [contractId]);
 
       const pdfBuffer = await generateContractPdf({
         contractId: c.contract_id,
@@ -569,8 +660,11 @@ export function registerContractsLifecycleRoutes(server: FastifyInstance): void 
         createdAt: c.created_at,
         assignedAt: a?.assigned_at ?? null,
         assignmentStatus: a?.status ?? null,
+        decidedAt: a?.decided_at ?? null,
+        rejectionReasonText: a?.rejection_reason_text ?? null,
         genesisHash: h0Res.rows[0]?.current_hash ?? null,
         assignmentLedgerHash: a?.locked_ledger_hash ?? null,
+        repositoryStatus: repoRes.rows[0]?.status ?? null,
       });
 
       logSecurityAudit(dbPool, {

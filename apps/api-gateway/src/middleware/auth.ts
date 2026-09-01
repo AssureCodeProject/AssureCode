@@ -32,6 +32,14 @@ const PUBLIC_PATHS = new Set([
   // challenge from /auth/login, not a session — there is nothing to verify a
   // bearer token against yet.
   '/auth/mfa/challenge',
+  // Forgot/reset-password and email verification authenticate via a
+  // single-use token in the request body, not a session — there is no JWT
+  // to present yet (forgot/reset) or the token itself is the whole point of
+  // the call (verify-email). /auth/change-password is deliberately NOT
+  // here: changing your own password requires an existing session.
+  '/auth/forgot-password',
+  '/auth/reset-password',
+  '/auth/verify-email',
   // GitHub OAuth's whole point is standing in for a session that doesn't
   // exist yet: /github kicks off the redirect, /github/callback is GitHub
   // calling back with no JWT of ours to present, and /github/exchange trades

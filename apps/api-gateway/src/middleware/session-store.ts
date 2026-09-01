@@ -70,3 +70,27 @@ export async function revokeSession(pool: pg.Pool, sessionId: string): Promise<v
     [sessionId],
   );
 }
+
+/**
+ * Revoke every active session a user has, optionally sparing one.
+ *
+ * Used by password reset (revoke all — the caller has no session yet, and a
+ * reset can indicate the old credential was compromised) and change-password
+ * (revoke all but the session the caller is currently acting through, so
+ * voluntarily changing your own password doesn't also log you out).
+ *
+ * `IS DISTINCT FROM` (not `<>`) is what makes `exceptSessionId` omitted mean
+ * "revoke everything": `<>` against a NULL parameter would make the whole
+ * WHERE clause evaluate to NULL/false for every row and revoke nothing.
+ */
+export async function revokeAllSessions(
+  pool: pg.Pool,
+  userId: string,
+  exceptSessionId?: string,
+): Promise<void> {
+  await pool.query(
+    `UPDATE user_sessions SET revoked_at = now()
+      WHERE user_id = $1 AND revoked_at IS NULL AND session_id IS DISTINCT FROM $2`,
+    [userId, exceptSessionId ?? null],
+  );
+}

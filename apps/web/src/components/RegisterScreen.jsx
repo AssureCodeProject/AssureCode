@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { UserPlus, Loader2, AlertCircle } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { validateEmail, validateNewPassword, PASSWORD_HELPER_TEXT } from '../utils/passwordPolicy';
 
 function submitButtonClasses(isSubmitting, canSubmit) {
   const base =
@@ -18,19 +19,43 @@ function roleButtonClasses(selected) {
     : `${base} border-rule text-prose-muted hover:border-rule-hi hover:text-prose`;
 }
 
+function fieldError(message) {
+  if (!message) return null;
+  return <p className="mt-1.5 font-mono text-[11px] text-fail">{message}</p>;
+}
+
 /** Mirrors LoginScreen's shape and styling; swapped in by its "create an account" toggle. */
 export function RegisterScreen({ onSwitchToLogin }) {
   const { register } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [role, setRole] = useState('client');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState(null);
+  // Field-level messages only show once the user has interacted with a
+  // field (or attempted submit) -- showing "Password is required" before
+  // anyone has typed anything is just noise.
+  const [touched, setTouched] = useState({ email: false, password: false, confirmPassword: false });
 
-  const canSubmit = Boolean(email.trim() && password.length >= 8);
+  const emailError = touched.email ? validateEmail(email) : null;
+  const passwordError = touched.password ? validateNewPassword(password) : null;
+  const confirmError = touched.confirmPassword
+    ? (!confirmPassword ? 'Please confirm your password.' : password !== confirmPassword ? 'Passwords do not match.' : null)
+    : null;
+
+  const canSubmit = Boolean(
+    email.trim() &&
+      !validateEmail(email) &&
+      password &&
+      !validateNewPassword(password) &&
+      confirmPassword &&
+      password === confirmPassword,
+  );
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setTouched({ email: true, password: true, confirmPassword: true });
     if (!canSubmit || isSubmitting) return;
     setIsSubmitting(true);
     setError(null);
@@ -101,12 +126,14 @@ export function RegisterScreen({ onSwitchToLogin }) {
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              onBlur={() => setTouched((t) => ({ ...t, email: true }))}
               disabled={isSubmitting}
               placeholder="you@example.com"
               autoComplete="username"
               className="w-full bg-ink px-4 py-3 border-b border-rule text-prose placeholder:text-prose-dim text-sm
                          focus:border-signal outline-none transition-colors disabled:opacity-40"
             />
+            {fieldError(emailError)}
           </div>
 
           <div>
@@ -118,12 +145,35 @@ export function RegisterScreen({ onSwitchToLogin }) {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              onBlur={() => setTouched((t) => ({ ...t, password: true }))}
               disabled={isSubmitting}
               placeholder="At least 8 characters"
               autoComplete="new-password"
               className="w-full bg-ink px-4 py-3 border-b border-rule text-prose placeholder:text-prose-dim text-sm
                          focus:border-signal outline-none transition-colors disabled:opacity-40"
             />
+            {fieldError(passwordError) || (
+              <p className="mt-1.5 font-mono text-[11px] text-prose-dim">{PASSWORD_HELPER_TEXT}</p>
+            )}
+          </div>
+
+          <div>
+            <label htmlFor="register-confirm-password" className="block text-xs font-mono text-prose-muted uppercase tracking-wider mb-2">
+              Confirm Password
+            </label>
+            <input
+              id="register-confirm-password"
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              onBlur={() => setTouched((t) => ({ ...t, confirmPassword: true }))}
+              disabled={isSubmitting}
+              placeholder="Re-enter your password"
+              autoComplete="new-password"
+              className="w-full bg-ink px-4 py-3 border-b border-rule text-prose placeholder:text-prose-dim text-sm
+                         focus:border-signal outline-none transition-colors disabled:opacity-40"
+            />
+            {fieldError(confirmError)}
           </div>
 
           {error && (

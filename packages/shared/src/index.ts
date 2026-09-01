@@ -283,3 +283,112 @@ export const IdempotencyKeyHeaderSchema = z.object({
 }).passthrough();
 export type IdempotencyKeyHeader = z.infer<typeof IdempotencyKeyHeaderSchema>;
 
+// ── Password & Email Policy ──────────────────────────────────────
+//
+// validateNewPassword applies only when a password is being SET (register,
+// change-password, reset-password) — never at login. apps/api-gateway's
+// verifyPassword() call against a stored hash is completely untouched by
+// this, which is what lets every pre-existing account (including the 14
+// seeded demo accounts sharing the password `demo1234`, which itself would
+// fail isCommonPassword below) keep authenticating regardless of this policy
+// existing. A plain function rather than a zod schema on purpose: the
+// required UX is "the FIRST violated rule, one message at a time" (empty ->
+// too short -> too long -> whitespace -> invalid characters -> common), and
+// zod's issue-accumulation semantics don't give that ordering for free.
+
+export const PASSWORD_MIN_LENGTH = 8;
+export const PASSWORD_MAX_LENGTH = 128;
+
+/**
+ * ~180 of the most common leaked/guessed passwords, lowercased. Checked only
+ * when a password is being SET, never at login (see header). This is a local,
+ * no-network check — not a Have I Been Pwned-style API integration, which
+ * would add an outbound dependency/failure mode to registration for a
+ * check that's explicitly "if practical," not mandatory.
+ */
+const COMMON_PASSWORDS = new Set([
+  'password', 'password1', 'password123', 'password1234', '12345678', '123456789',
+  '1234567890', '123456', '1234567', 'qwerty123', 'qwertyuiop', 'qwerty12345',
+  'letmein123', 'letmein1', 'welcome123', 'welcome1', 'admin1234', 'admin123',
+  'iloveyou1', 'iloveyou123', 'sunshine1', 'princess1', 'football1', 'football123',
+  'baseball1', 'basketball1', 'monkey123', 'dragon123', 'master123', 'shadow123',
+  'superman1', 'batman123', 'trustno1', 'freedom123', 'whatever1', 'starwars1',
+  'summer2024', 'summer2025', 'summer2026', 'winter2024', 'winter2025', 'winter2026',
+  'spring2024', 'spring2025', 'spring2026', 'autumn2024', 'password2024', 'password2025',
+  'password2026', 'password!', 'password@', 'password#', 'p@ssw0rd', 'p@ssword',
+  'passw0rd', 'passw0rd1', 'passw0rd!', 'abc123456', 'abcd1234', 'abcdefgh',
+  'abcd12345', '12345678a', 'a12345678', 'zxcvbnm123', 'asdfghjkl', 'asdf1234',
+  '1qaz2wsx', '1q2w3e4r', 'qazwsxedc', 'zaq12wsx', 'q1w2e3r4', 'iloveyou',
+  'princess123', 'sunshine123', 'football12', 'baseball123', 'trustno1234',
+  'letmein12345', 'monkey12345', 'dragon12345', 'shadow12345', 'master12345',
+  'flower123', 'hunter123', 'hunter2123', 'ranger123', 'soccer123', 'harley123',
+  'jordan123', 'jennifer1', 'michelle1', 'michael123', 'daniel123', 'thomas123',
+  'jessica123', 'charlie123', 'freedom1', 'ginger123', 'cookie123', 'buster123',
+  'joshua123', 'maggie123', 'matthew123', 'robert123', 'martin123', 'andrew123',
+  'starwars123', 'batman12345', 'superman123', 'liverpool1', 'chelsea123', 'arsenal123',
+  'newyork123', 'chicago123', 'computer1', 'internet1', 'security1', 'password12',
+  'password01', 'admin12345', 'root123456', 'toor123456', 'guest12345', 'guest1234',
+  'test123456', 'test1234', 'testtest1', 'default123', 'changeme123', 'changeme1',
+  'temppass123', 'newpass123', 'demo1234', 'demopassword', 'welcome2024', 'welcome2025',
+  'letmein2024', 'letmein2025', 'qwerty!', 'qwerty@123', 'zxcvbn123', 'asdfasdf1',
+  'aaaaaaaa1', '11111111a', '00000000a', 'pass1234', 'pass12345', 'passpass1',
+  'nicole123', 'amanda123', 'melissa123', 'stephanie1', 'jasmine123', 'destiny123',
+  'summer1234', 'winter1234', 'autumn1234', 'spring1234', 'august1234', 'december1234',
+  'donald123', 'trump12345', 'biden12345', 'obama12345', 'yankees123', 'cowboys123',
+  'password!1', 'password@1', 'password#1', 'p@ssw0rd123', 'p@55word', 'letmein!',
+  'welcome!123', 'admin!1234', 'root!12345', 'access123', 'access1234', 'system123',
+  'server1234', 'network123', 'gateway123', 'firewall1', 'oracle1234', 'database1',
+  'monkey1234', 'tigger123', 'buttons123', 'chicken123', 'sparky123', 'coffee123',
+  'purple123', 'orange123', 'yellow123', 'silver123', 'golden123', 'diamond123',
+]);
+
+/**
+ * trim + lowercase — the single canonical form written to and read from the
+ * database everywhere (register insert, login lookup, forgot-password
+ * lookup). Applying this consistently is what makes the DB's `email UNIQUE`
+ * constraint actually mean "one account per address" rather than "one
+ * account per exact byte string."
+ */
+export function canonicalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+/** Checked only when SETTING a password — comparison-only; the password that
+ *  actually gets hashed is never itself normalized. */
+export function isCommonPassword(password: string): boolean {
+  return COMMON_PASSWORDS.has(password.trim().toLowerCase());
+}
+
+/**
+ * The first violated password-policy rule, as the exact user-facing message,
+ * or `null` if the password is acceptable. Order matters — it is the UX
+ * contract: empty, then length, then whitespace, then character set, then
+ * common-password, so a password violating several rules at once always
+ * reports the same single message regardless of which other rules it also
+ * breaks.
+ */
+export function validateNewPassword(password: string): string | null {
+  if (!password) return 'Password is required.';
+  if (password.length < PASSWORD_MIN_LENGTH) {
+    return `Password must be at least ${PASSWORD_MIN_LENGTH} characters long.`;
+  }
+  if (password.length > PASSWORD_MAX_LENGTH) {
+    return `Password must not exceed ${PASSWORD_MAX_LENGTH} characters.`;
+  }
+  if (/\s/.test(password)) {
+    return 'Password cannot contain spaces or whitespace.';
+  }
+  // Printable ASCII excluding space (0x21-0x7E) — permits every ASCII letter,
+  // digit, and special character without enumerating them, while rejecting
+  // control characters and any non-ASCII/Unicode character. Whitespace is
+  // already excluded above, so this check is really "no Unicode/control
+  // chars slipped through."
+  if (!/^[\x21-\x7E]+$/.test(password)) {
+    return 'Password contains invalid characters. Use only English letters, numbers, and special characters.';
+  }
+  if (isCommonPassword(password)) {
+    return 'This password is too common. Please choose a different password.';
+  }
+  return null;
+}
+

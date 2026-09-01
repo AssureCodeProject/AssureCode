@@ -3,11 +3,13 @@
  * OAuth (freelancer login + repo connection).
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { randomUUID, createHmac, timingSafeEqual } from 'node:crypto';
-import { config, logger, dbPool, aiServiceUrl, serviceCallHeaders } from '../context.js';
+import { randomUUID, randomBytes, createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import validator from 'validator';
+import { validateNewPassword, canonicalizeEmail } from '@assurecode/shared';
+import { config, logger, dbPool, aiServiceUrl, serviceCallHeaders, emailAdapter } from '../context.js';
 import { logSecurityAudit, type AuthUser } from '../middleware/rbac.js';
 import { verifyPassword, hashPassword } from '../middleware/auth.js';
-import { createSession, newSessionId, revokeSession } from '../middleware/session-store.js';
+import { createSession, newSessionId, revokeSession, revokeAllSessions } from '../middleware/session-store.js';
 import {
   startEnrollment,
   verifyEnrollment,
@@ -17,6 +19,18 @@ import {
   MfaNotPendingError,
   MfaNotEnabledError,
 } from '../middleware/mfa-store.js';
+
+/** sha256 of the raw token — the same "never store the bearer secret itself"
+ *  idiom user_sessions.token_hash already uses (see session-store.ts). */
+function hashToken(raw: string): string {
+  return createHash('sha256').update(raw).digest('hex');
+}
+
+/** 256 bits of entropy, URL-safe — a real bearer secret, not a UUID (122
+ *  bits, and meant as an identifier rather than a credential). */
+function newRawToken(): string {
+  return randomBytes(32).toString('base64url');
+}
 
 const MFA_CHALLENGE_TTL_MS = 5 * 60 * 1000;
 
@@ -103,10 +117,21 @@ export function registerAuthRoutes(server: FastifyInstance): void {
       return reply.status(400).send({ error: 'email and password are required' });
     }
 
+    // Canonicalize only -- no format validation here. Login already returns
+    // one generic response for both "unknown email" and "wrong password"
+    // (see `invalid()` below); adding a distinguishable "malformed email"
+    // response would reopen exactly the enumeration gap that generic
+    // response exists to close. This is also deliberately the ONLY change
+    // to login: password verification below is untouched, so every
+    // pre-existing account (including the seeded demo accounts sharing
+    // `demo1234`) keeps authenticating regardless of the new password-
+    // SETTING policy in @assurecode/shared's validateNewPassword.
+    const canonicalEmail = canonicalizeEmail(email);
+
     const res = await dbPool.query(
       `SELECT user_id, email, password_hash, role, display_name, kyc_status, mfa_enabled
          FROM users WHERE email = $1`,
-      [email],
+      [canonicalEmail],
     );
 
     // Same response whether the email is unknown or the password is wrong —
@@ -161,17 +186,32 @@ export function registerAuthRoutes(server: FastifyInstance): void {
     },
   }, async (request, reply) => {
     const { email, password, role } = request.body || {};
-    if (!email || !password) {
-      return reply.status(400).send({ error: 'email and password are required' });
+    if (!email) {
+      return reply.status(400).send({ error: 'Email address is required.' });
+    }
+    if (!password) {
+      return reply.status(400).send({ error: 'Password is required.' });
+    }
+
+    // Canonicalize before validating format -- " Foo@Example.COM " and
+    // "foo@example.com" must be judged, stored, and looked up identically,
+    // or the `email UNIQUE` constraint only prevents byte-exact duplicates.
+    const canonicalEmail = canonicalizeEmail(email);
+    if (!validator.isEmail(canonicalEmail)) {
+      return reply.status(400).send({ error: 'Please enter a valid email address.' });
     }
     if (role !== 'client' && role !== 'freelancer') {
       return reply.status(400).send({ error: "role must be 'client' or 'freelancer'" });
     }
-    if (password.length < 8) {
-      return reply.status(400).send({ error: 'password must be at least 8 characters' });
+    // Password policy applies here (setting a NEW password) but never at
+    // login -- see validateNewPassword's own header comment in
+    // packages/shared for why pre-existing accounts are unaffected.
+    const passwordError = validateNewPassword(password);
+    if (passwordError) {
+      return reply.status(400).send({ error: passwordError });
     }
 
-    const existing = await dbPool.query(`SELECT user_id FROM users WHERE email = $1`, [email]);
+    const existing = await dbPool.query(`SELECT user_id FROM users WHERE email = $1`, [canonicalEmail]);
     if ((existing.rowCount ?? 0) > 0) {
       return reply.status(409).send({ error: 'An account with this email already exists' });
     }
@@ -186,7 +226,7 @@ export function registerAuthRoutes(server: FastifyInstance): void {
       `INSERT INTO users (user_id, email, password_hash, role, display_name)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING user_id, email, role, display_name, kyc_status, mfa_enabled`,
-      [userId, email, passwordHash, role, email],
+      [userId, canonicalEmail, passwordHash, role, canonicalEmail],
     );
 
     await logSecurityAudit(dbPool, {
@@ -196,6 +236,25 @@ export function registerAuthRoutes(server: FastifyInstance): void {
       ipAddress: request.ip,
       status: 'SUCCESS',
     });
+
+    // Email verification does not gate login or anything else in this pass
+    // (mirrors how requireKycVerified gates specific sensitive routes, not
+    // login itself) -- it is only recorded and surfaced via /auth/me. Token
+    // write is on the critical path (cheap, and a user who never gets a
+    // token can never verify); the actual send is best-effort, matching
+    // callAiService's non-blocking pattern elsewhere in this codebase.
+    const rawToken = newRawToken();
+    await dbPool.query(
+      `INSERT INTO auth_tokens (token_hash, user_id, type, expires_at)
+       VALUES ($1, $2, 'EMAIL_VERIFICATION', now() + interval '24 hours')`,
+      [hashToken(rawToken), userId],
+    );
+    emailAdapter
+      .sendVerificationEmail({
+        to: canonicalEmail,
+        verifyUrl: `${config.WEB_APP_URL}/verify-email?token=${rawToken}`,
+      })
+      .catch((err) => logger.warn({ err }, 'verification email send failed (non-blocking)'));
 
     return reply.status(201).send(await issueSession(inserted.rows[0], request));
   });
@@ -285,7 +344,7 @@ export function registerAuthRoutes(server: FastifyInstance): void {
     // The JWT doesn't carry display_name (it wasn't needed at sign time), so
     // this is the one auth route that reads the database rather than the token.
     const res = await dbPool.query(
-      `SELECT u.display_name, u.payout_account_id,
+      `SELECT u.display_name, u.payout_account_id, u.email_verified_at,
               EXISTS (
                 SELECT 1 FROM auth_providers ap
                  WHERE ap.user_id = u.user_id
@@ -304,6 +363,7 @@ export function registerAuthRoutes(server: FastifyInstance): void {
       displayName: res.rows[0]?.display_name ?? user.email,
       githubConnected: res.rows[0]?.github_connected ?? false,
       payoutAccountId: res.rows[0]?.payout_account_id ?? null,
+      emailVerified: Boolean(res.rows[0]?.email_verified_at),
     });
   });
 
@@ -381,6 +441,196 @@ export function registerAuthRoutes(server: FastifyInstance): void {
     await logSecurityAudit(dbPool, {
       userId: user.userId,
       action: 'MFA_DISABLED',
+      resource: 'auth',
+      ipAddress: request.ip,
+      status: 'SUCCESS',
+    });
+    return reply.send({ success: true });
+  });
+
+  // ── Password change / reset / email verification ────────────────────────
+
+  // Authenticated: requires an existing session (not in PUBLIC_PATHS — see
+  // middleware/auth.ts). Verifies the caller's current password before
+  // accepting a new one, same as any "change password" flow that must not
+  // let a hijacked session alone be enough to lock the real owner out.
+  server.post<{
+    Body: { currentPassword: string; newPassword: string };
+  }>('/auth/change-password', async (request, reply) => {
+    const user = (request as any).user as AuthUser | undefined;
+    if (!user) {
+      return reply.status(401).send({ error: 'Unauthorized' });
+    }
+    const { currentPassword, newPassword } = request.body || {};
+    if (!currentPassword || !newPassword) {
+      return reply.status(400).send({ error: 'currentPassword and newPassword are required' });
+    }
+
+    const row = await dbPool.query(`SELECT password_hash FROM users WHERE user_id = $1`, [user.userId]);
+    if (row.rowCount === 0) {
+      return reply.status(401).send({ error: 'Unauthorized' });
+    }
+    if (!(await verifyPassword(currentPassword, row.rows[0].password_hash))) {
+      return reply.status(401).send({ error: 'Current password is incorrect.' });
+    }
+    const passwordError = validateNewPassword(newPassword);
+    if (passwordError) {
+      return reply.status(400).send({ error: passwordError });
+    }
+
+    const newHash = await hashPassword(newPassword);
+    await dbPool.query(
+      `UPDATE users SET password_hash = $1, password_changed_at = now() WHERE user_id = $2`,
+      [newHash, user.userId],
+    );
+    // Kill every other session this account holds -- a password change is a
+    // reasonable moment to assume something else might be logged in that
+    // shouldn't be -- but not the caller's own current session, so
+    // voluntarily changing your password doesn't also log you out.
+    await revokeAllSessions(dbPool, user.userId, user.sessionId);
+    await logSecurityAudit(dbPool, {
+      userId: user.userId,
+      action: 'PASSWORD_CHANGED',
+      resource: 'auth',
+      ipAddress: request.ip,
+      status: 'SUCCESS',
+    });
+    return reply.send({ success: true });
+  });
+
+  // Public. Always returns the same generic response regardless of whether
+  // the account exists -- the one thing this route must never do is let a
+  // caller distinguish "sent" from "no such account." Rate-limited the same
+  // as login/register: it is also unauthenticated and now the third place
+  // that would otherwise let someone brute-force email existence or spam a
+  // stranger's inbox with reset links.
+  server.post<{
+    Body: { email: string };
+  }>('/auth/forgot-password', {
+    config: {
+      rateLimit: {
+        max: Number(process.env.RATE_LIMIT_LOGIN_MAX ?? 10),
+        timeWindow: '1 minute',
+        keyGenerator: (request: FastifyRequest) => request.ip,
+      },
+    },
+  }, async (request, reply) => {
+    const { email } = request.body || {};
+    const generic = () =>
+      reply.send({ message: 'If an account exists for this email, password reset instructions have been sent.' });
+
+    if (!email) return generic();
+    const canonicalEmail = canonicalizeEmail(email);
+
+    const res = await dbPool.query(`SELECT user_id FROM users WHERE email = $1`, [canonicalEmail]);
+    if (res.rowCount === 0) return generic();
+    const userId = res.rows[0].user_id;
+
+    // At most one live reset token per user -- an old, still-valid link
+    // from an earlier request must not remain usable alongside a new one.
+    await dbPool.query(
+      `DELETE FROM auth_tokens WHERE user_id = $1 AND type = 'PASSWORD_RESET' AND used_at IS NULL`,
+      [userId],
+    );
+    const rawToken = newRawToken();
+    await dbPool.query(
+      `INSERT INTO auth_tokens (token_hash, user_id, type, expires_at)
+       VALUES ($1, $2, 'PASSWORD_RESET', now() + interval '1 hour')`,
+      [hashToken(rawToken), userId],
+    );
+    emailAdapter
+      .sendPasswordResetEmail({
+        to: canonicalEmail,
+        resetUrl: `${config.WEB_APP_URL}/reset-password?token=${rawToken}`,
+      })
+      .catch((err) => logger.warn({ err }, 'password reset email send failed (non-blocking)'));
+
+    await logSecurityAudit(dbPool, {
+      userId,
+      action: 'PASSWORD_RESET_REQUESTED',
+      resource: 'auth',
+      ipAddress: request.ip,
+      status: 'SUCCESS',
+    });
+    return generic();
+  });
+
+  // Public: authenticates via the single-use token in the body, not a
+  // session. A POST with the token in the body -- never a GET with it in
+  // the query string -- so the token never lands in a server access log or
+  // a Referer header on its way to being redeemed.
+  server.post<{
+    Body: { token: string; newPassword: string; confirmPassword: string };
+  }>('/auth/reset-password', async (request, reply) => {
+    const { token, newPassword, confirmPassword } = request.body || {};
+    if (!token || !newPassword || !confirmPassword) {
+      return reply.status(400).send({ error: 'token, newPassword and confirmPassword are required' });
+    }
+    if (newPassword !== confirmPassword) {
+      return reply.status(400).send({ error: 'Passwords do not match.' });
+    }
+    const passwordError = validateNewPassword(newPassword);
+    if (passwordError) {
+      return reply.status(400).send({ error: passwordError });
+    }
+
+    const tokenHash = hashToken(token);
+    const res = await dbPool.query(
+      `SELECT user_id FROM auth_tokens
+        WHERE token_hash = $1 AND type = 'PASSWORD_RESET' AND used_at IS NULL AND expires_at > now()`,
+      [tokenHash],
+    );
+    if (res.rowCount === 0) {
+      return reply.status(400).send({ error: 'This reset link is invalid or has expired.' });
+    }
+    const userId = res.rows[0].user_id;
+
+    const newHash = await hashPassword(newPassword);
+    await dbPool.query(
+      `UPDATE users SET password_hash = $1, password_changed_at = now() WHERE user_id = $2`,
+      [newHash, userId],
+    );
+    await dbPool.query(`UPDATE auth_tokens SET used_at = now() WHERE token_hash = $1`, [tokenHash]);
+    // No exception -- the caller presenting a mailed token has no session of
+    // their own yet, and a reset can indicate the old credential (and
+    // whatever was logged in with it) was compromised.
+    await revokeAllSessions(dbPool, userId);
+    await logSecurityAudit(dbPool, {
+      userId,
+      action: 'PASSWORD_RESET_COMPLETED',
+      resource: 'auth',
+      ipAddress: request.ip,
+      status: 'SUCCESS',
+    });
+    return reply.send({ success: true });
+  });
+
+  // Public: same "token in the POST body, never a GET query string" reasoning
+  // as reset-password. Unlike login/reset-request, distinguishing invalid vs.
+  // expired vs. already-used is fine here -- none of those responses reveal
+  // whether an *email address* is registered, only the state of a token the
+  // caller already possesses.
+  server.post<{ Body: { token: string } }>('/auth/verify-email', async (request, reply) => {
+    const { token } = request.body || {};
+    if (!token) {
+      return reply.status(400).send({ error: 'token is required' });
+    }
+    const tokenHash = hashToken(token);
+    const res = await dbPool.query(
+      `SELECT user_id FROM auth_tokens
+        WHERE token_hash = $1 AND type = 'EMAIL_VERIFICATION' AND used_at IS NULL AND expires_at > now()`,
+      [tokenHash],
+    );
+    if (res.rowCount === 0) {
+      return reply.status(400).send({ error: 'This verification link is invalid or has expired.' });
+    }
+    const userId = res.rows[0].user_id;
+
+    await dbPool.query(`UPDATE users SET email_verified_at = now() WHERE user_id = $1`, [userId]);
+    await dbPool.query(`UPDATE auth_tokens SET used_at = now() WHERE token_hash = $1`, [tokenHash]);
+    await logSecurityAudit(dbPool, {
+      userId,
+      action: 'EMAIL_VERIFIED',
       resource: 'auth',
       ipAddress: request.ip,
       status: 'SUCCESS',

@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { LogIn, Loader2, AlertCircle, Github, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { RegisterScreen } from './RegisterScreen';
+import { ForgotPasswordScreen } from './ForgotPasswordScreen';
 
 /** Surfaced from GithubCallback's redirect back here on failure (?error=...). */
 function githubErrorMessage(code) {
@@ -26,6 +27,7 @@ export function LoginScreen() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [showRegister, setShowRegister] = useState(false);
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
 
   // Set once POST /auth/login answers {mfaRequired: true, challenge} instead
   // of a session — the form below swaps to a code prompt while this is set,
@@ -77,6 +79,10 @@ export function LoginScreen() {
 
   if (showRegister) {
     return <RegisterScreen onSwitchToLogin={() => setShowRegister(false)} />;
+  }
+
+  if (showForgotPassword) {
+    return <ForgotPasswordScreen onBackToLogin={() => setShowForgotPassword(false)} />;
   }
 
   return (
@@ -180,9 +186,19 @@ export function LoginScreen() {
             </div>
 
             <div>
-              <label htmlFor="login-password" className="block text-xs font-mono text-prose-muted uppercase tracking-wider mb-2">
-                Password
-              </label>
+              <div className="flex items-center justify-between mb-2">
+                <label htmlFor="login-password" className="block text-xs font-mono text-prose-muted uppercase tracking-wider">
+                  Password
+                </label>
+                <button
+                  id="btn-forgot-password"
+                  type="button"
+                  onClick={() => setShowForgotPassword(true)}
+                  className="font-mono text-[11px] text-prose-dim hover:text-prose-muted transition-colors"
+                >
+                  Forgot password?
+                </button>
+              </div>
               <input
                 id="login-password"
                 type="password"

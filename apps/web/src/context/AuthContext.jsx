@@ -112,6 +112,29 @@ export function AuthProvider({ children }) {
     return data.user;
   }, []);
 
+  // Always returns the same shape regardless of whether the account exists
+  // (the gateway's generic response) -- no token, no user, nothing to store.
+  const forgotPassword = useCallback(async (email) => {
+    return callApi('/auth/forgot-password', 'POST', { email });
+  }, []);
+
+  // No session is created here -- the caller has to log in afterward with
+  // the new password, same as any other password-reset flow.
+  const resetPassword = useCallback(async (token, newPassword, confirmPassword) => {
+    return callApi('/auth/reset-password', 'POST', { token, newPassword, confirmPassword });
+  }, []);
+
+  const verifyEmail = useCallback(async (token) => {
+    return callApi('/auth/verify-email', 'POST', { token });
+  }, []);
+
+  // Authenticated -- the caller's own session stays valid afterward (the
+  // gateway revokes every *other* session, not this one), so no token swap
+  // is needed here.
+  const changePassword = useCallback(async (currentPassword, newPassword) => {
+    return callApi('/auth/change-password', 'POST', { currentPassword, newPassword });
+  }, []);
+
   const logout = useCallback(() => {
     // Best-effort — JWT is stateless, so failure to reach the gateway does
     // not block clearing the local session.
@@ -122,8 +145,33 @@ export function AuthProvider({ children }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, isAuthenticated: !!user, isLoading, login, register, logout, completeGithubLogin, completeMfaChallenge }),
-    [user, isLoading, login, register, logout, completeGithubLogin, completeMfaChallenge],
+    () => ({
+      user,
+      isAuthenticated: !!user,
+      isLoading,
+      login,
+      register,
+      logout,
+      completeGithubLogin,
+      completeMfaChallenge,
+      forgotPassword,
+      resetPassword,
+      verifyEmail,
+      changePassword,
+    }),
+    [
+      user,
+      isLoading,
+      login,
+      register,
+      logout,
+      completeGithubLogin,
+      completeMfaChallenge,
+      forgotPassword,
+      resetPassword,
+      verifyEmail,
+      changePassword,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

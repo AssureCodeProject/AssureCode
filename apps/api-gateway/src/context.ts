@@ -36,6 +36,7 @@ import {
   type PaymentPort,
 } from '@assurecode/razorpay-adapter';
 import { createKycAdapter, type KycPort } from '@assurecode/kyc-adapter';
+import { createEmailAdapter, type EmailPort } from '@assurecode/email-adapter';
 import { createEventBus, OutboxRelay, eventBusOptionsFromConfig, provisionTopics, type EventBus } from '@assurecode/event-bus';
 import { EVENT_TOPICS } from '@assurecode/shared';
 import { requireRole, requireKycVerified, requireContractParty } from './middleware/rbac.js';
@@ -65,6 +66,13 @@ export const payments: PaymentPort = createRazorpayAdapter(razorpayConfig);
 // adapter because Stripe happened to sell Identity and Connect alongside
 // payments; Razorpay sells no equivalent, and KYC was never a payment concern.
 export const kycAdapter: KycPort = createKycAdapter();
+
+// Transactional email is its own seam too, for the same reason KYC is: no
+// existing adapter has anything to do with sending mail. There is exactly
+// one implementation (FakeEmailAdapter, see @assurecode/email-adapter) —
+// no real provider is wired, matching this project's existing, documented
+// posture on KYC (ARCHITECTURE.md's Status & Limitations).
+export const emailAdapter: EmailPort = createEmailAdapter();
 
 // BUG-013: fail fast in production when the payment provider is not really
 // configured.

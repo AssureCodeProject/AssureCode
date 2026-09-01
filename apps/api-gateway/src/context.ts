@@ -329,3 +329,12 @@ export const freelancerOnly = { preHandler: requireRole(['freelancer']) };
 export const contractPartyOnly = {
   preHandler: requireContractParty(dbPool),
 };
+// Only the freelancer this specific contract is assigned to — used by the
+// assignment accept/reject routes, which no existing bundle covers:
+// freelancerOnly is role-only (any freelancer account), and
+// requireContractParty(dbPool, ['freelancer']) alone would still let a client
+// account through nothing (no requireRole), but combining the two is what
+// actually names "this contract's assigned freelancer, and nobody else".
+export const freelancerContractParty = {
+  preHandler: [requireRole(['freelancer']), requireContractParty(dbPool, ['freelancer'])],
+};

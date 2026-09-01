@@ -1,12 +1,16 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Briefcase, RotateCcw, ChevronRight, AlertTriangle, Github, CheckCircle2, Wallet, GitBranch, Copy } from 'lucide-react';
+import {
+  Briefcase, RotateCcw, ChevronRight, AlertTriangle, Github, CheckCircle2, Wallet, GitBranch, Copy,
+  FileText, Download, XCircle,
+} from 'lucide-react';
 
-import { callApi } from '../utils/api';
+import { callApi, downloadFile } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 import { GlassCard } from './ui/GlassCard';
 import { StatusBadge } from './ui/StatusBadge';
 import { FuturisticButton } from './ui/FuturisticButton';
+import { MobileDrawer } from './ui/MobileDrawer';
 
 const STATUS_VARIANT = {
   DRAFT: 'neutral',
@@ -282,6 +286,275 @@ function RepoWorkspaceCard({ contractId }) {
   );
 }
 
+const REJECTION_REASONS = [
+  { code: 'DEADLINE_INFEASIBLE', label: 'Deadline is not feasible' },
+  { code: 'OUTSIDE_EXPERTISE', label: 'Requirements are outside my expertise' },
+  { code: 'COMPENSATION_MISMATCH', label: 'Compensation does not match the scope' },
+  { code: 'UNAVAILABLE', label: 'Unable to take this project currently' },
+  { code: 'OTHER', label: 'Other' },
+];
+
+function DetailRow({ label, value }) {
+  return (
+    <div className="flex justify-between gap-3 border-b border-rule pb-1.5">
+      <span className="text-prose-muted shrink-0">{label}</span>
+      <span className="text-prose text-right break-words">{value ?? '—'}</span>
+    </div>
+  );
+}
+
+/**
+ * ContractDetailsDrawer — full read-only contract view, fetched from
+ * GET /api/contracts/:id/assignment-details on open. Reuses MobileDrawer
+ * (the app's one drawer/modal primitive) rather than introducing a new one.
+ */
+function ContractDetailsDrawer({ contractId, isOpen, onClose }) {
+  const [details, setDetails] = useState(null);
+  const [error, setError] = useState('');
+  const [downloading, setDownloading] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen || !contractId) return;
+    setDetails(null);
+    setError('');
+    callApi(`/api/contracts/${contractId}/assignment-details`)
+      .then(setDetails)
+      .catch((err) => setError(err.message || 'Failed to load contract details'));
+  }, [isOpen, contractId]);
+
+  const handleDownload = async () => {
+    setDownloading(true);
+    setError('');
+    try {
+      await downloadFile(`/api/contracts/${contractId}/assignment-pdf`, `${contractId}-assignment.pdf`);
+    } catch (err) {
+      setError(err.message || 'Failed to download PDF');
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  return (
+    <MobileDrawer
+      isOpen={isOpen}
+      onClose={onClose}
+      title="Contract Details"
+      subtitle={contractId}
+      position="right"
+      footer={
+        <FuturisticButton
+          variant="secondary"
+          size="sm"
+          icon={Download}
+          fullWidth
+          loading={downloading}
+          loadingText="Preparing..."
+          onClick={handleDownload}
+        >
+          Download Contract PDF
+        </FuturisticButton>
+      }
+    >
+      {error && <div className="mb-3 font-mono text-xs text-fail">{error}</div>}
+      {!details && !error && <div className="font-mono text-xs text-prose-muted">Loading...</div>}
+      {details && (
+        <div className="space-y-4 font-mono text-xs">
+          <DetailRow label="Title" value={details.title} />
+          <DetailRow label="Contract ID" value={details.contractId} />
+          <DetailRow label="Client" value={details.clientDisplayName || details.clientId} />
+          <DetailRow label="Freelancer" value={details.freelancerDisplayName || details.freelancerId} />
+          <DetailRow label="Contract Status" value={details.status} />
+          <DetailRow label="Agreed Amount" value={`$${formatBudget(details.budgetCents)} USD`} />
+          <DetailRow label="Due Date" value={formatDeadline(details.deadline)} />
+          <DetailRow
+            label="Contract Created"
+            value={details.createdAt ? new Date(details.createdAt).toLocaleString() : null}
+          />
+          {details.assignment && (
+            <>
+              <DetailRow label="Assignment Status" value={details.assignment.status} />
+              <DetailRow
+                label="Assigned"
+                value={details.assignment.assignedAt ? new Date(details.assignment.assignedAt).toLocaleString() : null}
+              />
+              {details.assignment.decidedAt && (
+                <DetailRow label="Decided" value={new Date(details.assignment.decidedAt).toLocaleString()} />
+              )}
+            </>
+          )}
+          <div>
+            <div className="text-prose-muted mb-1">Requirements &amp; Scope</div>
+            <div className="text-prose whitespace-pre-wrap bg-ink border border-rule p-3">
+              {details.requirements || 'No requirements on file.'}
+            </div>
+          </div>
+          <div>
+            <div className="text-prose-muted mb-1">Integrity Reference (Genesis Hash / H0)</div>
+            <div className="text-prose break-all bg-ink border border-rule p-3">
+              {details.genesisHash || 'Not yet recorded'}
+            </div>
+          </div>
+        </div>
+      )}
+    </MobileDrawer>
+  );
+}
+
+/**
+ * AssignmentActions — the "AWAITING YOUR DECISION" card body: View Details /
+ * Download PDF / Reject / Accept, plus each decision's inline confirmation
+ * step. Deliberately not window.confirm()/alert() — native dialogs freeze
+ * this app's browser-automation session and are worse UX than an inline
+ * state anyway.
+ */
+function AssignmentActions({ contract, onDecided }) {
+  const [mode, setMode] = useState('idle'); // idle | confirmAccept | confirmReject
+  const [submitting, setSubmitting] = useState(false);
+  const [reasonCode, setReasonCode] = useState('DEADLINE_INFEASIBLE');
+  const [reasonText, setReasonText] = useState('');
+  const [error, setError] = useState('');
+  const [detailsOpen, setDetailsOpen] = useState(false);
+
+  const handleAccept = async () => {
+    setSubmitting(true);
+    setError('');
+    try {
+      await callApi(`/api/contracts/${contract.contractId}/assignment/accept`, 'POST');
+      onDecided();
+    } catch (err) {
+      setError(err.message || 'Failed to accept contract');
+      setSubmitting(false);
+    }
+  };
+
+  const handleReject = async () => {
+    setSubmitting(true);
+    setError('');
+    try {
+      await callApi(`/api/contracts/${contract.contractId}/assignment/reject`, 'POST', {
+        reasonCode,
+        reasonText: reasonCode === 'OTHER' ? reasonText : undefined,
+      });
+      onDecided();
+    } catch (err) {
+      setError(err.message || 'Failed to reject contract');
+      setSubmitting(false);
+    }
+  };
+
+  const stop = (e) => e.stopPropagation();
+
+  return (
+    <div className="mt-3 pt-3 border-t border-rule" onClick={stop}>
+      {mode === 'idle' && (
+        <div className="flex flex-wrap items-center gap-2">
+          <FuturisticButton variant="secondary" size="sm" icon={FileText} onClick={() => setDetailsOpen(true)}>
+            View Contract Details
+          </FuturisticButton>
+          <FuturisticButton
+            variant="secondary"
+            size="sm"
+            icon={Download}
+            onClick={() =>
+              downloadFile(`/api/contracts/${contract.contractId}/assignment-pdf`, `${contract.contractId}-assignment.pdf`).catch(
+                (err) => setError(err.message || 'Failed to download PDF'),
+              )
+            }
+          >
+            Download Contract PDF
+          </FuturisticButton>
+          <div className="flex-1 min-w-[8px]" />
+          <FuturisticButton variant="danger" size="sm" icon={XCircle} onClick={() => setMode('confirmReject')}>
+            Reject Contract
+          </FuturisticButton>
+          <FuturisticButton variant="primary" size="sm" icon={CheckCircle2} onClick={() => setMode('confirmAccept')}>
+            Accept Contract
+          </FuturisticButton>
+        </div>
+      )}
+
+      {mode === 'confirmAccept' && (
+        <div className="space-y-2">
+          <p className="font-mono text-[11px] text-prose">
+            Accept Contract? By accepting this assignment, you confirm that you have reviewed the contract
+            requirements, scope, deliverables, amount, and deadline.
+          </p>
+          <div className="flex gap-2">
+            <FuturisticButton variant="secondary" size="sm" disabled={submitting} onClick={() => setMode('idle')}>
+              Cancel
+            </FuturisticButton>
+            <FuturisticButton
+              variant="primary"
+              size="sm"
+              icon={CheckCircle2}
+              loading={submitting}
+              loadingText="Accepting..."
+              onClick={handleAccept}
+            >
+              Confirm Acceptance
+            </FuturisticButton>
+          </div>
+        </div>
+      )}
+
+      {mode === 'confirmReject' && (
+        <div className="space-y-2">
+          <p className="font-mono text-[11px] text-prose">Why are you declining this contract?</p>
+          <div className="space-y-1">
+            {REJECTION_REASONS.map((r) => (
+              <label
+                key={r.code}
+                className="flex items-center gap-2 font-mono text-[11px] text-prose-muted cursor-pointer"
+              >
+                <input
+                  type="radio"
+                  name={`reject-reason-${contract.contractId}`}
+                  checked={reasonCode === r.code}
+                  onChange={() => setReasonCode(r.code)}
+                />
+                {r.label}
+              </label>
+            ))}
+          </div>
+          {reasonCode === 'OTHER' && (
+            <textarea
+              value={reasonText}
+              onChange={(e) => setReasonText(e.target.value)}
+              placeholder="Please explain..."
+              rows={2}
+              className="w-full bg-ink border border-rule p-2 font-mono text-[11px] text-prose"
+            />
+          )}
+          <div className="flex gap-2">
+            <FuturisticButton variant="secondary" size="sm" disabled={submitting} onClick={() => setMode('idle')}>
+              Cancel
+            </FuturisticButton>
+            <FuturisticButton
+              variant="danger"
+              size="sm"
+              icon={XCircle}
+              loading={submitting}
+              loadingText="Rejecting..."
+              disabled={reasonCode === 'OTHER' && !reasonText.trim()}
+              onClick={handleReject}
+            >
+              Confirm Rejection
+            </FuturisticButton>
+          </div>
+        </div>
+      )}
+
+      {error && <p className="mt-2 font-mono text-[11px] text-fail">{error}</p>}
+
+      <ContractDetailsDrawer
+        contractId={contract.contractId}
+        isOpen={detailsOpen}
+        onClose={() => setDetailsOpen(false)}
+      />
+    </div>
+  );
+}
+
 /**
  * FreelancerAssignments — Phase 1 landing for freelancer accounts.
  *
@@ -346,38 +619,87 @@ export function FreelancerAssignments({ onSelectContract }) {
 
       {status === 'ready' && assignments.length > 0 && (
         <div className="space-y-3">
-          {assignments.map((contract) => (
-            <motion.div
-              key={contract.contractId}
-              initial={{ opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-            >
-              <GlassCard className="p-4 hover:border-rule-hi transition-colors">
-                <button
-                  type="button"
-                  onClick={() => onSelectContract(contract)}
-                  className="w-full flex items-center justify-between gap-4 text-left"
-                >
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-prose font-semibold truncate">{contract.title}</span>
-                      <StatusBadge variant={STATUS_VARIANT[contract.status] || 'neutral'} size="sm">
-                        {contract.status}
-                      </StatusBadge>
+          {assignments.map((contract) => {
+            // A contract awaiting the freelancer's accept/reject decision, or
+            // one they already declined, gets a different card body entirely
+            // -- no whole-card click-through to Phase 2-4 (nothing has
+            // started yet), and the accept/reject/details/PDF actions instead
+            // of the repo workspace. Everything else (ACCEPTED, or
+            // assignmentStatus === null for assignments made before this
+            // migration) renders exactly as before.
+            const isPending = contract.assignmentStatus === 'PENDING';
+            const isRejected = contract.assignmentStatus === 'REJECTED';
+
+            if (isPending || isRejected) {
+              return (
+                <motion.div key={contract.contractId} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}>
+                  <GlassCard className="p-4">
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-prose font-semibold truncate">{contract.title}</span>
+                          <StatusBadge variant={isPending ? 'warning' : 'danger'} size="sm">
+                            {isPending ? 'AWAITING YOUR DECISION' : 'DECLINED'}
+                          </StatusBadge>
+                        </div>
+                        <div className="font-mono text-[11px] text-prose-muted flex flex-wrap items-center gap-x-3 gap-y-1">
+                          <span>ID: {contract.contractId}</span>
+                          <span>${formatBudget(contract.budgetCents)} USD</span>
+                          <span>due {formatDeadline(contract.deadline)}</span>
+                          {contract.clientDisplayName && <span>client: {contract.clientDisplayName}</span>}
+                        </div>
+                      </div>
                     </div>
-                    <div className="font-mono text-[11px] text-prose-muted flex flex-wrap items-center gap-x-3 gap-y-1">
-                      <span>ID: {contract.contractId}</span>
-                      <span>${formatBudget(contract.budgetCents)} USD</span>
-                      <span>due {formatDeadline(contract.deadline)}</span>
-                      {contract.clientDisplayName && <span>client: {contract.clientDisplayName}</span>}
+                    {contract.requirementsSummary && (
+                      <p className="mt-2 font-mono text-[11px] text-prose-muted">
+                        {contract.requirementsSummary}
+                        {contract.requirementsSummary.length >= 240 ? '…' : ''}
+                      </p>
+                    )}
+                    {isPending && <AssignmentActions contract={contract} onDecided={loadAssignments} />}
+                    {isRejected && (
+                      <p className="mt-3 pt-3 border-t border-rule font-mono text-[11px] text-prose-muted">
+                        You declined this contract. It is no longer active for you.
+                      </p>
+                    )}
+                  </GlassCard>
+                </motion.div>
+              );
+            }
+
+            return (
+              <motion.div
+                key={contract.contractId}
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+              >
+                <GlassCard className="p-4 hover:border-rule-hi transition-colors">
+                  <button
+                    type="button"
+                    onClick={() => onSelectContract(contract)}
+                    className="w-full flex items-center justify-between gap-4 text-left"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-prose font-semibold truncate">{contract.title}</span>
+                        <StatusBadge variant={STATUS_VARIANT[contract.status] || 'neutral'} size="sm">
+                          {contract.status}
+                        </StatusBadge>
+                      </div>
+                      <div className="font-mono text-[11px] text-prose-muted flex flex-wrap items-center gap-x-3 gap-y-1">
+                        <span>ID: {contract.contractId}</span>
+                        <span>${formatBudget(contract.budgetCents)} USD</span>
+                        <span>due {formatDeadline(contract.deadline)}</span>
+                        {contract.clientDisplayName && <span>client: {contract.clientDisplayName}</span>}
+                      </div>
                     </div>
-                  </div>
-                  <ChevronRight className="w-4 h-4 text-prose-muted shrink-0" />
-                </button>
-                <RepoWorkspaceCard contractId={contract.contractId} />
-              </GlassCard>
-            </motion.div>
-          ))}
+                    <ChevronRight className="w-4 h-4 text-prose-muted shrink-0" />
+                  </button>
+                  <RepoWorkspaceCard contractId={contract.contractId} />
+                </GlassCard>
+              </motion.div>
+            );
+          })}
         </div>
       )}
     </div>

@@ -75,6 +75,37 @@ const provisionerDeps: ProvisionerDeps = {
   token: config.GITHUB_TOKEN ?? '',
 };
 
+/**
+ * Insert one row into `notifications` (V024). This is the only writer of
+ * that table today. Failures are logged, not thrown — a lost notification
+ * must never abort provisioning or the event handler it's a side effect of.
+ */
+async function createNotification(
+  userId: string,
+  contractId: string | null,
+  type: string,
+  message: string,
+): Promise<void> {
+  try {
+    await dbPool.query(
+      `INSERT INTO notifications (user_id, contract_id, type, message) VALUES ($1, $2, $3, $4)`,
+      [userId, contractId, type, message],
+    );
+  } catch (err: any) {
+    logger.error({ userId, contractId, type, err: err.message }, 'Failed to create notification');
+  }
+}
+
+/** Human-readable labels for contract_assignments.rejection_reason_code, for
+ * the client-facing rejection notification. 'OTHER' is deliberately absent —
+ * its label is whatever free-text reasonText the freelancer wrote. */
+const REJECTION_REASON_LABELS: Record<string, string> = {
+  DEADLINE_INFEASIBLE: 'Deadline is not feasible',
+  OUTSIDE_EXPERTISE: 'Requirements are outside their expertise',
+  COMPENSATION_MISMATCH: 'Compensation does not match the scope',
+  UNAVAILABLE: 'Unable to take this project currently',
+};
+
 /** Mark the contract's settlement row failed. Callers decide whether to swallow. */
 function markSettlementFailed(contractId: string): Promise<unknown> {
   return dbPool.query(
@@ -314,31 +345,29 @@ function subscribeEscrowEvents(): void {
 // owning the whole thing: create a private repo under GITHUB_ORG, add the
 // assigned freelancer as an outside collaborator (push only, never an org
 // member), attach the same webhook shape freelancer-owned repos already
-// used, then flip the contract ACTIVE. Hooked off CONTRACT_LOCKED rather
-// than a new event off /assign: in the current UI flow assignment always
-// happens as part of the same assign -> generate-tests -> lock sequence, so
-// by the time CONTRACT_LOCKED fires the contract's freelancer_id is already
-// set, and /assign itself does not publish an outbox event to hook instead.
-function subscribeContractLocked(): void {
-  void eventBus.subscribe(EVENT_TOPICS.CONTRACT_LOCKED, async (event: EventEnvelope) => {
-    if (!provisioningEnabled) return;
-    const payload = event.payload as { contractId?: string };
+// used, then flip the contract ACTIVE.
+//
+// Hooked off ASSIGNMENT_ACCEPTED, not CONTRACT_LOCKED. It used to be
+// CONTRACT_LOCKED — assignment happened before lock in the UI's
+// assign -> generate-tests -> lock sequence, so by lock time freelancer_id
+// was already set and /assign itself published no outbox event to hook
+// instead. Now that a freelancer must explicitly accept before any repo
+// exists (see routes/contracts-lifecycle.ts's assignment/accept route),
+// ASSIGNMENT_ACCEPTED is the only correct trigger: provisioning must never
+// start before the freelancer has agreed to the work.
+function subscribeAssignmentAccepted(): void {
+  void eventBus.subscribe(EVENT_TOPICS.ASSIGNMENT_ACCEPTED, async (event: EventEnvelope) => {
+    const payload = event.payload as { contractId?: string; freelancerId?: string };
     const contractId = payload.contractId;
-    if (!contractId) return;
+    const freelancerId = payload.freelancerId;
+    if (!contractId || !freelancerId) return;
 
     const contractRes = await dbPool.query(
-      `SELECT freelancer_id, title FROM contracts WHERE contract_id = $1`,
+      `SELECT client_id, title FROM contracts WHERE contract_id = $1`,
       [contractId],
     );
-    const freelancerId: string | null = contractRes.rows[0]?.freelancer_id ?? null;
+    const clientId: string | null = contractRes.rows[0]?.client_id ?? null;
     const title: string = contractRes.rows[0]?.title ?? contractId;
-    if (!freelancerId) {
-      // Shouldn't happen given the current UI's combined assign+lock
-      // sequence, but a contract can in principle be locked before
-      // assignment -- nothing to provision for yet, not an error.
-      logger.info({ contractId }, 'Contract locked with no freelancer assigned yet; skipping repo provisioning');
-      return;
-    }
 
     const identityRes = await dbPool.query(
       `SELECT ap.github_login, u.display_name
@@ -348,13 +377,28 @@ function subscribeContractLocked(): void {
       [freelancerId],
     );
     const githubLogin: string | null = identityRes.rows[0]?.github_login ?? null;
-    const freelancerDisplayName: string = identityRes.rows[0]?.display_name ?? 'freelancer';
+    const freelancerDisplayName: string = identityRes.rows[0]?.display_name ?? 'The freelancer';
+
+    // Client notification happens whether or not provisioning is configured
+    // or the freelancer has GitHub connected — the acceptance itself is the
+    // fact being reported here, and it already happened regardless.
+    if (clientId) {
+      await createNotification(
+        clientId,
+        contractId,
+        'ASSIGNMENT_ACCEPTED',
+        `${freelancerDisplayName} has accepted your contract '${title}'. Repository provisioning is now ` +
+          'starting. You will be notified when the development workspace is ready.',
+      );
+    }
+
+    if (!provisioningEnabled) return;
 
     if (!githubLogin) {
       // Cannot provision a repo for an identity we don't have. Recorded as a
       // terminal row (not retried) so this is visible without silently
-      // leaving the contract stuck at LOCKED forever -- see
-      // reconcileStuckProvisioning's WHERE clause, which excludes 'FAILED'.
+      // leaving the contract stuck forever -- see reconcileStuckProvisioning's
+      // WHERE clause, which excludes 'FAILED'.
       await insertProvisioningRow({
         contractId,
         freelancerId,
@@ -372,6 +416,51 @@ function subscribeContractLocked(): void {
 
     await attemptProvisioning(contractId, freelancerId, githubLogin).catch((err: any) =>
       logger.error({ contractId, err: err.message }, 'Repo provisioning attempt failed'),
+    );
+  });
+}
+
+/**
+ * Client-facing notification when a freelancer declines their assignment.
+ * No provisioning side effect on this path — ASSIGNMENT_ACCEPTED (the only
+ * event subscribeAssignmentAccepted listens for) is never published by a
+ * rejection, so a rejected contract simply never reaches attemptProvisioning.
+ */
+function subscribeAssignmentRejected(): void {
+  void eventBus.subscribe(EVENT_TOPICS.ASSIGNMENT_REJECTED, async (event: EventEnvelope) => {
+    const payload = event.payload as {
+      contractId?: string;
+      freelancerId?: string;
+      reasonCode?: string | null;
+      reasonText?: string | null;
+    };
+    const contractId = payload.contractId;
+    const freelancerId = payload.freelancerId;
+    if (!contractId || !freelancerId) return;
+
+    const contractRes = await dbPool.query(
+      `SELECT client_id, title FROM contracts WHERE contract_id = $1`,
+      [contractId],
+    );
+    const clientId: string | null = contractRes.rows[0]?.client_id ?? null;
+    const title: string = contractRes.rows[0]?.title ?? contractId;
+    if (!clientId) return;
+
+    const freelancerRes = await dbPool.query(`SELECT display_name FROM users WHERE user_id = $1`, [freelancerId]);
+    const freelancerDisplayName: string = freelancerRes.rows[0]?.display_name ?? 'The freelancer';
+
+    const reason =
+      payload.reasonCode === 'OTHER'
+        ? payload.reasonText || undefined
+        : REJECTION_REASON_LABELS[payload.reasonCode ?? ''] ?? payload.reasonCode ?? undefined;
+
+    await createNotification(
+      clientId,
+      contractId,
+      'ASSIGNMENT_REJECTED',
+      `${freelancerDisplayName} has declined the contract '${title}'.` +
+        (reason ? ` Reason: ${reason}.` : '') +
+        ' You can assign another freelancer.',
     );
   });
 }
@@ -556,6 +645,20 @@ async function attemptProvisioning(
         repoFullName,
         contractId,
       ]);
+
+      const clientRes = await dbPool.query(`SELECT client_id, title FROM contracts WHERE contract_id = $1`, [contractId]);
+      const activeClientId: string | null = clientRes.rows[0]?.client_id ?? null;
+      const activeTitle: string = clientRes.rows[0]?.title ?? contractId;
+      if (activeClientId) {
+        await createNotification(
+          activeClientId,
+          contractId,
+          'CONTRACT_ACTIVE',
+          `Your contract '${activeTitle}' is now active. The freelancer has been granted access to the ` +
+            'development repository and work can begin.',
+        );
+      }
+
       await ledgerClient
         .appendWithOutbox(
           contractId,
@@ -1268,7 +1371,8 @@ async function start(): Promise<void> {
   subscribeTrustScore();
   subscribeScopeDecisions();
   subscribeEscrowEvents();
-  subscribeContractLocked();
+  subscribeAssignmentAccepted();
+  subscribeAssignmentRejected();
   subscribeSettlementRequests();
 
   await reconcileAbandonedSettlements();

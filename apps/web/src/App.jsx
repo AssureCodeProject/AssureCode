@@ -14,6 +14,7 @@ import {
 
 import ContractInitialization from './components/ContractInitialization';
 import FreelancerAssignments from './components/FreelancerAssignments';
+import ClientNotifications from './components/ClientNotifications';
 import VerificationDashboard from './components/VerificationDashboard';
 import XaiTrustScoreView from './components/XaiTrustScoreView';
 import EscrowSettlementView from './components/EscrowSettlementView';
@@ -235,6 +236,8 @@ export function App() {
               <span className="w-1.5 h-1.5 rounded-full bg-signal animate-data-tick" />
               <span className="text-signal tracking-wider font-semibold">LOCKED</span>
             </div>
+
+            {isClient && <ClientNotifications />}
 
             <div className="hidden sm:flex items-center gap-2 px-2.5 py-1 font-mono text-xs border border-rule bg-ink text-prose-muted">
               <span className="text-prose">{user?.displayName || user?.email}</span>

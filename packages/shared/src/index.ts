@@ -33,6 +33,17 @@ import { z } from 'zod';
 //   settlement.rejected    published, no consumer. The UI learns the outcome by
 //   settlement.completed   polling GET /oracle; these are fan-out points.
 //   escrow.locked          -> settlement-worker (escrow PENDING -> AUTHORIZED)
+//   assignment.pending      published, no consumer. Fan-out point for the
+//                            client-assigns-freelancer moment, same "durable
+//                            via the outbox, no listener required" shape as
+//                            contract.locked.
+//   assignment.accepted    -> settlement-worker (client notification, THEN
+//                             repo provisioning — see subscribeAssignmentAccepted).
+//                             This is what CONTRACT_LOCKED used to trigger
+//                             provisioning off of; moved here so a repo is
+//                             never created before the freelancer has agreed.
+//   assignment.rejected    -> settlement-worker (client notification only;
+//                             no provisioning follows).
 //
 // Every topic also has a `<topic>.dlq` partner created by the Redis and Kafka
 // adapters. Nothing drains them; the alert on assurecode_dlq_messages_total is
@@ -59,6 +70,9 @@ export const EVENT_TOPICS = {
   SETTLEMENT_COMPLETED: 'settlement.completed',
   ESCROW_LOCKED: 'escrow.locked',
   REPOSITORY_PROVISIONED: 'repository.provisioned',
+  ASSIGNMENT_PENDING: 'assignment.pending',
+  ASSIGNMENT_ACCEPTED: 'assignment.accepted',
+  ASSIGNMENT_REJECTED: 'assignment.rejected',
 } as const;
 
 export type EventTopic = (typeof EVENT_TOPICS)[keyof typeof EVENT_TOPICS];
@@ -112,6 +126,16 @@ export const LinkGithubRepoSchema = z.object({
     .regex(/^[\w.-]+\/[\w.-]+$/, 'must be exactly "owner/repo", not a URL'),
 });
 export type LinkGithubRepo = z.infer<typeof LinkGithubRepoSchema>;
+
+/** Body of POST /api/contracts/:contractId/assignment/reject. */
+export const RejectAssignmentSchema = z.object({
+  reasonCode: z.enum(['DEADLINE_INFEASIBLE', 'OUTSIDE_EXPERTISE', 'COMPENSATION_MISMATCH', 'UNAVAILABLE', 'OTHER']).optional(),
+  reasonText: z.string().max(2000).optional(),
+}).refine(
+  (body) => body.reasonCode !== 'OTHER' || Boolean(body.reasonText?.trim()),
+  { message: 'reasonText is required when reasonCode is OTHER', path: ['reasonText'] },
+);
+export type RejectAssignment = z.infer<typeof RejectAssignmentSchema>;
 
 export const ContractSchema = z.object({
   contractId: z.string(),

@@ -37,6 +37,7 @@ import { registerContractsAuditRoutes } from './routes/contracts-audit.js';
 import { registerContractsChatRoutes } from './routes/contracts-chat.js';
 import { registerAuditsRoutes } from './routes/audits.js';
 import { registerWebhookRoutes } from './routes/webhooks.js';
+import { registerNotificationsRoutes } from './routes/notifications.js';
 
 // ── Server Setup ───────────────────────────────────────────────────────
 
@@ -189,6 +190,7 @@ registerContractsAuditRoutes(server);
 registerContractsChatRoutes(server);
 registerAuditsRoutes(server);
 registerWebhookRoutes(server);
+registerNotificationsRoutes(server);
 
 // ── Start Server ───────────────────────────────────────────────────────
 

@@ -89,3 +89,25 @@ export async function uploadFile(endpoint, file) {
   }
   return response.json();
 }
+
+/**
+ * Fetch a binary response (e.g. the contract PDF) through the same
+ * authorized-fetch path as everything else, then trigger a browser download.
+ * A plain `<a href={endpoint}>` can't carry the Authorization header, which is
+ * why this exists instead of just linking straight to the endpoint.
+ */
+export async function downloadFile(endpoint, filename) {
+  const response = await authorizedFetch(endpoint);
+  if (!response.ok) {
+    throw apiError(response, await response.json().catch(() => ({})));
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}

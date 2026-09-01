@@ -9,13 +9,15 @@ import {
   LinkGithubRepoSchema,
   ContractLockedSchema,
   TestsGeneratedSchema,
+  RejectAssignmentSchema,
   EVENT_TOPICS,
   type InitializeContract,
   type ContractLocked,
   type TestsGenerated,
 } from '@assurecode/shared';
 import { withIdempotency } from '../middleware/idempotency.js';
-import { type AuthUser } from '../middleware/rbac.js';
+import { generateContractPdf } from '../services/contract-pdf.js';
+import { type AuthUser, logSecurityAudit } from '../middleware/rbac.js';
 import {
   config,
   logger,
@@ -27,6 +29,8 @@ import {
   callAiService,
   clientOnly,
   freelancerOnly,
+  freelancerContractParty,
+  contractPartyOnly,
 } from '../context.js';
 
 /**
@@ -127,16 +131,32 @@ export function registerContractsLifecycleRoutes(server: FastifyInstance): void 
         clientId: string;
         clientDisplayName: string | null;
         createdAt: string;
+        assignmentStatus: string | null;
+        assignmentId: number | null;
+        requirementsSummary: string | null;
       }>;
     };
   }>('/api/contracts/mine', freelancerOnly, async (request, reply) => {
     const user = (request as any).user as AuthUser;
 
+    // LATERAL, not a plain JOIN: a contract can have more than one
+    // contract_assignments row for this freelancer (reject -> reassign ->
+    // accept), and only the most recent one is the live decision. Restricted
+    // to this freelancer's own rows so a contract reassigned to someone else
+    // after rejecting this freelancer doesn't show them a stale ACCEPTED/
+    // PENDING that belongs to the new assignee.
     const result = await dbPool.query(
       `SELECT c.contract_id, c.title, c.status, c.budget_cents, c.deadline,
-              c.client_id, u.display_name AS client_display_name, c.created_at
+              c.client_id, u.display_name AS client_display_name, c.created_at,
+              LEFT(c.requirements, 240) AS requirements_summary,
+              ca.status AS assignment_status, ca.assignment_id
          FROM contracts c
          LEFT JOIN users u ON u.user_id = c.client_id
+         LEFT JOIN LATERAL (
+           SELECT status, assignment_id FROM contract_assignments
+            WHERE contract_id = c.contract_id AND freelancer_id = $1
+            ORDER BY assignment_id DESC LIMIT 1
+         ) ca ON true
         WHERE c.freelancer_id = $1
         ORDER BY c.created_at DESC`,
       [user.userId],
@@ -152,6 +172,9 @@ export function registerContractsLifecycleRoutes(server: FastifyInstance): void 
         clientId: row.client_id,
         clientDisplayName: row.client_display_name ?? null,
         createdAt: row.created_at,
+        assignmentStatus: row.assignment_status ?? null,
+        assignmentId: row.assignment_id ?? null,
+        requirementsSummary: row.requirements_summary ?? null,
       })),
     });
   });
@@ -310,6 +333,14 @@ export function registerContractsLifecycleRoutes(server: FastifyInstance): void 
     });
   });
 
+  /**
+   * Assign a freelancer to a contract. This no longer puts work in the
+   * freelancer's hands directly — it creates a PENDING contract_assignments
+   * row and stops there; nothing provisions a repository or moves the
+   * contract to ACTIVE until the freelancer explicitly accepts via
+   * POST .../assignment/accept. See subscribeAssignmentAccepted in
+   * apps/settlement-worker/src/worker.ts for what accepting triggers.
+   */
   server.post<{
     Params: { contractId: string };
     Body: { freelancerId: string };
@@ -326,26 +357,437 @@ export function registerContractsLifecycleRoutes(server: FastifyInstance): void 
         };
       }
 
+      // Reassigning over an assignment the freelancer already accepted would
+      // silently pull the workspace out from under whoever is already on it.
+      // A prior PENDING or REJECTED row is fine to supersede.
+      const activeRes = await dbPool.query(
+        `SELECT 1 FROM contract_assignments WHERE contract_id = $1 AND status = 'ACCEPTED'`,
+        [contractId],
+      );
+      if ((activeRes.rowCount ?? 0) > 0) {
+        return {
+          statusCode: 409,
+          contractId,
+          body: {
+            error: 'ASSIGNMENT_ALREADY_ACTIVE',
+            message: 'This contract already has an accepted assignment.',
+          } as any,
+        };
+      }
+
+      // The genesis ledger row (H0) for this contract — always the first row
+      // ever appended (previous_hash = 'GENESIS'), regardless of whether
+      // /lock has run yet. This is what the freelancer's eventual acceptance
+      // gets anchored to, so it refers to the contract as originally written
+      // rather than to whatever the row currently reads.
+      const h0Res = await dbPool.query(
+        `SELECT ledger_id, current_hash FROM merkle_ledger
+          WHERE contract_id = $1 ORDER BY ledger_id ASC LIMIT 1`,
+        [contractId],
+      );
+      const h0 = h0Res.rows[0] as { ledger_id: number; current_hash: string } | undefined;
+
       await dbPool.query(
         `UPDATE contracts SET freelancer_id = $1 WHERE contract_id = $2`,
         [freelancerId, contractId],
       );
 
-      logger.info({ contractId, freelancerId }, 'Freelancer assigned to contract');
+      let assignmentId: number;
+      try {
+        const insertRes = await dbPool.query(
+          `INSERT INTO contract_assignments (contract_id, freelancer_id, locked_ledger_id, locked_ledger_hash)
+           VALUES ($1, $2, $3, $4)
+           RETURNING assignment_id`,
+          [contractId, freelancerId, h0?.ledger_id ?? null, h0?.current_hash ?? null],
+        );
+        assignmentId = insertRes.rows[0].assignment_id;
+      } catch (err: any) {
+        // 23505 on idx_contract_assignments_one_pending: a concurrent /assign
+        // call already created a pending decision for this contract.
+        if (err?.code === '23505') {
+          return {
+            statusCode: 409,
+            contractId,
+            body: {
+              error: 'ASSIGNMENT_ALREADY_PENDING',
+              message: 'A decision is already pending for this contract.',
+            } as any,
+          };
+        }
+        throw err;
+      }
 
-      await ledgerClient.append(
+      logger.info(
+        { contractId, freelancerId, assignmentId },
+        'Freelancer assigned to contract; awaiting their acceptance',
+      );
+
+      await ledgerClient.appendWithOutbox(
         contractId,
         'CONTRACT_ASSIGNED',
-        { contractId, freelancerId },
+        { contractId, freelancerId, assignmentId },
+        EVENT_TOPICS.ASSIGNMENT_PENDING,
+        { contractId, freelancerId, assignmentId },
+        randomUUID(),
       );
 
       return {
         statusCode: 200,
         contractId,
-        body: { contractId, freelancerId, status: 'ASSIGNED' },
+        body: { contractId, freelancerId, assignmentId, status: 'ASSIGNMENT_PENDING' },
       };
     });
   });
+
+  /**
+   * Full contract + current assignment-decision view for "View Contract
+   * Details" on the freelancer's assignment card (and the client's own
+   * mirror of the same screen). contractPartyOnly, not freelancerOnly: the
+   * client who owns the contract has the same legitimate reason to read it.
+   */
+  server.get<{ Params: { contractId: string } }>(
+    '/api/contracts/:contractId/assignment-details',
+    contractPartyOnly,
+    async (request, reply) => {
+      const { contractId } = request.params;
+
+      const contractRes = await dbPool.query(
+        `SELECT c.contract_id, c.title, c.requirements, c.budget_cents, c.deadline, c.status,
+                c.client_id, cu.display_name AS client_display_name,
+                c.freelancer_id, fu.display_name AS freelancer_display_name,
+                c.created_at
+           FROM contracts c
+           LEFT JOIN users cu ON cu.user_id = c.client_id
+           LEFT JOIN users fu ON fu.user_id = c.freelancer_id
+          WHERE c.contract_id = $1`,
+        [contractId],
+      );
+      if (contractRes.rowCount === 0) {
+        return reply.status(404).send({ error: 'Not Found', message: `No contract ${contractId}` });
+      }
+      const c = contractRes.rows[0];
+
+      // Most recent assignment decision — a rejected-then-reassigned contract
+      // can have more than one row; the latest is the live one.
+      const assignmentRes = await dbPool.query(
+        `SELECT assignment_id, freelancer_id, status, locked_ledger_id, locked_ledger_hash,
+                rejection_reason_code, rejection_reason_text, assigned_at, decided_at
+           FROM contract_assignments
+          WHERE contract_id = $1
+          ORDER BY assignment_id DESC
+          LIMIT 1`,
+        [contractId],
+      );
+      const a = assignmentRes.rows[0];
+
+      const h0Res = await dbPool.query(
+        `SELECT current_hash FROM merkle_ledger WHERE contract_id = $1 ORDER BY ledger_id ASC LIMIT 1`,
+        [contractId],
+      );
+
+      return reply.send({
+        contractId: c.contract_id,
+        title: c.title,
+        requirements: c.requirements,
+        budgetCents: c.budget_cents,
+        deadline: c.deadline,
+        status: c.status,
+        clientId: c.client_id,
+        clientDisplayName: c.client_display_name ?? null,
+        freelancerId: c.freelancer_id,
+        freelancerDisplayName: c.freelancer_display_name ?? null,
+        createdAt: c.created_at,
+        genesisHash: h0Res.rows[0]?.current_hash ?? null,
+        assignment: a
+          ? {
+              assignmentId: a.assignment_id,
+              status: a.status,
+              lockedLedgerId: a.locked_ledger_id,
+              lockedLedgerHash: a.locked_ledger_hash,
+              rejectionReasonCode: a.rejection_reason_code,
+              rejectionReasonText: a.rejection_reason_text,
+              assignedAt: a.assigned_at,
+              decidedAt: a.decided_at,
+            }
+          : null,
+      });
+    },
+  );
+
+  /**
+   * The authoritative contract PDF — generated fresh from the database on
+   * every request (nothing is cached or stored), so it always reflects
+   * current data rather than a snapshot that can drift from it. Guarded by
+   * contractPartyOnly: exactly the same "this contract's client or its
+   * assigned freelancer, or admin" check as assignment-details, which is the
+   * whole authorization requirement here (an unrelated freelancer's user id
+   * matches neither contracts.client_id nor contracts.freelancer_id, so
+   * requireContractParty answers 403 before this handler ever runs).
+   */
+  server.get<{ Params: { contractId: string } }>(
+    '/api/contracts/:contractId/assignment-pdf',
+    contractPartyOnly,
+    async (request, reply) => {
+      const { contractId } = request.params;
+
+      const contractRes = await dbPool.query(
+        `SELECT c.contract_id, c.title, c.requirements, c.budget_cents, c.deadline, c.status,
+                cu.display_name AS client_display_name, fu.display_name AS freelancer_display_name,
+                c.created_at
+           FROM contracts c
+           LEFT JOIN users cu ON cu.user_id = c.client_id
+           LEFT JOIN users fu ON fu.user_id = c.freelancer_id
+          WHERE c.contract_id = $1`,
+        [contractId],
+      );
+      if (contractRes.rowCount === 0) {
+        return reply.status(404).send({ error: 'Not Found', message: `No contract ${contractId}` });
+      }
+      const c = contractRes.rows[0];
+
+      const assignmentRes = await dbPool.query(
+        `SELECT status, locked_ledger_hash, assigned_at FROM contract_assignments
+          WHERE contract_id = $1 ORDER BY assignment_id DESC LIMIT 1`,
+        [contractId],
+      );
+      const a = assignmentRes.rows[0];
+
+      const h0Res = await dbPool.query(
+        `SELECT current_hash FROM merkle_ledger WHERE contract_id = $1 ORDER BY ledger_id ASC LIMIT 1`,
+        [contractId],
+      );
+
+      const pdfBuffer = await generateContractPdf({
+        contractId: c.contract_id,
+        title: c.title,
+        requirements: c.requirements,
+        budgetCents: c.budget_cents,
+        deadline: c.deadline,
+        status: c.status,
+        clientDisplayName: c.client_display_name ?? null,
+        freelancerDisplayName: c.freelancer_display_name ?? null,
+        createdAt: c.created_at,
+        assignedAt: a?.assigned_at ?? null,
+        assignmentStatus: a?.status ?? null,
+        genesisHash: h0Res.rows[0]?.current_hash ?? null,
+        assignmentLedgerHash: a?.locked_ledger_hash ?? null,
+      });
+
+      logSecurityAudit(dbPool, {
+        userId: (request as any).user?.userId,
+        action: 'CONTRACT_PDF_DOWNLOADED',
+        resource: `contract:${contractId}`,
+        ipAddress: request.ip,
+        status: 'SUCCESS',
+      }).catch(() => undefined);
+
+      return reply
+        .header('Content-Type', 'application/pdf')
+        .header('Content-Disposition', `attachment; filename="${contractId}-assignment.pdf"`)
+        .send(pdfBuffer);
+    },
+  );
+
+  /**
+   * The freelancer explicitly accepts a pending assignment. The conditional
+   * UPDATE (status='PENDING' -> 'ACCEPTED', gated in the WHERE clause) is the
+   * actual concurrency guard — two tabs, a retry, and a reject racing an
+   * accept all resolve to exactly one winner because only one request's
+   * UPDATE can match a row still at 'PENDING'. withIdempotency's header-keyed
+   * cache is a second, independent layer for the common case (same key
+   * resubmitted) but is not what this route relies on for correctness.
+   */
+  server.post<{ Params: { contractId: string } }>(
+    '/api/contracts/:contractId/assignment/accept',
+    freelancerContractParty,
+    async (request, reply) => {
+      return withIdempotency(dbPool, request, reply, async () => {
+        const { contractId } = request.params;
+        const user = (request as any).user as AuthUser;
+        const correlationId = randomUUID();
+
+        const updateRes = await dbPool.query(
+          `UPDATE contract_assignments
+              SET status = 'ACCEPTED', decided_at = NOW(), updated_at = NOW()
+            WHERE contract_id = $1 AND freelancer_id = $2 AND status = 'PENDING'
+          RETURNING assignment_id, locked_ledger_hash, decided_at`,
+          [contractId, user.userId],
+        );
+
+        if (updateRes.rowCount === 0) {
+          const currentRes = await dbPool.query(
+            `SELECT status FROM contract_assignments
+              WHERE contract_id = $1 AND freelancer_id = $2
+              ORDER BY assignment_id DESC LIMIT 1`,
+            [contractId, user.userId],
+          );
+          const currentStatus: string | null = currentRes.rows[0]?.status ?? null;
+          return {
+            statusCode: 409,
+            contractId,
+            body: {
+              error: 'ASSIGNMENT_NOT_PENDING',
+              message: currentStatus
+                ? `This assignment is already ${currentStatus}.`
+                : 'No pending assignment found for you on this contract.',
+              status: currentStatus,
+            } as any,
+          };
+        }
+
+        const row = updateRes.rows[0];
+
+        // The current UI's Phase-1 flow still calls /assign before /lock (see
+        // the note on that route), so merkle_ledger can genuinely have no
+        // genesis row yet at assignment time — locked_ledger_hash is captured
+        // there on a best-effort basis. Acceptance happens later, often much
+        // later, than that same short assign -> generate-tests -> lock
+        // sequence, so re-resolving H0 here (rather than only at /assign)
+        // is what actually gets it populated in the realistic case: by the
+        // time a freelancer gets around to accepting, the contract has
+        // almost always been locked. Best-effort UPDATE, not re-fetched into
+        // the response below on failure — a missing H0 anchor is a weaker
+        // integrity claim, not a reason to fail an otherwise-valid acceptance.
+        let lockedLedgerHash: string | null = row.locked_ledger_hash ?? null;
+        if (!lockedLedgerHash) {
+          try {
+            const h0Res = await dbPool.query(
+              `SELECT ledger_id, current_hash FROM merkle_ledger
+                WHERE contract_id = $1 ORDER BY ledger_id ASC LIMIT 1`,
+              [contractId],
+            );
+            const h0 = h0Res.rows[0] as { ledger_id: number; current_hash: string } | undefined;
+            if (h0) {
+              await dbPool.query(
+                `UPDATE contract_assignments SET locked_ledger_id = $1, locked_ledger_hash = $2, updated_at = NOW()
+                  WHERE assignment_id = $3`,
+                [h0.ledger_id, h0.current_hash, row.assignment_id],
+              );
+              lockedLedgerHash = h0.current_hash;
+            }
+          } catch (err: any) {
+            logger.warn({ contractId, err: err.message }, 'Failed to backfill H0 anchor onto accepted assignment');
+          }
+        }
+
+        logger.info(
+          { contractId, freelancerId: user.userId, assignmentId: row.assignment_id, lockedLedgerHash },
+          'Freelancer accepted assignment',
+        );
+
+        // ASSIGNMENT_ACCEPTED is what settlement-worker's
+        // subscribeAssignmentAccepted listens for to (1) notify the client and
+        // (2) begin repo provisioning — see worker.ts. Nothing here calls
+        // provisioning directly; the gateway stays a thin request/response
+        // surface and the worker is the reactor, matching every other
+        // lifecycle transition in this file.
+        await ledgerClient.appendWithOutbox(
+          contractId,
+          'ASSIGNMENT_ACCEPTED',
+          {
+            contractId,
+            freelancerId: user.userId,
+            assignmentId: row.assignment_id,
+            lockedLedgerHash,
+          },
+          EVENT_TOPICS.ASSIGNMENT_ACCEPTED,
+          { contractId, freelancerId: user.userId, assignmentId: row.assignment_id },
+          correlationId,
+        );
+
+        return {
+          statusCode: 200,
+          contractId,
+          body: {
+            contractId,
+            assignmentId: row.assignment_id,
+            status: 'ACCEPTED',
+            decidedAt: row.decided_at,
+          },
+        };
+      });
+    },
+  );
+
+  /**
+   * The freelancer explicitly declines a pending assignment. Same conditional-
+   * UPDATE concurrency guard as accept. Clears contracts.freelancer_id so the
+   * contract is immediately visible as unassigned for the client to reassign;
+   * repository provisioning is never triggered because ASSIGNMENT_ACCEPTED —
+   * the only event subscribeAssignmentAccepted listens for — is never
+   * published on this path.
+   */
+  server.post<{ Params: { contractId: string }; Body: unknown }>(
+    '/api/contracts/:contractId/assignment/reject',
+    freelancerContractParty,
+    async (request, reply) => {
+      return withIdempotency(dbPool, request, reply, async () => {
+        const { contractId } = request.params;
+        const user = (request as any).user as AuthUser;
+        const correlationId = randomUUID();
+        const { reasonCode, reasonText } = RejectAssignmentSchema.parse(request.body ?? {});
+
+        const updateRes = await dbPool.query(
+          `UPDATE contract_assignments
+              SET status = 'REJECTED', decided_at = NOW(), updated_at = NOW(),
+                  rejection_reason_code = $3, rejection_reason_text = $4
+            WHERE contract_id = $1 AND freelancer_id = $2 AND status = 'PENDING'
+          RETURNING assignment_id, decided_at`,
+          [contractId, user.userId, reasonCode ?? null, reasonText ?? null],
+        );
+
+        if (updateRes.rowCount === 0) {
+          const currentRes = await dbPool.query(
+            `SELECT status FROM contract_assignments
+              WHERE contract_id = $1 AND freelancer_id = $2
+              ORDER BY assignment_id DESC LIMIT 1`,
+            [contractId, user.userId],
+          );
+          const currentStatus: string | null = currentRes.rows[0]?.status ?? null;
+          return {
+            statusCode: 409,
+            contractId,
+            body: {
+              error: 'ASSIGNMENT_NOT_PENDING',
+              message: currentStatus
+                ? `This assignment is already ${currentStatus}.`
+                : 'No pending assignment found for you on this contract.',
+              status: currentStatus,
+            } as any,
+          };
+        }
+
+        await dbPool.query(`UPDATE contracts SET freelancer_id = NULL WHERE contract_id = $1`, [contractId]);
+
+        const row = updateRes.rows[0];
+        logger.info(
+          { contractId, freelancerId: user.userId, assignmentId: row.assignment_id, reasonCode },
+          'Freelancer rejected assignment',
+        );
+
+        await ledgerClient.appendWithOutbox(
+          contractId,
+          'ASSIGNMENT_REJECTED',
+          { contractId, freelancerId: user.userId, assignmentId: row.assignment_id, reasonCode: reasonCode ?? null },
+          EVENT_TOPICS.ASSIGNMENT_REJECTED,
+          {
+            contractId,
+            freelancerId: user.userId,
+            assignmentId: row.assignment_id,
+            reasonCode: reasonCode ?? null,
+            reasonText: reasonText ?? null,
+          },
+          correlationId,
+        );
+
+        return {
+          statusCode: 200,
+          contractId,
+          body: { contractId, assignmentId: row.assignment_id, status: 'REJECTED', decidedAt: row.decided_at },
+        };
+      });
+    },
+  );
 
   /**
    * Link a contract to the GitHub repository the freelancer pushes to.

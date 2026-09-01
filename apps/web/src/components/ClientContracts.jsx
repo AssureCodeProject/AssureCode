@@ -8,6 +8,7 @@ import { StatusBadge } from './ui/StatusBadge';
 import { FuturisticButton } from './ui/FuturisticButton';
 import { ContractDetailsDrawer } from './ContractDetailsDrawer';
 import { ContactParticipantButton } from './ContactParticipantButton';
+import { formatMinor } from './EscrowFundingPanel';
 
 const STATUS_VARIANT = {
   DRAFT: 'neutral',
@@ -17,10 +18,6 @@ const STATUS_VARIANT = {
   COMPLETED: 'signal',
   DISPUTED: 'danger',
 };
-
-function formatBudget(budgetCents) {
-  return (Number(budgetCents || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
-}
 
 function formatDeadline(deadline) {
   if (!deadline) return '—';
@@ -69,7 +66,7 @@ function ContractCard({ contract, onViewDetails }) {
             </div>
             <div className="font-mono text-[11px] text-prose-muted flex flex-wrap items-center gap-x-3 gap-y-1">
               <span>ID: {contract.contractId}</span>
-              <span>${formatBudget(contract.budgetCents)} USD</span>
+              <span>{formatMinor(contract.budgetCents)}</span>
               <span>due {formatDeadline(contract.deadline)}</span>
               {contract.freelancerDisplayName && <span>freelancer: {contract.freelancerDisplayName}</span>}
             </div>

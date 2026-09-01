@@ -4,10 +4,7 @@ import { callApi, downloadFile } from '../utils/api';
 import { MobileDrawer } from './ui/MobileDrawer';
 import { FuturisticButton } from './ui/FuturisticButton';
 import { ContactParticipantButton } from './ContactParticipantButton';
-
-function formatBudget(budgetCents) {
-  return (Number(budgetCents || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
-}
+import { formatMinor } from './EscrowFundingPanel';
 
 function formatDeadline(deadline) {
   if (!deadline) return '—';
@@ -106,7 +103,7 @@ export function ContractDetailsDrawer({ contractId, isOpen, onClose, viewerRole 
           <DetailRow label="Client" value={details.clientDisplayName || details.clientId} />
           <DetailRow label="Freelancer" value={details.freelancerDisplayName || details.freelancerId} />
           <DetailRow label="Contract Status" value={details.status} />
-          <DetailRow label="Agreed Amount" value={`$${formatBudget(details.budgetCents)} USD`} />
+          <DetailRow label="Agreed Amount" value={formatMinor(details.budgetCents)} />
           <DetailRow label="Due Date" value={formatDeadline(details.deadline)} />
           <DetailRow
             label="Contract Created"

@@ -619,7 +619,7 @@ export function registerContractsLifecycleRoutes(server: FastifyInstance): void 
       const { contractId } = request.params;
 
       const contractRes = await dbPool.query(
-        `SELECT c.contract_id, c.title, c.requirements, c.budget_cents, c.deadline, c.status,
+        `SELECT c.contract_id, c.title, c.requirements, c.pdf_raw_text, c.budget_cents, c.deadline, c.status,
                 cu.display_name AS client_display_name, fu.display_name AS freelancer_display_name,
                 c.created_at
            FROM contracts c
@@ -652,6 +652,7 @@ export function registerContractsLifecycleRoutes(server: FastifyInstance): void 
         contractId: c.contract_id,
         title: c.title,
         requirements: c.requirements,
+        pdfRawText: c.pdf_raw_text ?? null,
         budgetCents: c.budget_cents,
         deadline: c.deadline,
         status: c.status,

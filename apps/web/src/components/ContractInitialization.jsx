@@ -38,7 +38,7 @@ const PRESET_SCENARIOS = [
   {
     id: 'fintech',
     label: '[ Fintech ]',
-    summary: '$2,500 • React/Node',
+    summary: '₹2,500 • React/Node',
     formData: {
       title: 'Fintech Real-Time Dashboard',
       requirements: 'Build a React TypeScript dashboard with Node.js Fastify backend and PostgreSQL database.',
@@ -49,7 +49,7 @@ const PRESET_SCENARIOS = [
   {
     id: 'ai',
     label: '[ AI / RAG ]',
-    summary: '$3,800 • PyTorch/FastAPI',
+    summary: '₹3,800 • PyTorch/FastAPI',
     formData: {
       title: 'PyTorch RAG LLM Pipeline',
       requirements: 'Build a PyTorch RAG LLM pipeline using FastAPI, LangChain, and vector databases for semantic document search.',
@@ -60,7 +60,7 @@ const PRESET_SCENARIOS = [
   {
     id: 'web3',
     label: '[ Web3 ]',
-    summary: '$4,200 • Solidity',
+    summary: '₹4,200 • Solidity',
     formData: {
       title: 'DeFi Solidity Smart Contracts',
       requirements: 'Develop Solidity smart contracts for Ethereum decentralized finance protocol with Ethers.js integration.',
@@ -71,7 +71,7 @@ const PRESET_SCENARIOS = [
   {
     id: 'devops',
     label: '[ DevOps ]',
-    summary: '$3,000 • K8s/AWS',
+    summary: '₹3,000 • K8s/AWS',
     formData: {
       title: 'Kubernetes Terraform Infra',
       requirements: 'Provision multi-region Kubernetes cluster with Terraform IaC, AWS infrastructure, and Prometheus monitoring.',
@@ -201,7 +201,7 @@ function LockedContractPanel({ lockedData, copiedHash, onCopyHash, onProceedToPh
         <div className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-sm">
           <span className="font-mono text-xs text-prose-muted uppercase tracking-wider">Budget</span>
           <span className="font-mono text-prose font-semibold">
-            ${displayBudget.toLocaleString('en-US', { minimumFractionDigits: 2 })} USD
+            ₹{displayBudget.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
           </span>
         </div>
         <div className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-sm">
@@ -331,7 +331,7 @@ function CandidateSelection({
                     </span>
                   )}
                   <span className="font-mono text-xs text-prose-dim">
-                    ${(candidate.hourly_rate_cents / 100).toFixed(0)}/hr
+                    ₹{(candidate.hourly_rate_cents / 100).toFixed(0)}/hr
                   </span>
                 </div>
 
@@ -797,7 +797,7 @@ export function ContractInitialization({
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
                   <div>
                     <label htmlFor="input-budget" className="block text-xs font-mono text-prose-muted uppercase tracking-wider mb-2">
-                      Budget (USD)
+                      Budget (INR)
                     </label>
                     <input
                       id="input-budget"

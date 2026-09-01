@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { FolderKanban, RotateCcw, AlertTriangle, FileText, Download } from 'lucide-react';
+import { FolderKanban, RotateCcw, AlertTriangle, FileText, Download, Activity } from 'lucide-react';
 
 import { callApi, downloadFile } from '../utils/api';
 import { GlassCard } from './ui/GlassCard';
@@ -38,7 +38,7 @@ function formatTimestamp(iso) {
  * GET /api/contracts/owned row carries; nothing here is fabricated for a
  * contract that hasn't reached that state yet (e.g. no freelancer assigned).
  */
-function ContractCard({ contract, onViewDetails }) {
+function ContractCard({ contract, onViewDetails, onOpenVerification }) {
   const isPending = contract.assignmentStatus === 'PENDING';
   const isAccepted = contract.assignmentStatus === 'ACCEPTED';
   const isRejected = contract.assignmentStatus === 'REJECTED';
@@ -99,6 +99,16 @@ function ContractCard({ contract, onViewDetails }) {
         </div>
 
         <div className="mt-3 pt-3 border-t border-rule flex flex-wrap items-center gap-2">
+          {isAccepted && (
+            <FuturisticButton
+              variant="primary"
+              size="sm"
+              icon={Activity}
+              onClick={() => onOpenVerification(contract)}
+            >
+              View Verification &amp; Trust Score
+            </FuturisticButton>
+          )}
           <FuturisticButton variant="secondary" size="sm" icon={FileText} onClick={() => onViewDetails(contract.contractId)}>
             View Contract Details
           </FuturisticButton>
@@ -132,7 +142,7 @@ function ContractCard({ contract, onViewDetails }) {
  * one focused list, same visual conventions as the freelancer's Assignments
  * page.
  */
-export function ClientContracts() {
+export function ClientContracts({ onSelectContract }) {
   const [contracts, setContracts] = useState([]);
   const [status, setStatus] = useState('loading'); // 'loading' | 'ready' | 'error'
   const [errorMessage, setErrorMessage] = useState('');
@@ -185,7 +195,12 @@ export function ClientContracts() {
       {status === 'ready' && contracts.length > 0 && (
         <div className="space-y-3">
           {contracts.map((contract) => (
-            <ContractCard key={contract.contractId} contract={contract} onViewDetails={setDetailsContractId} />
+            <ContractCard
+              key={contract.contractId}
+              contract={contract}
+              onViewDetails={setDetailsContractId}
+              onOpenVerification={onSelectContract}
+            />
           ))}
         </div>
       )}

@@ -93,6 +93,18 @@ describe('audit persistence', () => {
     expect(saved.threatModel.runner).toBe(saved.sandboxRunner);
     expect(Array.isArray(saved.threatModel.enforced)).toBe(true);
     expect(Array.isArray(saved.threatModel.notEnforced)).toBe(true);
+    // Not a simulate-push run (no `demo` option passed) -- must be recorded
+    // as such so a real audit is never mistaken for the demo snippet's fixed
+    // result, or vice versa (see contracts-audit.ts's simulate-push guard).
+    expect(saved.demo).toBe(false);
+  });
+
+  it('marks a simulate-push run as demo in the persisted payload', async () => {
+    const store = new InMemoryAuditStore();
+    await processCodePush('c-demo-flag', 'corr-demo', code, { auditStore: store, demo: true });
+
+    expect(store.saved).toHaveLength(1);
+    expect(store.saved[0].demo).toBe(true);
   });
 
   it('cannot report a pass when the Layer 2 security scan did not run', async () => {

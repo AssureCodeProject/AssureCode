@@ -275,6 +275,28 @@ module.exports = { add };
       return reply.status(404).send({ error: 'Contract not found' });
     }
 
+    // Simulate Push and a real GitHub webhook push publish the identical
+    // CODE_PUSH_RECEIVED event and land on the identical oracle_state row —
+    // there is only ever one "latest" audit per contract, not a history the
+    // gate reads from. Without this guard, clicking Simulate Push after a
+    // real push silently discards the real result (and vice versa) with no
+    // warning, which is exactly the confusing "my real code isn't reflected"
+    // symptom this guard exists to prevent. `(payload->>'demo')::boolean IS
+    // NOT TRUE` treats a pre-existing row with no `demo` key at all (written
+    // before this field existed) as real too — the safe assumption, not the
+    // permissive one.
+    const realAuditRes = await dbPool.query(
+      `SELECT 1 FROM audit_results WHERE contract_id = $1 AND (payload->>'demo')::boolean IS NOT TRUE LIMIT 1`,
+      [contractId],
+    );
+    if ((realAuditRes.rowCount ?? 0) > 0) {
+      return reply.status(409).send({
+        error:
+          'This contract has already received a real GitHub push. Simulate Push is disabled for it to avoid ' +
+          'silently overwriting the real audit result — push a new commit to the repository to re-run verification.',
+      });
+    }
+
     // `demo` travels with the event so ci-worker knows to pair the snippet above
     // with its matching suite rather than with the contract's generated tests —
     // which describe the contract's product and would fail against a two-line

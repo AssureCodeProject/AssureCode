@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Menu,
@@ -11,6 +11,7 @@ import {
   CheckCircle2,
   LogOut,
   FolderKanban,
+  Briefcase,
 } from 'lucide-react';
 
 import ContractInitialization from './components/ContractInitialization';
@@ -98,6 +99,25 @@ export function App() {
   // Mobile navigation drawer toggle state
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
+  // AuthContext's clearStoredContractWorkspace() wipes localStorage on every
+  // login/logout, but App never remounts across that transition (it's the
+  // same SPA instance, just re-rendering under a different `user`) -- so the
+  // `activeTab`/`contractData` useState calls above only re-read localStorage
+  // on first mount, never again. Without this, signing out and signing in as
+  // a different account in the same tab left the previous account's active
+  // contract (title, ledger hash, repo status) visible to the new one until
+  // a hard refresh. Only reset on an actual account change, not on the
+  // initial mount of a restored session -- that would wipe a legitimately
+  // persisted contractData on every plain page load.
+  const prevUserIdRef = useRef(user?.userId);
+  useEffect(() => {
+    if (prevUserIdRef.current !== undefined && prevUserIdRef.current !== user?.userId) {
+      setContractData(null);
+      setActiveTab('contract');
+    }
+    prevUserIdRef.current = user?.userId;
+  }, [user?.userId]);
+
   // Synchronize state persistence to localStorage
   useEffect(() => {
     localStorage.setItem('assurecode_active_tab', activeTab);
@@ -143,8 +163,19 @@ export function App() {
   // the tab is disabled here instead of failing after a full form fill-out.
   const isClient = user?.role === 'client';
 
+  // 'contract' is the shared landing tab: ContractInitialization for a
+  // client, FreelancerAssignments for a freelancer (see the AnimatePresence
+  // block below) -- it must never be disabled for either role, or that role
+  // loses its only nav-bar path back to this screen once they've navigated
+  // to Verification/XAI/Escrow.
   const navItems = [
-    { id: 'contract', label: '01. Contract Initialization', shortLabel: '01. Contract', icon: FileText, disabled: !isClient },
+    {
+      id: 'contract',
+      label: isClient ? '01. Contract Initialization' : 'My Assignments',
+      shortLabel: isClient ? '01. Contract' : 'Assignments',
+      icon: isClient ? FileText : Briefcase,
+      disabled: false,
+    },
     { id: 'contracts', label: 'My Contracts', shortLabel: 'Contracts', icon: FolderKanban, disabled: !isClient },
     { id: 'verification', label: '02. CI/CD Verification', shortLabel: '02. Verification', icon: Activity, disabled: !contractData },
     { id: 'xai', label: '03. XAI Trust Score', shortLabel: '03. Trust Score', icon: BrainCircuit, disabled: !contractData },
@@ -354,7 +385,7 @@ export function App() {
 
           {activeTab === 'contracts' && isClient && (
             <motion.div key="client-contracts" {...PHASE_TRANSITION}>
-              <ClientContracts />
+              <ClientContracts onSelectContract={handleAssignmentSelected} />
             </motion.div>
           )}
 

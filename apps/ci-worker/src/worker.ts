@@ -244,6 +244,7 @@ export async function processCodePush(
       passed: overallPassed,
       scanDuration,
       timestamp: new Date().toISOString(),
+      demo: Boolean(options?.demo),
     };
 
     // Persist before publishing. If the row cannot be written, the event is not

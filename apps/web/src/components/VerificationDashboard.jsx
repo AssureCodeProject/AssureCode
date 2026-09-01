@@ -9,6 +9,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import ScopeGuardPanel from './ScopeGuardPanel';
+import { RepoWorkspaceCard } from './RepoWorkspaceCard';
 
 /**
  * One row per topic the audit stream reports, keyed by the step id the server
@@ -239,37 +240,41 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
       </div>
 
       {/* Contract & Push Trigger Card */}
-      <div className="bg-ink-2 border border-rule p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4 font-mono">
-        <div>
-          <span className="text-xs text-prose-muted uppercase tracking-wider block mb-1">Target Contract</span>
-          <h2 className="text-base font-bold text-prose">{contractData?.title || 'Untitled Contract'}</h2>
-          <p className="text-xs text-prose-muted mt-0.5">
-            ID: {contractData?.contractId || '—'} │ LEDGER HASH: <span className="text-prose">{contractData?.hash ? `${contractData.hash.slice(0, 14)}…` : '—'}</span>
-          </p>
+      <div className="bg-ink-2 border border-rule p-6 font-mono">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <span className="text-xs text-prose-muted uppercase tracking-wider block mb-1">Target Contract</span>
+            <h2 className="text-base font-bold text-prose">{contractData?.title || 'Untitled Contract'}</h2>
+            <p className="text-xs text-prose-muted mt-0.5">
+              ID: {contractData?.contractId || '—'} │ LEDGER HASH: <span className="text-prose">{contractData?.hash ? `${contractData.hash.slice(0, 14)}…` : '—'}</span>
+            </p>
+          </div>
+
+          <button
+            id="btn-simulate-push"
+            onClick={runPipeline}
+            disabled={isRunning}
+            className={`px-5 py-3 font-mono font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 shrink-0 ${
+              isRunning
+                ? 'bg-ink-3 text-prose-muted border border-rule cursor-wait'
+                : 'bg-signal text-ink hover:opacity-90 active:scale-[0.99]'
+            }`}
+          >
+            {isRunning ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>PIPELINE RUNNING...</span>
+              </>
+            ) : (
+              <>
+                <GitBranch className="w-4 h-4" />
+                <span>Simulate GitHub Push →</span>
+              </>
+            )}
+          </button>
         </div>
 
-        <button
-          id="btn-simulate-push"
-          onClick={runPipeline}
-          disabled={isRunning}
-          className={`px-5 py-3 font-mono font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 shrink-0 ${
-            isRunning
-              ? 'bg-ink-3 text-prose-muted border border-rule cursor-wait'
-              : 'bg-signal text-ink hover:opacity-90 active:scale-[0.99]'
-          }`}
-        >
-          {isRunning ? (
-            <>
-              <Loader2 className="w-4 h-4 animate-spin" />
-              <span>PIPELINE RUNNING...</span>
-            </>
-          ) : (
-            <>
-              <GitBranch className="w-4 h-4" />
-              <span>Simulate GitHub Push →</span>
-            </>
-          )}
-        </button>
+        <RepoWorkspaceCard contractId={contractData?.contractId} />
       </div>
 
       {/* Live Pipeline Readout Console */}

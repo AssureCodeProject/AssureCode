@@ -39,6 +39,16 @@ export interface AuditPayload {
    */
   sandboxRunner: string;
   threatModel: ThreatModel;
+  /**
+   * True only for a run triggered by POST /api/contracts/:id/simulate-push's
+   * built-in fallback snippet (SIMULATED_PUSH_DEMO_CODE) — a two-line demo
+   * function, never the freelancer's actual code. Persisted so a later reader
+   * (the simulate-push route's own overwrite guard, the UI) can tell a real
+   * result from a demo one without re-deriving it. Absent/false on every
+   * other path, including a real GitHub webhook push and a simulate-push call
+   * where the caller supplied their own `code`.
+   */
+  demo: boolean;
 }
 
 export interface AuditStore {

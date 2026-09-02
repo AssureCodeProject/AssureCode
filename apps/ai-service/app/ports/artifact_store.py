@@ -6,7 +6,10 @@ Two adapters:
 """
 from __future__ import annotations
 
+import logging
 from typing import Protocol, runtime_checkable
+
+logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -137,6 +140,7 @@ class S3ArtifactStore:
         try:  # pragma: no cover — boto3 + LocalStack only
             import boto3
             from botocore.config import Config
+            from botocore.exceptions import ClientError
 
             # Explicit timeouts. boto3 defaults to a 60s connect and 60s read
             # with its own internal retries on top, so an S3 endpoint that
@@ -144,7 +148,7 @@ class S3ArtifactStore:
             # minutes while the caller waits. This store already implements
             # its own bounded retry loop in upload(), so botocore's is turned
             # down to one attempt rather than compounding with it.
-            self._client = boto3.client(
+            client = boto3.client(
                 "s3",
                 endpoint_url=self._endpoint_url,
                 region_name=self._region,
@@ -156,9 +160,37 @@ class S3ArtifactStore:
                     retries={"max_attempts": 1, "mode": "standard"},
                 ),
             )
-            self._client.head_bucket(Bucket=self._bucket)
+            try:
+                client.head_bucket(Bucket=self._bucket)
+            except ClientError as err:
+                error_code = err.response.get("Error", {}).get("Code")
+                if error_code not in ("404", "NoSuchBucket"):
+                    raise
+                # LocalStack starts every container restart with no buckets
+                # (PERSISTENCE is not enabled) and nothing re-runs compose's
+                # one-shot bucket-creation step when only the localstack
+                # container itself bounces -- every previously-generated
+                # hidden-test bundle then silently vanishes with it, and the
+                # next fetch looked like a dead S3 endpoint rather than an
+                # empty one. Recreating it here is safe and idempotent: a
+                # bucket that already exists is a no-op, and a production
+                # caller without CreateBucket permission fails exactly as it
+                # did before this branch existed.
+                logger.warning(
+                    "artifact_store: bucket %r missing at %s, recreating",
+                    self._bucket,
+                    self._endpoint_url,
+                )
+                client.create_bucket(Bucket=self._bucket)
+            self._client = client
             return True
-        except Exception:
+        except Exception as err:
+            logger.error(
+                "artifact_store: could not reach S3 at %s for bucket %r: %s",
+                self._endpoint_url,
+                self._bucket,
+                err,
+            )
             self._client = None
             return False
 

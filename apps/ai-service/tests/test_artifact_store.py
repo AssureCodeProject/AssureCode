@@ -9,7 +9,10 @@ These tests pin both halves — that development still gets the convenience
 fallback, and that production refuses it.
 """
 
+from unittest.mock import MagicMock, patch
+
 import pytest
+from botocore.exceptions import ClientError
 
 from app.ports.artifact_store import (
     ArtifactStoreUnavailable,
@@ -98,6 +101,58 @@ class TestFallbackRefused:
         message = str(excinfo.value)
         assert "assurecode-test" in message
         assert "ALLOW_LOCAL_ARTIFACT_FALLBACK" in message
+
+
+class TestMissingBucketSelfHeals:
+    """LocalStack starts every restart with no buckets (no PERSISTENCE set),
+    and nothing re-runs docker-compose's one-shot bucket-creation step when
+    only the localstack container itself bounces -- every previously stored
+    test bundle then silently vanishes with it. _ensure_client() should
+    recreate the bucket on a confirmed 404/NoSuchBucket rather than treating
+    it the same as an unreachable endpoint.
+    """
+
+    def _not_found_error(self) -> ClientError:
+        return ClientError(
+            {"Error": {"Code": "404", "Message": "Not Found"}}, "HeadBucket"
+        )
+
+    def test_recreates_bucket_on_404_and_succeeds(self, tmp_path):
+        store = S3ArtifactStore(
+            endpoint_url="http://127.0.0.1:1",
+            bucket="assurecode-test",
+            fallback_dir=str(tmp_path),
+            allow_local_fallback=False,
+        )
+        fake_client = MagicMock()
+        fake_client.head_bucket.side_effect = self._not_found_error()
+
+        with patch("boto3.client", return_value=fake_client):
+            url = store.upload("contracts/AC-1/tests.js", "console.log(1)")
+
+        fake_client.create_bucket.assert_called_once_with(Bucket="assurecode-test")
+        fake_client.put_object.assert_called_once()
+        assert url == "s3://assurecode-test/contracts/AC-1/tests.js"
+
+    def test_other_client_errors_still_refuse(self, tmp_path):
+        """A 403 (bad credentials) is not the recoverable case -- must not
+        attempt to create a bucket it may have no permission to see."""
+        store = S3ArtifactStore(
+            endpoint_url="http://127.0.0.1:1",
+            bucket="assurecode-test",
+            fallback_dir=str(tmp_path),
+            allow_local_fallback=False,
+        )
+        fake_client = MagicMock()
+        fake_client.head_bucket.side_effect = ClientError(
+            {"Error": {"Code": "403", "Message": "Forbidden"}}, "HeadBucket"
+        )
+
+        with patch("boto3.client", return_value=fake_client):
+            with pytest.raises(ArtifactStoreUnavailable):
+                store.upload("k", "v")
+
+        fake_client.create_bucket.assert_not_called()
 
 
 class TestSettingsDefault:

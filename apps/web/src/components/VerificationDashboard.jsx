@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { callApi, getAuthToken } from '../utils/api';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import ScopeGuardPanel from './ScopeGuardPanel';
 import { RepoWorkspaceCard } from './RepoWorkspaceCard';
+import { AuditFindingsDetail } from './AuditFindingsDetail';
 
 /**
  * One row per topic the audit stream reports, keyed by the step id the server
@@ -211,6 +212,36 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
     }
   }, [contractData?.contractId]);
 
+  // Fetch the latest completed audit on mount. `results`/`pipelineComplete`
+  // above are otherwise only ever set inside runPipeline()'s own WebSocket
+  // handler -- populated only for a run this page triggered and watched
+  // live. A real GitHub webhook push runs with nobody watching that socket,
+  // so without this, its outcome is invisible here forever: refreshing (or
+  // opening this page fresh after a real push) left the log at STANDBY with
+  // no way to see a result that already exists in the database.
+  useEffect(() => {
+    const contractId = contractData?.contractId;
+    if (!contractId) return undefined;
+
+    let cancelled = false;
+    callApi(`/api/audits/${contractId}/results`)
+      .then((res) => {
+        if (cancelled || !res) return;
+        setResults(res);
+        setPipelineComplete(true);
+        setCompletedSteps(PIPELINE_STEPS.map((step) => step.id));
+      })
+      .catch(() => {
+        // No audit has run yet (404) or a transient read failure -- either
+        // way, stay in the standby state rather than showing an error for a
+        // page load that never asked anything to run.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [contractData?.contractId]);
+
   return (
     <div className="max-w-4xl mx-auto space-y-8 font-sans">
       {/* ── Section Header ─────────────────────────────────────────── */}
@@ -393,6 +424,8 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
                 <span className="text-[11px] text-prose-muted mt-2 block">OWASP Critical Issues</span>
               </div>
             </div>
+
+            <AuditFindingsDetail {...(results.details || {})} />
 
             {/* Audit Status Result Panel */}
             <div className="bg-ink-2 border border-rule p-8 text-center font-mono">

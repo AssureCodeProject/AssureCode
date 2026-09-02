@@ -183,7 +183,7 @@ export class NodePermissionSandbox implements SandboxRunner {
       });
       clearTimeout(timer);
 
-      const { passedTests, totalTests } = parseTestOutput(stdout);
+      const { passedTests, totalTests, testFailures } = parseTestOutput(stdout);
 
       return {
         provisioned: !timedOut,
@@ -191,6 +191,7 @@ export class NodePermissionSandbox implements SandboxRunner {
         runner: this.name,
         passedTests,
         totalTests,
+        testFailures,
         rawOutput: (stdout.trim() || stderr.trim()).slice(0, 20_000),
         exitCode,
         durationMs: Date.now() - startedAt,

@@ -39,6 +39,7 @@ import {
 } from 'lucide-react';
 import RadialGauge from './ui/RadialGauge';
 import StatusBadge from './ui/StatusBadge';
+import { AuditFindingsDetail } from './AuditFindingsDetail';
 
 /** Icon per term name returned by /xai/score. */
 const TERM_ICONS = {
@@ -363,6 +364,8 @@ export function XaiTrustScoreView({ contractData, onProceedToEscrow }) {
               );
             })}
           </div>
+
+          <AuditFindingsDetail {...(data.details || {})} />
         </div>
       )}
 

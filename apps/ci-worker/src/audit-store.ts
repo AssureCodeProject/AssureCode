@@ -22,7 +22,33 @@ export interface AuditPayload {
   cyclomaticComplexity: number;
   passedTests: number;
   totalTests: number;
+  /**
+   * Name + assertion message per failing hidden test. Lets a freelancer see
+   * exactly which test failed and why, not just a passedTests/totalTests
+   * ratio -- previously computed by the harness and discarded before
+   * persistence (see test-harness.cjs and sandbox/types.ts's parseTestOutput).
+   */
+  testFailures?: { name: string; message: string }[];
+  /**
+   * Worst-offending functions (cyclomaticComplexity > 10, capped to 10),
+   * sourced from ast-analyzer.ts's full per-function breakdown, which used to
+   * be computed and then thrown away after only the module-level aggregate
+   * (maintainability/cyclomaticComplexity above) was kept.
+   */
+  complexFunctions?: { name: string; line: number; cyclomaticComplexity: number }[];
   vulnerabilities: number;
+  /**
+   * Per-finding detail (type/category/severity/message/line), capped to 30.
+   * Same story as testFailures/complexFunctions: security-auditor.ts already
+   * produces this per finding; only the count used to survive into storage.
+   */
+  vulnerabilityDetails?: {
+    type: string;
+    category: string;
+    severity: string;
+    message: string;
+    line?: number;
+  }[];
   criticalVulns: number;
   highVulns: number;
   securityScore: number;

@@ -219,7 +219,26 @@ export async function processCodePush(
       cyclomaticComplexity: astResults.cyclomaticComplexity,
       passedTests,
       totalTests,
+      // Which specific hidden tests failed and why, so a freelancer sees
+      // exactly what to fix rather than just a 7/9 count.
+      testFailures: sandboxResult.testFailures ?? [],
+      // Worst 10 functions above a "worth refactoring" complexity threshold,
+      // not the full function list -- this contract's push can easily have
+      // 50+ functions, most of them fine.
+      complexFunctions: astResults.functions
+        .filter((fn) => fn.cyclomaticComplexity > 10)
+        .sort((a, b) => b.cyclomaticComplexity - a.cyclomaticComplexity)
+        .slice(0, 10),
       vulnerabilities: securityScan.vulnerabilities.length,
+      // Per-finding detail (type/category/severity/message/line), capped
+      // defensively -- typical counts are well under this.
+      vulnerabilityDetails: securityScan.vulnerabilities.slice(0, 30).map((v) => ({
+        type: v.type,
+        category: v.category,
+        severity: v.severity,
+        message: v.message,
+        line: v.line,
+      })),
       criticalVulns,
       highVulns,
       securityScore: securityScan.score,

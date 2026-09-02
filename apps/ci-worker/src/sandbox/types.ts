@@ -59,6 +59,8 @@ export interface SandboxExecutionResult {
   runner: string;
   passedTests: number;
   totalTests: number;
+  /** Name + assertion message per failing case, when the harness reported them. */
+  testFailures?: { name: string; message: string }[];
   rawOutput: string;
   exitCode: number;
   durationMs: number;
@@ -104,7 +106,9 @@ export interface SandboxRunner {
  * pass — zero of zero tests passing is not a passing build. This contract was
  * correct in the original implementation and is preserved verbatim.
  */
-export function parseTestOutput(stdout: string): { passedTests: number; totalTests: number } {
+export function parseTestOutput(
+  stdout: string,
+): { passedTests: number; totalTests: number; testFailures?: { name: string; message: string }[] } {
   for (const line of stdout.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed.startsWith('{')) continue;
@@ -117,6 +121,9 @@ export function parseTestOutput(stdout: string): { passedTests: number; totalTes
           totalTests: Number(
             parsed.numTotalTests ?? parsed.numPassedTests + (parsed.numFailedTests ?? 0),
           ),
+          // Only our own test-harness.cjs emits this key; real Jest/Vitest
+          // output simply won't have it, so this stays undefined there.
+          ...(Array.isArray(parsed.failures) ? { testFailures: parsed.failures } : {}),
         };
       }
       // Vitest JSON: { passed, failed, total }

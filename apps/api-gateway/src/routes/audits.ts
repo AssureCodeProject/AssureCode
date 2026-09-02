@@ -41,6 +41,19 @@ export function registerAuditsRoutes(server: FastifyInstance): void {
       vulnerabilities: number;
       passed: boolean;
       scanDuration: number;
+      // Specific findings behind the aggregate numbers -- see the matching
+      // field on GET /api/contracts/:contractId/score.
+      details: {
+        testFailures: { name: string; message: string }[];
+        complexFunctions: { name: string; line: number; cyclomaticComplexity: number }[];
+        vulnerabilityDetails: {
+          type: string;
+          category: string;
+          severity: string;
+          message: string;
+          line?: number;
+        }[];
+      };
     } | { error: string };
   }>('/api/audits/:contractId/results', contractPartyOnly, async (request, reply) => {
     const { contractId } = request.params;
@@ -85,6 +98,17 @@ export function registerAuditsRoutes(server: FastifyInstance): void {
       vulnerabilities,
       passed,
       scanDuration,
+      details: {
+        testFailures: (payload.testFailures as { name: string; message: string }[]) ?? [],
+        complexFunctions:
+          (payload.complexFunctions as
+            | { name: string; line: number; cyclomaticComplexity: number }[]
+            | undefined) ?? [],
+        vulnerabilityDetails:
+          (payload.vulnerabilityDetails as
+            | { type: string; category: string; severity: string; message: string; line?: number }[]
+            | undefined) ?? [],
+      },
     });
   });
 

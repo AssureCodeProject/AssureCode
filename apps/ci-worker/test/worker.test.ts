@@ -107,6 +107,86 @@ describe('audit persistence', () => {
     expect(store.saved[0].demo).toBe(true);
   });
 
+  it('captures which specific hidden tests failed and why', async () => {
+    // Subtracts instead of adding -- fails 3 of the demo suite's 5 real
+    // assertions (DEMO_TEST_BUNDLE in workspace-builder.ts), so this is a
+    // genuine mixed pass/fail run, not every case failing the same way.
+    const buggyAdd = 'function add(a, b) { return a - b; } module.exports = { add };';
+    const store = new InMemoryAuditStore();
+    await processCodePush('c-test-failures', 'corr-fail', buggyAdd, { auditStore: store, demo: true });
+
+    expect(store.saved).toHaveLength(1);
+    const saved = store.saved[0];
+    expect(saved.testFailures).toBeDefined();
+    expect(saved.testFailures!.length).toBeGreaterThan(0);
+    expect(saved.testFailures!.length).toBeLessThan(saved.totalTests);
+    for (const failure of saved.testFailures!) {
+      expect(failure.name).toBeTypeOf('string');
+      expect(failure.name.length).toBeGreaterThan(0);
+      expect(failure.message).toBeTypeOf('string');
+      expect(failure.message.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('captures the worst-offending functions by cyclomatic complexity', async () => {
+    const complexCode = `
+      function add(a, b) { return a + b; }
+      module.exports = { add };
+      function classify(x) {
+        if (x === 1) return 'a';
+        if (x === 2) return 'b';
+        if (x === 3) return 'c';
+        if (x === 4) return 'd';
+        if (x === 5) return 'e';
+        if (x === 6) return 'f';
+        if (x === 7) return 'g';
+        if (x === 8) return 'h';
+        if (x === 9) return 'i';
+        if (x === 10) return 'j';
+        if (x === 11) return 'k';
+        return 'z';
+      }
+    `;
+    const store = new InMemoryAuditStore();
+    await processCodePush('c-complex-fn', 'corr-complex', complexCode, { auditStore: store, demo: true });
+
+    expect(store.saved).toHaveLength(1);
+    const saved = store.saved[0];
+    expect(saved.complexFunctions).toBeDefined();
+    expect(saved.complexFunctions!.length).toBeGreaterThan(0);
+    const classify = saved.complexFunctions!.find((fn) => fn.name === 'classify');
+    expect(classify).toBeDefined();
+    expect(classify!.cyclomaticComplexity).toBeGreaterThan(10);
+    // Sorted worst-first.
+    for (let i = 1; i < saved.complexFunctions!.length; i++) {
+      expect(saved.complexFunctions![i - 1].cyclomaticComplexity).toBeGreaterThanOrEqual(
+        saved.complexFunctions![i].cyclomaticComplexity,
+      );
+    }
+  });
+
+  it('captures which specific security findings were flagged and where', async () => {
+    const vulnerableCode = `
+      function add(a, b) { return a + b; }
+      module.exports = { add };
+      const apiKey = "api_key=123456789012345678";
+      eval("console.log('danger')");
+    `;
+    const store = new InMemoryAuditStore();
+    await processCodePush('c-vuln-detail', 'corr-vuln', vulnerableCode, { auditStore: store, demo: true });
+
+    expect(store.saved).toHaveLength(1);
+    const saved = store.saved[0];
+    expect(saved.vulnerabilityDetails).toBeDefined();
+    expect(saved.vulnerabilityDetails!.length).toBeGreaterThan(0);
+    expect(saved.vulnerabilityDetails!.length).toBe(saved.vulnerabilities);
+    for (const finding of saved.vulnerabilityDetails!) {
+      expect(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).toContain(finding.severity);
+      expect(finding.type).toBeTypeOf('string');
+      expect(finding.message.length).toBeGreaterThan(0);
+    }
+  });
+
   it('cannot report a pass when the Layer 2 security scan did not run', async () => {
     // ai-service is unreachable in this suite, so the dual-layer scan degrades
     // to Layer 1. "No findings" from half a scan is not the same claim as no

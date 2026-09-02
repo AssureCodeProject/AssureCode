@@ -350,6 +350,22 @@ module.exports = { add };
             criticalVulns: number;
             highVulns: number;
           };
+          // Specific, actionable findings behind the aggregate telemetry above
+          // -- which hidden tests failed and why, which functions are too
+          // complex, which security findings were flagged and where. A
+          // freelancer needs this to know what to actually change; the
+          // aggregate numbers alone don't say.
+          details: {
+            testFailures: { name: string; message: string }[];
+            complexFunctions: { name: string; line: number; cyclomaticComplexity: number }[];
+            vulnerabilityDetails: {
+              type: string;
+              category: string;
+              severity: string;
+              message: string;
+              line?: number;
+            }[];
+          };
           justifications: string[];
           scoredAt: string;
         }
@@ -380,6 +396,22 @@ module.exports = { add };
       highVulns: number;
     };
     let freelancerId: string;
+    // Specific findings behind the aggregate numbers above -- which hidden
+    // tests failed and why, which functions are too complex, which security
+    // findings were flagged and where. Same audit_results row already read
+    // for `audit`, just not reduced to counts. See audit-store.ts's
+    // AuditPayload for where these are produced.
+    let details: {
+      testFailures: { name: string; message: string }[];
+      complexFunctions: { name: string; line: number; cyclomaticComplexity: number }[];
+      vulnerabilityDetails: {
+        type: string;
+        category: string;
+        severity: string;
+        message: string;
+        line?: number;
+      }[];
+    };
 
     try {
       const auditPayload = await latestAuditPayload(contractId);
@@ -400,6 +432,13 @@ module.exports = { add };
         vulnerabilities: Number(auditPayload.vulnerabilities),
         criticalVulns: Number(auditPayload.criticalVulns ?? 0),
         highVulns: Number(auditPayload.highVulns ?? 0),
+      };
+
+      details = {
+        testFailures: (auditPayload.testFailures as typeof details.testFailures) ?? [],
+        complexFunctions: (auditPayload.complexFunctions as typeof details.complexFunctions) ?? [],
+        vulnerabilityDetails:
+          (auditPayload.vulnerabilityDetails as typeof details.vulnerabilityDetails) ?? [],
       };
 
       const contractRes = await dbPool.query(
@@ -505,6 +544,7 @@ module.exports = { add };
         criticalVulns: audit.criticalVulns,
         highVulns: audit.highVulns,
       },
+      details,
     });
   });
 

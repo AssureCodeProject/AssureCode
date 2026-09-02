@@ -247,7 +247,7 @@ export class DockerSandbox implements SandboxRunner {
       args.push('-w', '/workspace', IMAGE, 'sh', '-c', shellCommand);
 
       const result = await execFileCapture('docker', args, { timeoutMs });
-      const { passedTests, totalTests } = parseTestOutput(result.stdout);
+      const { passedTests, totalTests, testFailures } = parseTestOutput(result.stdout);
 
       return {
         provisioned: !result.timedOut,
@@ -255,6 +255,7 @@ export class DockerSandbox implements SandboxRunner {
         runner: this.name,
         passedTests,
         totalTests,
+        testFailures,
         rawOutput: (result.stdout.trim() || result.stderr.trim()).slice(0, 20_000),
         exitCode: result.code,
         durationMs: Date.now() - startedAt,

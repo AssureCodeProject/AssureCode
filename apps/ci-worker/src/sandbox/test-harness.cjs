@@ -244,6 +244,7 @@ async function main() {
   let passed = 0;
   let failed = 0;
   let skipped = 0;
+  const failures = [];
 
   for (const fn of hooks.beforeAll) {
     try {
@@ -267,7 +268,9 @@ async function main() {
       process.stdout.write(`  ✓ ${c.name}\n`);
     } catch (err) {
       failed++;
-      process.stdout.write(`  ✗ ${c.name}: ${(err && err.message) || String(err)}\n`);
+      const message = (err && err.message) || String(err);
+      failures.push({ name: c.name, message });
+      process.stdout.write(`  ✗ ${c.name}: ${message}\n`);
     }
   }
 
@@ -289,6 +292,7 @@ async function main() {
       numFailedTests: failed,
       numPendingTests: skipped,
       numTotalTests: passed + failed,
+      ...(failures.length > 0 ? { failures } : {}),
     }) + '\n',
   );
   process.exitCode = failed === 0 ? 0 : 1;

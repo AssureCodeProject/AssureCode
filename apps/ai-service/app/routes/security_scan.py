@@ -41,6 +41,27 @@ Report only vulnerabilities you can point to in the code. Do not report
 stylistic issues, missing tests, or hypothetical risks that require code not
 shown here. If the code has no vulnerability, return an empty array.
 
+Before reporting a finding, verify ALL of the following. If any fails, do not
+report it -- it is a false positive, not a vulnerability:
+
+  - You can name the exact line where untrusted input enters and the exact
+    line where it reaches a dangerous sink (a DOM write, a query, a shell
+    command, a file path, a URL) UNCHANGED. If the value is filtered,
+    validated against an allowlist, or type-converted anywhere between entry
+    and sink, it is not unsanitized -- do not call it that because the
+    variable name suggests user input.
+  - The flaw is exploitable with the code exactly as shown, not "if this
+    later gets more traffic / more users / a backend." Missing logging,
+    missing rate-limiting, and missing server-side validation are not
+    findings unless the code shown here demonstrably talks to a server or
+    logs sensitive data -- a client-only script with no network call has
+    no server-side anything to be missing.
+  - A regex is "vulnerable to catastrophic backtracking" only if it contains
+    a nested or overlapping quantifier, such as `(a+)+` or `(a|a)*`. A single
+    bounded character class like `[A-Za-z0-9]{{1,100}}` is not, regardless of
+    how it looks -- verify the actual quantifier structure before claiming
+    this, do not pattern-match on "regex" plus "user input".
+
 Respond with ONLY a JSON array, no prose and no markdown fence. Each element:
 
   {{"type": "SCREAMING_SNAKE_CASE_ID",

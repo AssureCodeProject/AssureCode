@@ -76,9 +76,18 @@ def check_embedder(get_embedder) -> dict[str, Any]:
     /readyz, so a caller that waits on readiness before sending real traffic —
     like scripts/e2e.mjs's waitForReady() — never lands on the request that
     would otherwise have to pay for it.
+
+    get_embedder() alone does not do this: the factory only constructs
+    SentenceTransformerEmbedder, whose __init__ sets self._model = None and
+    defers the actual SentenceTransformer(...) load to _ensure_loaded(),
+    reached only from embed()/embed_batch(). Calling just get_embedder() here
+    returned "ok" for a probe that had loaded nothing, so the first real
+    request still paid the cold-load cost regardless of how many times
+    /readyz had already been polled. A throwaway embed() call is what
+    actually reaches _ensure_loaded().
     """
     try:
-        get_embedder()
+        get_embedder().embed("readiness probe")
         return {"status": "ok"}
     except Exception as err:
         return {"status": "error", "detail": f"{type(err).__name__}: {str(err)[:200]}"}

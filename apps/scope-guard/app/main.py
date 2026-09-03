@@ -34,6 +34,9 @@ endpoint is not mistaken for something stronger than it is.
 """
 from __future__ import annotations
 
+import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 from fastapi import Depends, FastAPI, HTTPException, Response
@@ -62,6 +65,8 @@ from app.ports.telemetry import (
 )
 from app.services.drift_detector import ConformalDriftDetector, NotCalibrated
 
+logger = logging.getLogger(__name__)
+
 # `x-service-token` on every route except the probe allow-list. Same single
 # definition ai-service uses — app.ports.service_auth resolves to
 # apps/ai-service/app/ports/ via the __path__ extension documented in
@@ -74,11 +79,37 @@ from app.services.drift_detector import ConformalDriftDetector, NotCalibrated
 # one serving unauthenticated traffic.
 assert_configured()
 
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Pay the cold sentence-transformers load now, not on the first real request.
+
+    Dockerfile.scope-guard runs `uvicorn --workers 2` -- two separate processes,
+    each with its own get_embedder() lru_cache, so each loads the model
+    independently on whichever request happens to hit it first. The container's
+    healthcheck polls /healthz (deliberately dependency-free, see that route's
+    docstring), not /readyz, so nothing was forcing this load before real
+    traffic arrived -- a client or freelancer chat message could be the first
+    request either worker ever saw, and (per check_embedder's ~5-8s observed
+    load time) that reliably blew past the gateway's 5s scope-check timeout
+    (contracts-chat.ts) and surfaced as "Not delivered (HTTP 503)" for a
+    perfectly in-scope message. Running this per-worker at startup means every
+    worker is already warm before uvicorn accepts its first connection.
+    """
+    result = check_embedder(get_embedder)
+    if result["status"] != "ok":
+        logger.error("scope-guard: embedder warm-up failed at startup: %s", result.get("detail"))
+    else:
+        logger.info("scope-guard: embedder warmed at startup")
+    yield
+
+
 app = FastAPI(
     title="AssureCode Scope Guard",
     version="1.0.0a0",
     description="RAG scope mediator: retrieval-backed scope checks anchored to the contract hash.",
     dependencies=[Depends(verify_service_token)],
+    lifespan=_lifespan,
 )
 
 app.middleware("http")(make_metrics_middleware("scope-guard"))

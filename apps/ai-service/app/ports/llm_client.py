@@ -203,6 +203,18 @@ class CloudflareWorkersAiClient:
                 {"role": "user", "content": prompt},
             ],
             "max_tokens": max_tokens,
+            # No temperature was ever set, so every call used the API's default
+            # sampling -- a security-scan prompt run repeatedly against the same
+            # unchanged code was observed to return anywhere from 0 to 11
+            # findings across runs, sometimes contradicting itself (one run
+            # calling a 100-char cap "too restrictive", another flagging the
+            # exact same code's validation as too loose). None of this client's
+            # three callers (test generation, security review, score narrative)
+            # want creative variation -- they want the same input to produce the
+            # same judgement. 0 asks the model to be as deterministic as this
+            # API allows; it does not change what counts as a finding, only how
+            # consistently the model applies that judgement.
+            "temperature": 0,
         }
 
         resp = self._post_with_retry(url, headers, payload)

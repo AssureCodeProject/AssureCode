@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X } from 'lucide-react';
 
@@ -11,7 +11,19 @@ export function MobileDrawer({
   children,
   footer,
   className = '',
+  // Opt-in: only a caller that passes `resizable` gets a drag handle. Every
+  // other MobileDrawer user (the escrow dispute drawer, KYC modal, etc.) is
+  // unaffected — this is additive to the one shared drawer primitive, not a
+  // behavior change for drawers that never asked for it.
+  resizable = false,
+  minWidth = 360,
+  maxWidthVw = 68,
+  defaultWidth = 384, // matches the existing `sm:w-96` default below
 }) {
+  const canResize = resizable && position === 'right';
+  const [width, setWidth] = useState(defaultWidth);
+  const isResizingRef = useRef(false);
+
   useEffect(() => {
     if (!isOpen) return;
 
@@ -31,6 +43,42 @@ export function MobileDrawer({
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [isOpen, onClose]);
+
+  // Pointer Events cover mouse and touch through the same handlers, so
+  // dragging the handle works identically with a mouse or a finger.
+  useEffect(() => {
+    if (!canResize) return undefined;
+
+    const handlePointerMove = (e) => {
+      if (!isResizingRef.current) return;
+      const maxPx = window.innerWidth * (maxWidthVw / 100);
+      // The panel is right-aligned, so its width is the distance from the
+      // cursor to the right edge of the viewport: dragging left grows it,
+      // dragging right shrinks it.
+      const next = Math.min(Math.max(window.innerWidth - e.clientX, minWidth), maxPx);
+      setWidth(next);
+    };
+    const stopResize = () => {
+      if (!isResizingRef.current) return;
+      isResizingRef.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', stopResize);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', stopResize);
+    };
+  }, [canResize, minWidth, maxWidthVw]);
+
+  const startResize = (e) => {
+    e.preventDefault();
+    isResizingRef.current = true;
+    document.body.style.cursor = 'ew-resize';
+    document.body.style.userSelect = 'none';
+  };
 
   let panelVariants = {
     initial: { x: '100%' },
@@ -77,7 +125,23 @@ export function MobileDrawer({
             exit={panelVariants.exit}
             transition={{ type: 'spring', damping: 30, stiffness: 300 }}
             className={`fixed bg-ink-2 flex flex-col z-50 ${positionClasses} ${className}`}
+            // maxWidth caps at the viewport so a small screen never overflows
+            // even if `width` state is still holding a larger desktop value.
+            style={canResize ? { width: `${width}px`, maxWidth: '100vw' } : undefined}
           >
+            {/* Resize handle — left edge, since the panel opens from the right. */}
+            {canResize && (
+              <div
+                onPointerDown={startResize}
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize contract details panel"
+                className="absolute top-0 left-0 h-full w-2 -translate-x-1/2 cursor-ew-resize z-10 group touch-none"
+              >
+                <div className="h-full w-full mx-auto max-w-[3px] group-hover:bg-signal/50 group-active:bg-signal/70 transition-colors" />
+              </div>
+            )}
+
             {/* Header */}
             <div className="p-5 border-b border-rule flex items-center justify-between font-mono">
               <div>

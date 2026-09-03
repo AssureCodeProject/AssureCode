@@ -18,7 +18,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from app.deps import get_llm_client
+from app.deps import get_security_llm_client
 from app.ports.llm_client import LlmClient, LlmUnavailableError
 from app.services import owasp_static, prompt_guard
 
@@ -173,7 +173,7 @@ def _normalize_llm_findings(items: list[dict], max_line: int) -> list[owasp_stat
 @router.post("", response_model=SecurityScanResponse)
 def security_scan(
     req: SecurityScanRequest,
-    llm: LlmClient = Depends(get_llm_client),
+    llm: LlmClient = Depends(get_security_llm_client),
 ) -> SecurityScanResponse:
     if not req.include_static and not req.include_llm:
         raise HTTPException(status_code=400, detail="At least one scan layer must be enabled")

@@ -119,6 +119,32 @@ def get_llm_client() -> LlmClient:
 
 
 @lru_cache(maxsize=1)
+def get_security_llm_client() -> LlmClient:
+    """A separate client for security_scan.py's Layer 2, on its own model.
+
+    Deliberately not the same instance get_llm_client() returns. See
+    Settings.cloudflare_security_model for the measurement that motivated
+    this split -- it's specific to code-security review; test generation and
+    the XAI narrative haven't been evaluated against the alternate model, so
+    they stay on the general client rather than inheriting an unverified
+    change.
+    """
+    settings = get_settings()
+    if settings.environment == "test" or settings.llm_provider == "fake":
+        return FakeLlmClient()
+    if settings.llm_provider != "cloudflare":
+        raise ValueError(
+            f"Unknown LLM_PROVIDER {settings.llm_provider!r}. "
+            "Supported values are 'cloudflare' and 'fake'."
+        )
+    return CloudflareWorkersAiClient(
+        account_id=settings.cloudflare_account_id,
+        api_token=settings.cloudflare_api_token,
+        model=settings.cloudflare_security_model,
+    )
+
+
+@lru_cache(maxsize=1)
 def get_artifact_store() -> ArtifactStore:
     settings = get_settings()
     if settings.environment == "test" or settings.embed_provider == "fake":
@@ -154,6 +180,7 @@ def reset_deps_cache() -> None:
     get_matchmaker.cache_clear()
     get_rag_store.cache_clear()
     get_llm_client.cache_clear()
+    get_security_llm_client.cache_clear()
     get_artifact_store.cache_clear()
     get_scope_log.cache_clear()
 
@@ -164,6 +191,7 @@ __all__ = [
     "get_embedder",
     "get_graph_repo",
     "get_llm_client",
+    "get_security_llm_client",
     "get_matchmaker",
     "get_rag_store",
     "get_scope_log",

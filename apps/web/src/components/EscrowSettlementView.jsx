@@ -38,6 +38,7 @@ import MobileDrawer from './ui/MobileDrawer';
 import ToastNotification from './ui/ToastNotification';
 import EscrowFundingPanel, { formatMinor } from './EscrowFundingPanel';
 import { apiRequest } from '../utils/api';
+import { useAuth } from '../context/AuthContext';
 
 /** The four CI signals, in the order the oracle evaluates them. */
 const SIGNAL_ROWS = [
@@ -103,6 +104,14 @@ function releaseButtonClasses({ released, isReleasing, canRelease }) {
 }
 
 export function EscrowSettlementView({ contractData, onResetWorkflow }) {
+  // Funding and release are both client-only actions server-side (clientVerified
+  // / settlementGuards in the gateway) -- a freelancer who clicked either button
+  // here would only ever get a 403. Showing the same interactive controls to
+  // both parties meant the freelancer's screen carried a "Release Funds" button
+  // that could never do anything but fail for them.
+  const { user } = useAuth();
+  const isClient = user?.role === 'client';
+
   const [state, setState] = useState({ status: 'idle' });
   const [isDisputeOpen, setIsDisputeOpen] = useState(false);
   const [disputeReason, setDisputeReason] = useState('');
@@ -262,6 +271,27 @@ export function EscrowSettlementView({ contractData, onResetWorkflow }) {
     );
   }
 
+  /** The freelancer's read-only counterpart to renderReleaseButtonLabel — same
+   *  states, worded as something happening to them rather than something they
+   *  can do, since only the client can fund or release. */
+  function renderFreelancerStatusLabel() {
+    if (released) {
+      return (
+        <>
+          <CheckCircle2 className="w-4 h-4 text-signal" />
+          <span>FUNDS RELEASED & SETTLED</span>
+        </>
+      );
+    }
+    if (!escrowFunded) {
+      return <span>AWAITING CLIENT TO FUND ESCROW</span>;
+    }
+    if (!data.approved) {
+      return <span>BLOCKED BY ORACLE</span>;
+    }
+    return <span>AWAITING CLIENT TO RELEASE FUNDS</span>;
+  }
+
   const handleRaiseDispute = (e) => {
     e.preventDefault();
     if (!disputeReason.trim()) return;
@@ -349,7 +379,7 @@ export function EscrowSettlementView({ contractData, onResetWorkflow }) {
           Only while there is nothing held: either no escrow row at all, or an
           order at PENDING that nobody has paid. Once the funds are authorised
           this disappears and the vault panel below takes over. */}
-      {needsFunding && (
+      {needsFunding && isClient && (
         <EscrowFundingPanel
           contractId={contractId}
           existingEscrow={data.escrow}
@@ -359,6 +389,26 @@ export function EscrowSettlementView({ contractData, onResetWorkflow }) {
             void load();
           }}
         />
+      )}
+
+      {needsFunding && !isClient && (
+        <div className="bg-ink-2 border border-rule p-8 font-mono space-y-2">
+          <div className="flex items-center gap-3">
+            <div className="p-3 bg-ink border border-rule">
+              <Lock className="w-6 h-6 text-prose-muted" />
+            </div>
+            <div>
+              <span className="text-xs text-prose-muted uppercase tracking-wider block">
+                Fund Escrow · Razorpay
+              </span>
+              <h2 className="text-xl font-bold text-prose font-mono">Awaiting client funding</h2>
+            </div>
+          </div>
+          <p className="text-xs text-prose-muted leading-relaxed">
+            Only the client can authorise escrow funds. Once they do, they are held — not paid out —
+            until the settlement oracle clears the release gate below.
+          </p>
+        </div>
       )}
 
       {/* ── Vault Status ─────────────────────────────────── */}
@@ -426,28 +476,41 @@ export function EscrowSettlementView({ contractData, onResetWorkflow }) {
 
             {/* Action Control */}
             <div className="w-full md:w-auto flex flex-col items-center md:items-end gap-3 border-t md:border-t-0 border-rule pt-4 md:pt-0">
-              <button
-                id="btn-release-funds"
-                onClick={handleReleaseFunds}
-                // `escrowFunded`, not just `data.escrow`: a PENDING order is an
-                // escrow row with nothing behind it, and asking the oracle to
-                // release it can only fail.
-                disabled={released || isReleasing || !escrowFunded || !data.approved}
-                title={
-                  !escrowFunded
-                    ? 'The escrow has not been funded yet — complete the payment first.'
-                    : data.approved
-                      ? undefined
-                      : `Blocked by the oracle: ${data.blockers.join('; ')}`
-                }
-                className={releaseButtonClasses({
-                  released,
-                  isReleasing,
-                  canRelease: Boolean(data.approved && escrowFunded),
-                })}
-              >
-                {renderReleaseButtonLabel()}
-              </button>
+              {isClient ? (
+                <button
+                  id="btn-release-funds"
+                  onClick={handleReleaseFunds}
+                  // `escrowFunded`, not just `data.escrow`: a PENDING order is an
+                  // escrow row with nothing behind it, and asking the oracle to
+                  // release it can only fail.
+                  disabled={released || isReleasing || !escrowFunded || !data.approved}
+                  title={
+                    !escrowFunded
+                      ? 'The escrow has not been funded yet — complete the payment first.'
+                      : data.approved
+                        ? undefined
+                        : `Blocked by the oracle: ${data.blockers.join('; ')}`
+                  }
+                  className={releaseButtonClasses({
+                    released,
+                    isReleasing,
+                    canRelease: Boolean(data.approved && escrowFunded),
+                  })}
+                >
+                  {renderReleaseButtonLabel()}
+                </button>
+              ) : (
+                // Read-only for everyone but the client: releasing is a
+                // clientVerified-gated action server-side, so a freelancer
+                // clicking an equivalent button here could only ever see it fail.
+                <div
+                  id="freelancer-settlement-status"
+                  title="Only the client can release escrow funds."
+                  className={releaseButtonClasses({ released, isReleasing: false, canRelease: false })}
+                >
+                  {renderFreelancerStatusLabel()}
+                </div>
+              )}
 
               <span className="text-[11px] font-mono text-prose-muted">
                 {

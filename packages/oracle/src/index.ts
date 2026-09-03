@@ -119,8 +119,13 @@ export class OracleStore {
     // request. This mirrors how the trust score treats an unmeasured scope
     // term as neutral rather than as a pass or a failure, and it carries the
     // same stated weakness: avoiding the chat channel avoids the signal.
+    //
+    // A dismissed row (V026) is excluded from `rejected` — an admin has
+    // recorded, with a reason, that this particular row should not count.
+    // It still excludes only rows explicitly marked; an undismissed rejection
+    // blocks exactly as before.
     const scopeRes = await this.pool.query(
-      `SELECT count(*) FILTER (WHERE NOT allowed) AS rejected, count(*) AS total
+      `SELECT count(*) FILTER (WHERE NOT allowed AND NOT dismissed) AS rejected, count(*) AS total
          FROM scope_checks WHERE contract_id = $1`,
       [contractId],
     );

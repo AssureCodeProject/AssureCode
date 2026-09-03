@@ -99,6 +99,21 @@ class Settings(BaseSettings):
     # unconfigured service silently selected a provider it had no key for and
     # failed on first use rather than at boot.
     llm_provider: str = Field(default="cloudflare", alias="LLM_PROVIDER")
+    # A general-purpose 8B chat model reviewing code for security.py's
+    # OWASP prompt was measured (not assumed) to be unreliable for this
+    # specific task: 9 repeated dual-layer scans of the same unchanged,
+    # genuinely-clean code returned finding counts of 0, 0, 0, 3, 3, 8, 11,
+    # 11, 0 -- including fabricated findings repeated line-by-line with
+    # near-identical wording, and severity swings on the same claim (LOW one
+    # run, MEDIUM the next). Swapping in a model built for code specifically
+    # (qwen2.5-coder-32b), tested against the same prompt and same code, held
+    # 5/5 clean on the secure version and still correctly flagged a
+    # deliberately-planted innerHTML+eval vulnerability with accurate line
+    # numbers and severity -- evidence of better discrimination, not just a
+    # model that always says "no findings".
+    cloudflare_security_model: str = Field(
+        default="@cf/qwen/qwen2.5-coder-32b-instruct", alias="CLOUDFLARE_SECURITY_MODEL"
+    )
 
     # ── S3 / LocalStack (artifact storage) ────────────────────
     s3_endpoint: str = Field(default="http://localhost:4566", alias="S3_ENDPOINT")

@@ -11,6 +11,7 @@ import {
 import ScopeGuardPanel from './ScopeGuardPanel';
 import { RepoWorkspaceCard } from './RepoWorkspaceCard';
 import { AuditFindingsDetail } from './AuditFindingsDetail';
+import { useAuth } from '../context/AuthContext';
 
 /**
  * One row per topic the audit stream reports, keyed by the step id the server
@@ -90,6 +91,15 @@ function auditStatusLabel({ error, pipelineComplete, isRunning }) {
   return '○ READY';
 }
 
+/** Display-only rounding — the stored maintainability index and the AST/XAI
+ *  formulas that produce it are untouched; this only controls how many
+ *  decimal places the UI shows. */
+function formatMaintainability(value) {
+  const n = Number(value);
+  if (value === null || value === undefined || !Number.isFinite(n)) return '—';
+  return n.toFixed(2);
+}
+
 // There is deliberately no local result generator here. An earlier version of
 // this component fell back to Math.random() telemetry whenever the audit stream
 // failed — maintainability 72–96, a 70% chance of full test pass, a 70% chance
@@ -98,6 +108,12 @@ function auditStatusLabel({ error, pipelineComplete, isRunning }) {
 // cannot be observed, this view reports that it could not be observed.
 
 export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
+  // The client doesn't push code to GitHub, so the action's own label would
+  // be misleading on their side even though it triggers the exact same
+  // handler (runPipeline) against the exact same /simulate-push endpoint.
+  const { user } = useAuth();
+  const isClient = user?.role === 'client';
+
   // Pipeline state
   const [isRunning, setIsRunning] = useState(false);
   // null, not 0: 0 is now a real step id (CODE_PUSH_RECEIVED), so seeding this
@@ -299,7 +315,7 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
             ) : (
               <>
                 <GitBranch className="w-4 h-4" />
-                <span>Simulate GitHub Push →</span>
+                <span>{isClient ? 'Run Verification →' : 'Simulate GitHub Push →'}</span>
               </>
             )}
           </button>
@@ -403,7 +419,7 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
               <div className="bg-ink-2 border border-rule p-5">
                 <span className="text-xs text-prose-muted uppercase block mb-1">Maintainability</span>
                 <div className="text-3xl font-bold text-prose">
-                  {results.maintainability} <span className="text-xs text-prose-muted font-normal">/ 100</span>
+                  {formatMaintainability(results.maintainability)} <span className="text-xs text-prose-muted font-normal">/ 100</span>
                 </div>
                 <span className="text-[11px] text-prose-muted mt-2 block">AST Cyclomatic Score</span>
               </div>

@@ -136,9 +136,20 @@ export function App() {
     setContractData(data);
   };
 
-  /** Called when a freelancer picks an assignment from their list */
+  /**
+   * Called when a contract is picked from an existing list (My
+   * Assignments/My Contracts) rather than just locked in Phase 1.
+   *
+   * Every other reader of `contractData` in this app (this component's own
+   * ACTIVE CONTRACT box and chain badge, plus ContractInitialization's locked
+   * panel) reads `.hash` -- that's the field name the /lock response itself
+   * uses. The list endpoints return the same persisted value as `genesisHash`
+   * (matching /assignment-details' convention), so it's normalized onto
+   * `.hash` here, once, rather than teaching every display site two field
+   * names for the same value.
+   */
   const handleAssignmentSelected = (contract) => {
-    setContractData(contract);
+    setContractData({ ...contract, hash: contract.hash ?? contract.genesisHash ?? null });
     navigateTo('verification');
   };
 

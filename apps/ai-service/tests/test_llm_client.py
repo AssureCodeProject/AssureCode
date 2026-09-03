@@ -96,6 +96,37 @@ def test_gives_up_after_exhausting_retries_on_repeated_429s(monkeypatch):
     assert calls["n"] == 3
 
 
+def test_treats_an_already_parsed_json_response_as_the_answer(monkeypatch):
+    """qwen2.5-coder-32b was observed returning `"response": []` for a security
+    scan whose correct answer was the empty JSON array (no findings) --
+    usage.completion_tokens on that call was 2, matching a literal `[]`, so
+    the model answered correctly. This account/model combination hands back
+    already-parsed JSON in `response` instead of a raw string; the client
+    must re-serialize it rather than treating a non-string response as empty
+    and falling through to LlmUnavailableError."""
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        return _response(200, {"result": {"response": [], "tool_calls": []}})
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    result = _client().generate("a prompt")
+    assert result == "[]"
+
+
+def test_treats_a_populated_parsed_json_response_as_the_answer(monkeypatch):
+    def fake_post(url, headers=None, json=None, timeout=None):
+        return _response(
+            200,
+            {"result": {"response": [{"type": "X", "line": 1}], "tool_calls": []}},
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    result = _client().generate("a prompt")
+    assert result == '[{"type": "X", "line": 1}]'
+
+
 def test_retries_a_network_level_failure(monkeypatch):
     calls = {"n": 0}
 

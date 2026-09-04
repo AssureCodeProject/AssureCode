@@ -107,14 +107,14 @@ def test_route_rejects_a_request_with_no_layers() -> None:
 
 
 def test_route_returns_503_when_the_llm_is_unavailable() -> None:
-    from app.deps import get_security_llm_client
+    from app.deps import get_llm_client
     from app.ports.llm_client import LlmUnavailableError
 
     class DeadLlm:
         def generate(self, prompt: str, max_tokens: int = 2048) -> str:
             raise LlmUnavailableError("provider down", retry_after=7)
 
-    app.dependency_overrides[get_security_llm_client] = lambda: DeadLlm()
+    app.dependency_overrides[get_llm_client] = lambda: DeadLlm()
     try:
         res = client.post("/security-scan", json={"code": "const x = 1;"})
         assert res.status_code == 503
@@ -124,13 +124,13 @@ def test_route_returns_503_when_the_llm_is_unavailable() -> None:
 
 
 def test_route_returns_502_when_the_llm_response_is_unparseable() -> None:
-    from app.deps import get_security_llm_client
+    from app.deps import get_llm_client
 
     class BabblingLlm:
         def generate(self, prompt: str, max_tokens: int = 2048) -> str:
             return "I think the code looks fine, honestly."
 
-    app.dependency_overrides[get_security_llm_client] = lambda: BabblingLlm()
+    app.dependency_overrides[get_llm_client] = lambda: BabblingLlm()
     try:
         res = client.post("/security-scan", json={"code": "const x = 1;"})
         # Must not be a 200 with an empty finding list — that would report
@@ -141,7 +141,7 @@ def test_route_returns_502_when_the_llm_response_is_unparseable() -> None:
 
 
 def test_route_merges_llm_findings_and_labels_their_layer() -> None:
-    from app.deps import get_security_llm_client
+    from app.deps import get_llm_client
 
     class ScriptedLlm:
         def generate(self, prompt: str, max_tokens: int = 2048) -> str:
@@ -150,7 +150,7 @@ def test_route_merges_llm_findings_and_labels_their_layer() -> None:
                 '"severity":"HIGH","message":"deletes any id without checking ownership","line":1}]'
             )
 
-    app.dependency_overrides[get_security_llm_client] = lambda: ScriptedLlm()
+    app.dependency_overrides[get_llm_client] = lambda: ScriptedLlm()
     try:
         res = client.post(
             "/security-scan",
@@ -166,7 +166,7 @@ def test_route_merges_llm_findings_and_labels_their_layer() -> None:
 
 
 def test_route_discards_llm_findings_that_cannot_be_located() -> None:
-    from app.deps import get_security_llm_client
+    from app.deps import get_llm_client
 
     class HallucinatingLlm:
         def generate(self, prompt: str, max_tokens: int = 2048) -> str:
@@ -176,7 +176,7 @@ def test_route_discards_llm_findings_that_cannot_be_located() -> None:
                 '{"type":"BAD_SEVERITY","category":"A01:2025","severity":"SPICY","message":"x","line":1}]'
             )
 
-    app.dependency_overrides[get_security_llm_client] = lambda: HallucinatingLlm()
+    app.dependency_overrides[get_llm_client] = lambda: HallucinatingLlm()
     try:
         res = client.post("/security-scan", json={"code": "const x = 1;"})
         assert res.status_code == 200

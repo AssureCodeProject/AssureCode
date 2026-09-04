@@ -235,19 +235,6 @@ class CloudflareWorkersAiClient:
         response = result.get("response")
         if isinstance(response, str) and response != "":
             return response
-        if isinstance(response, (list, dict)):
-            # qwen2.5-coder-32b was observed returning `"response": []` for a
-            # prompt whose expected answer was the empty JSON array (no
-            # security findings) -- usage.completion_tokens on that call was 2,
-            # matching the two characters of a literal `[]`, so the model did
-            # answer correctly; this account/model combination just hands back
-            # already-parsed JSON in `response` instead of the raw string the
-            # flat shape above assumes. Re-serialize so the caller's
-            # json.loads() still works, whether the model answered `[]` or a
-            # populated findings array.
-            import json as _json
-
-            return _json.dumps(response)
 
         choices = result.get("choices")
         if isinstance(choices, list) and choices:

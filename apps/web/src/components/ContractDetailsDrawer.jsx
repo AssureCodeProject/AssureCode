@@ -77,7 +77,6 @@ export function ContractDetailsDrawer({ contractId, isOpen, onClose, viewerRole 
       title="Contract Details"
       subtitle={contractId}
       position="right"
-      resizable
       footer={
         <div className="space-y-2">
           <FuturisticButton

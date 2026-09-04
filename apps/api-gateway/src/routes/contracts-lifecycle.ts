@@ -134,7 +134,6 @@ export function registerContractsLifecycleRoutes(server: FastifyInstance): void 
         assignmentStatus: string | null;
         assignmentId: number | null;
         requirementsSummary: string | null;
-        genesisHash: string | null;
       }>;
     };
   }>('/api/contracts/mine', freelancerOnly, async (request, reply) => {
@@ -146,19 +145,11 @@ export function registerContractsLifecycleRoutes(server: FastifyInstance): void 
     // to this freelancer's own rows so a contract reassigned to someone else
     // after rejecting this freelancer doesn't show them a stale ACCEPTED/
     // PENDING that belongs to the new assignee.
-    //
-    // h0: the genesis hash, same query /assignment-details and /assignment-pdf
-    // already use (first merkle_ledger row for the contract, i.e. its
-    // CONTRACT_LOCKED entry). Without this, selecting an existing contract from
-    // this list -- the only path back into a contract after a page reload --
-    // populated contractData with no hash at all, so the UI showed "HASH: -"
-    // for a contract that had genuinely been locked.
     const result = await dbPool.query(
       `SELECT c.contract_id, c.title, c.status, c.budget_cents, c.deadline,
               c.client_id, u.display_name AS client_display_name, c.created_at,
               LEFT(c.requirements, 240) AS requirements_summary,
-              ca.status AS assignment_status, ca.assignment_id,
-              h0.current_hash AS genesis_hash
+              ca.status AS assignment_status, ca.assignment_id
          FROM contracts c
          LEFT JOIN users u ON u.user_id = c.client_id
          LEFT JOIN LATERAL (
@@ -166,11 +157,6 @@ export function registerContractsLifecycleRoutes(server: FastifyInstance): void 
             WHERE contract_id = c.contract_id AND freelancer_id = $1
             ORDER BY assignment_id DESC LIMIT 1
          ) ca ON true
-         LEFT JOIN LATERAL (
-           SELECT current_hash FROM merkle_ledger
-            WHERE contract_id = c.contract_id
-            ORDER BY ledger_id ASC LIMIT 1
-         ) h0 ON true
         WHERE c.freelancer_id = $1
         ORDER BY c.created_at DESC`,
       [user.userId],
@@ -189,7 +175,6 @@ export function registerContractsLifecycleRoutes(server: FastifyInstance): void 
         assignmentStatus: row.assignment_status ?? null,
         assignmentId: row.assignment_id ?? null,
         requirementsSummary: row.requirements_summary ?? null,
-        genesisHash: row.genesis_hash ?? null,
       })),
     });
   });
@@ -220,23 +205,16 @@ export function registerContractsLifecycleRoutes(server: FastifyInstance): void 
         decidedAt: string | null;
         rejectionReasonText: string | null;
         repositoryStatus: string | null;
-        genesisHash: string | null;
       }>;
     };
   }>('/api/contracts/owned', { preHandler: requireRole(['client']) }, async (request, reply) => {
     const user = (request as any).user as AuthUser;
 
-    // h0: same genesis-hash query /assignment-details, /assignment-pdf, and
-    // /api/contracts/mine already use (first merkle_ledger row for the
-    // contract). Selecting a contract from this list is the only path back
-    // into it after a page reload, so without this the client's own "My
-    // Contracts" view lost the locked hash exactly like the freelancer's did.
     const result = await dbPool.query(
       `SELECT c.contract_id, c.title, c.status, c.budget_cents, c.deadline,
               c.freelancer_id, fu.display_name AS freelancer_display_name, c.created_at,
               ca.status AS assignment_status, ca.assignment_id, ca.decided_at, ca.rejection_reason_text,
-              rp.status AS repository_status,
-              h0.current_hash AS genesis_hash
+              rp.status AS repository_status
          FROM contracts c
          LEFT JOIN users fu ON fu.user_id = c.freelancer_id
          LEFT JOIN LATERAL (
@@ -245,11 +223,6 @@ export function registerContractsLifecycleRoutes(server: FastifyInstance): void 
             ORDER BY assignment_id DESC LIMIT 1
          ) ca ON true
          LEFT JOIN repo_provisioning rp ON rp.contract_id = c.contract_id
-         LEFT JOIN LATERAL (
-           SELECT current_hash FROM merkle_ledger
-            WHERE contract_id = c.contract_id
-            ORDER BY ledger_id ASC LIMIT 1
-         ) h0 ON true
         WHERE c.client_id = $1
         ORDER BY c.created_at DESC`,
       [user.userId],
@@ -270,7 +243,6 @@ export function registerContractsLifecycleRoutes(server: FastifyInstance): void 
         decidedAt: row.decided_at ?? null,
         rejectionReasonText: row.rejection_reason_text ?? null,
         repositoryStatus: row.repository_status ?? null,
-        genesisHash: row.genesis_hash ?? null,
       })),
     });
   });

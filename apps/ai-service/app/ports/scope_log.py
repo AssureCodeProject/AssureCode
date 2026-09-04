@@ -145,7 +145,7 @@ class PostgresScopeLog:
                     """
                     SELECT count(*) FILTER (WHERE allowed), count(*)
                       FROM scope_checks
-                     WHERE contract_id = %s AND NOT dismissed
+                     WHERE contract_id = %s
                     """,
                     (contract_id,),
                 )

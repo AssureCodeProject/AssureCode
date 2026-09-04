@@ -8,8 +8,8 @@
 import type { FastifyInstance } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import { EVENT_TOPICS, type EventEnvelope } from '@assurecode/shared';
-import { logger, eventBus, scopeGuardUrl, serviceCallHeaders, contractPartyOnly, dbPool } from '../context.js';
-import { type AuthUser, requireRole, logSecurityAudit } from '../middleware/rbac.js';
+import { logger, eventBus, scopeGuardUrl, serviceCallHeaders, contractPartyOnly } from '../context.js';
+import { type AuthUser } from '../middleware/rbac.js';
 
 export function registerContractsChatRoutes(server: FastifyInstance): void {
   server.post<{
@@ -117,59 +117,6 @@ export function registerContractsChatRoutes(server: FastifyInstance): void {
       sender,
     });
   });
-
-  // The settlement gate is deliberately zero-tolerance (OracleStore.evaluate,
-  // packages/oracle) — one rejected scope_checks row blocks settlement forever,
-  // with no expiry. That strictness is intentional, but it left no path back
-  // for a row that was wrong: a misdirected test call against a real
-  // contract, a threshold later found miscalibrated, a decision a human
-  // reviewer overturns. Editing scope_checks by hand fixes the gate but
-  // leaves no record that anything was overridden or why. This is that path,
-  // restricted to admin and logged to security_audit_logs like every other
-  // access-affecting action in this file.
-  server.post<{
-    Params: { contractId: string; checkId: string };
-    Body: { reason: string };
-    Reply: { dismissed: true; checkId: number } | { error: string };
-  }>(
-    '/api/contracts/:contractId/scope-checks/:checkId/dismiss',
-    { preHandler: requireRole(['admin']) },
-    async (request, reply) => {
-      const { contractId, checkId } = request.params;
-      const reason = request.body?.reason?.trim();
-      if (!reason) {
-        return reply.status(400).send({ error: 'A reason is required to dismiss a scope check' });
-      }
-
-      const user = (request as any).user as AuthUser | undefined;
-      const dismissedBy = user?.userId ?? 'service';
-
-      const res = await dbPool.query(
-        `UPDATE scope_checks
-            SET dismissed = TRUE, dismissed_by = $1, dismissed_at = now(), dismiss_reason = $2
-          WHERE check_id = $3 AND contract_id = $4 AND dismissed = FALSE
-          RETURNING check_id`,
-        [dismissedBy, reason, checkId, contractId],
-      );
-
-      if (res.rowCount === 0) {
-        return reply.status(404).send({
-          error: 'No undismissed scope check with that id was found for this contract',
-        });
-      }
-
-      await logSecurityAudit(dbPool, {
-        userId: dismissedBy,
-        action: 'SCOPE_CHECK_DISMISSED',
-        resource: `contract:${contractId}:scope_check:${checkId}`,
-        ipAddress: request.ip,
-        status: 'SUCCESS',
-      });
-      logger.info({ contractId, checkId, dismissedBy, reason }, 'Scope check dismissed');
-
-      return reply.status(200).send({ dismissed: true, checkId: Number(checkId) });
-    },
-  );
 
   server.get<{
     Params: { contractId: string };

@@ -33,6 +33,54 @@ const LOADING_STEPS = [
   },
 ];
 
+/** Demo scenarios that pre-fill the form — data, not four copies of a button. */
+const PRESET_SCENARIOS = [
+  {
+    id: 'fintech',
+    label: '[ Fintech ]',
+    summary: '₹2,500 • React/Node',
+    formData: {
+      title: 'Fintech Real-Time Dashboard',
+      requirements: 'Build a React TypeScript dashboard with Node.js Fastify backend and PostgreSQL database.',
+      budget: '2500',
+      deadline: '2026-12-31',
+    },
+  },
+  {
+    id: 'ai',
+    label: '[ AI / RAG ]',
+    summary: '₹3,800 • PyTorch/FastAPI',
+    formData: {
+      title: 'PyTorch RAG LLM Pipeline',
+      requirements: 'Build a PyTorch RAG LLM pipeline using FastAPI, LangChain, and vector databases for semantic document search.',
+      budget: '3800',
+      deadline: '2026-12-31',
+    },
+  },
+  {
+    id: 'web3',
+    label: '[ Web3 ]',
+    summary: '₹4,200 • Solidity',
+    formData: {
+      title: 'DeFi Solidity Smart Contracts',
+      requirements: 'Develop Solidity smart contracts for Ethereum decentralized finance protocol with Ethers.js integration.',
+      budget: '4200',
+      deadline: '2026-12-31',
+    },
+  },
+  {
+    id: 'devops',
+    label: '[ DevOps ]',
+    summary: '₹3,000 • K8s/AWS',
+    formData: {
+      title: 'Kubernetes Terraform Infra',
+      requirements: 'Provision multi-region Kubernetes cluster with Terraform IaC, AWS infrastructure, and Prometheus monitoring.',
+      budget: '3000',
+      deadline: '2026-12-31',
+    },
+  },
+];
+
 /** Shared entry/exit for the three panels this phase swaps between. */
 const PANEL_TRANSITION = {
   initial: { opacity: 0, y: 10 },
@@ -59,34 +107,10 @@ function formatHashLines(hashStr) {
   return lines;
 }
 
-/**
- * Pin a specific registered freelancer to the front of the ranked results.
- *
- * Matched on display_name (what the /match response calls `freelancer_name`)
- * rather than a synthetic id, because that is the identifier that actually
- * distinguishes this account -- confirmed against the users table, this
- * freelancer's display_name and GitHub login are both literally
- * "sowmith0105". Purely a display reorder: nobody is added, removed, or
- * duplicated, and everyone else keeps the matcher's relative order.
- *
- * "Top Match" stays tied to whichever candidate actually scored highest, not
- * to list position -- pinning changes where a card sits, never what its
- * badge claims about the matcher's ranking.
- */
-const PINNED_FREELANCER_NAME = 'sowmith0105';
-
-function pinFreelancerFirst(results, pinnedName) {
-  if (!Array.isArray(results) || results.length === 0) return results;
-
-  const topScore = results.reduce((max, r) => Math.max(max, r.score ?? -Infinity), -Infinity);
-  const withTopFlag = results.map((r) => ({ ...r, isTopMatch: r.score === topScore }));
-
-  const pinnedIdx = withTopFlag.findIndex((r) => r.freelancer_name === pinnedName);
-  if (pinnedIdx <= 0) return withTopFlag;
-
-  const pinned = withTopFlag[pinnedIdx];
-  const rest = [...withTopFlag.slice(0, pinnedIdx), ...withTopFlag.slice(pinnedIdx + 1)];
-  return [pinned, ...rest];
+function presetButtonClasses(isSelected) {
+  const base = 'p-3 text-left font-mono text-xs border transition-colors';
+  if (isSelected) return `${base} border-signal text-signal bg-signal/5 font-semibold`;
+  return `${base} border-rule text-prose-muted hover:text-prose hover:border-rule-hi bg-ink-3`;
 }
 
 function submitButtonClasses(isMatching, isFormValid) {
@@ -120,9 +144,7 @@ function LockedContractPanel({ lockedData, copiedHash, onCopyHash, onProceedToPh
             <span className="text-prose-dim">SHA-256</span>
             <button
               onClick={onCopyHash}
-              disabled={!lockedData.hash}
-              title={lockedData.hash ? undefined : 'No genesis hash on record for this contract'}
-              className="flex items-center gap-1 text-xs text-signal hover:underline transition-colors disabled:text-prose-muted disabled:no-underline disabled:cursor-not-allowed"
+              className="flex items-center gap-1 text-xs text-signal hover:underline transition-colors"
             >
               {copiedHash ? (
                 <>
@@ -252,6 +274,7 @@ function AssignmentProgress({ currentStep, completedSteps }) {
 /** Ranked matchmaker results — the client picks who gets the contract. */
 function CandidateSelection({
   candidates,
+  degradedReason,
   isProcessing,
   currentStep,
   completedSteps,
@@ -260,15 +283,25 @@ function CandidateSelection({
 }) {
   return (
     <>
-      <div className="bg-ink-2 border border-rule p-5">
-        <div className="text-xs font-mono text-prose-muted uppercase tracking-wider mb-1">
-          Ranked by the NLP matchmaker
+      {degradedReason ? (
+        <div className="bg-ink-2 border border-warn p-5">
+          <div className="flex items-center gap-2 text-warn text-xs font-mono uppercase tracking-wider mb-1">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+            <span>Degraded ranking — not a semantic match</span>
+          </div>
+          <p className="text-sm text-prose-muted">{degradedReason}</p>
         </div>
-        <p className="text-sm text-prose-muted">
-          Skill-embedding cosine similarity, trust score, and delivery history —
-          {' '}<span className="text-prose">0.50 / 0.35 / 0.15</span> weighted. Pick who gets this contract.
-        </p>
-      </div>
+      ) : (
+        <div className="bg-ink-2 border border-rule p-5">
+          <div className="text-xs font-mono text-prose-muted uppercase tracking-wider mb-1">
+            Ranked by the NLP matchmaker
+          </div>
+          <p className="text-sm text-prose-muted">
+            Skill-embedding cosine similarity, trust score, and delivery history —
+            {' '}<span className="text-prose">0.50 / 0.35 / 0.15</span> weighted. Pick who gets this contract.
+          </p>
+        </div>
+      )}
 
       {isProcessing && (
         <AssignmentProgress currentStep={currentStep} completedSteps={completedSteps} />
@@ -292,7 +325,7 @@ function CandidateSelection({
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="font-semibold text-prose">{candidate.freelancer_name}</span>
-                  {candidate.isTopMatch && (
+                  {idx === 0 && (
                     <span className="text-[10px] font-mono px-1.5 py-0.5 bg-signal/10 text-signal border border-signal/40 uppercase tracking-wider">
                       Top Match
                     </span>
@@ -353,6 +386,9 @@ export function ContractInitialization({
     deadline: '',
   });
 
+  // Selected scenario state
+  const [selectedPreset, setSelectedPreset] = useState(null);
+
   // Process state
   const [isProcessing, setIsProcessing] = useState(false);
   const [currentStep, setCurrentStep] = useState(0);
@@ -372,6 +408,10 @@ export function ContractInitialization({
   const [pendingContract, setPendingContract] = useState(null);
   const [matchError, setMatchError] = useState(null);
   const [assigningId, setAssigningId] = useState(null);
+  // Set when /match fell back to trust-score-only ranking (ai-service or its
+  // graph backend was unreachable) — see server.ts's `degradedReason`. Skill
+  // and history terms in that response are genuinely unmeasured, not zero.
+  const [matchDegradedReason, setMatchDegradedReason] = useState(null);
 
   // PDF upload state. pdfRawText is the full extracted document, sent at
   // initialize time and stored in contracts.pdf_raw_text separately from
@@ -398,6 +438,11 @@ export function ContractInitialization({
     },
     []
   );
+
+  const handlePresetSelect = (preset) => {
+    setSelectedPreset(preset.id);
+    setFormData(preset.formData);
+  };
 
   const handlePdfSelect = async (e) => {
     const file = e.target.files?.[0];
@@ -454,6 +499,7 @@ export function ContractInitialization({
 
     setIsMatching(true);
     setMatchError(null);
+    setMatchDegradedReason(null);
 
     try {
       const initResponse = await callApi('/api/contracts/initialize', 'POST', {
@@ -476,7 +522,8 @@ export function ContractInitialization({
       );
 
       setPendingContract(initResponse);
-      setCandidates(pinFreelancerFirst(matchResponse.results || [], PINNED_FREELANCER_NAME));
+      setCandidates(matchResponse.results || []);
+      setMatchDegradedReason(matchResponse.degraded ? matchResponse.degradedReason : null);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error('Contract initialization / matching failed:', error);
@@ -597,6 +644,7 @@ export function ContractInitialization({
           <motion.div key="candidates" {...PANEL_TRANSITION} className="space-y-6">
             <CandidateSelection
               candidates={candidates}
+              degradedReason={matchDegradedReason}
               isProcessing={isProcessing}
               currentStep={currentStep}
               completedSteps={completedSteps}
@@ -610,6 +658,26 @@ export function ContractInitialization({
         {activePanel === 'form' && (
           <motion.div key="form" {...PANEL_TRANSITION}>
             <form id="contract-form" onSubmit={handleSubmit} className="space-y-8">
+              {/* Scenario Preset Selector Chips */}
+              <div className="bg-ink-2 border border-rule p-5 space-y-3">
+                <label className="block text-xs font-mono text-prose-muted uppercase tracking-wider">
+                  Select Preset Scenario
+                </label>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {PRESET_SCENARIOS.map((preset) => (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() => handlePresetSelect(preset)}
+                      className={presetButtonClasses(selectedPreset === preset.id)}
+                    >
+                      <div className="font-bold text-prose">{preset.label}</div>
+                      <div className="text-[11px] text-prose-muted mt-1">{preset.summary}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               {/* Hairline-Ruled Form Fields */}
               <div className="bg-ink-2 border border-rule p-6 sm:p-8 space-y-6">
                 {/* Title */}

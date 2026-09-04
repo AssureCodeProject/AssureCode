@@ -232,21 +232,6 @@ describe('OracleStore.evaluate — derived scope signal', () => {
     expect(verdict.signals.scopePassed).toBe(true);
   });
 
-  it('excludes dismissed rows from the rejected count (V026)', async () => {
-    // An admin-dismissed row (packages/oracle's evaluate() reads
-    // `NOT allowed AND NOT dismissed`) must not count toward the gate — that
-    // is the entire point of dismissal existing. The fake pool can't
-    // distinguish dismissed from non-dismissed rows itself (it just returns
-    // whatever `scope` the test supplies), so this asserts on the query text
-    // rather than the resulting verdict: a regression that dropped the
-    // `NOT dismissed` clause would still pass every other test in this file.
-    const { store, pool } = storeWith({ state: PASSING, scope: { rejected: '0', total: '5' } });
-    await store.evaluate('c1');
-
-    const scopeCall = pool.calls.find((c) => c.sql.includes('FROM scope_checks'));
-    expect(scopeCall?.sql).toContain('NOT allowed AND NOT dismissed');
-  });
-
   it('does not read the scope signal from a stored column', async () => {
     // The scope verdict is derived from scope_checks on every read precisely so
     // a stored copy cannot disagree with the decisions it summarises.

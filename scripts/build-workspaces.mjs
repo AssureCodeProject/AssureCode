@@ -22,6 +22,7 @@ const ORDER = [
   'packages/event-bus',
   'packages/ledger-client',
   'packages/oracle',
+  'packages/email-adapter',
   'apps/api-gateway',
   'apps/ci-worker',
   'apps/settlement-worker',

@@ -14,6 +14,8 @@ COPY packages/razorpay-adapter/package*.json ./packages/razorpay-adapter/
 COPY packages/kyc-adapter/package*.json ./packages/kyc-adapter/
 COPY packages/event-bus/package*.json ./packages/event-bus/
 COPY packages/ledger-client/package*.json ./packages/ledger-client/
+COPY packages/email-adapter/package*.json ./packages/email-adapter/
+COPY packages/oracle/package*.json ./packages/oracle/
 COPY apps/api-gateway/package*.json ./apps/api-gateway/
 
 RUN npm ci

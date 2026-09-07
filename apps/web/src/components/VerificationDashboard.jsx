@@ -180,8 +180,7 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
               })
               .catch((err) => {
                 fail(
-                  `The audit completed but its results could not be read: ${
-                    err instanceof Error ? err.message : String(err)
+                  `The audit completed but its results could not be read: ${err instanceof Error ? err.message : String(err)
                   }`,
                 );
               });
@@ -285,11 +284,10 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
             id="btn-simulate-push"
             onClick={runPipeline}
             disabled={isRunning}
-            className={`px-5 py-3 font-mono font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 shrink-0 ${
-              isRunning
+            className={`px-5 py-3 font-mono font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 shrink-0 ${isRunning
                 ? 'bg-ink-3 text-prose-muted border border-rule cursor-wait'
                 : 'bg-signal text-ink hover:opacity-90 active:scale-[0.99]'
-            }`}
+              }`}
           >
             {isRunning ? (
               <>
@@ -403,7 +401,7 @@ export function VerificationDashboard({ contractData, onBack, onNextPhase }) {
               <div className="bg-ink-2 border border-rule p-5">
                 <span className="text-xs text-prose-muted uppercase block mb-1">Maintainability</span>
                 <div className="text-3xl font-bold text-prose">
-                  {results.maintainability} <span className="text-xs text-prose-muted font-normal">/ 100</span>
+                  {Number(results.maintainability).toFixed(2)} <span className="text-xs text-prose-muted font-normal">/ 100</span>
                 </div>
                 <span className="text-[11px] text-prose-muted mt-2 block">AST Cyclomatic Score</span>
               </div>

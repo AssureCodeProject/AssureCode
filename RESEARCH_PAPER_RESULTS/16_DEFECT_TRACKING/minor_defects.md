@@ -1,0 +1,9 @@
+# Minor (LOW) / Medium Defects
+
+- **DEFECT-001** (LOW) — `apps/api-gateway/test/idempotency-unit.test.ts`: "stays bounded well past the 10 000-entry cap" test times out at vitest's default 5000ms because it lacks an explicit timeout override, unlike its sibling test in the same file. Test-suite reliability issue, not an application logic defect.
+- **DEFECT-002a** (MEDIUM) — `apps/api-gateway/test/match-always-visible.test.ts`: in the no-infra baseline run, the `PG_UP` skip guard did not short-circuit before tests attempted live DB operations, causing a hang-to-timeout instead of a clean skip. This masked the real DEFECT-002 (see `major_defects.md`) until Phase 5 brought real Postgres online.
+
+Note: the originally-suspected "DEFECT-003 — settlement-crash-recovery fails because Kafka is absent" was superseded once real infra was brought up in Phase 5: with Postgres/Redis available, that same test still fails, but now for a different, more serious reason — see DEFECT-003 (CRITICAL) in `critical_defects.md`. The Kafka-specific `ECONNREFUSED` seen in the no-infra baseline run (`03_UNIT_TESTING/execution_logs/npm_test_output.txt`, lines ~638-649) was an artifact of that test environment lacking any event bus at all, not evidence of a Kafka-specific code path requirement — the project's default/test stacks both use `EVENT_BUS_TYPE=redis`.
+
+## Informational (non-blocking)
+- ESLint: 138 warnings, 0 errors across the repository — predominantly `@typescript-eslint/no-explicit-any` concentrated in `apps/settlement-worker/src/worker.ts` and `packages/razorpay-adapter/src/index.ts`, plus a handful of unused-variable warnings in tooling scripts (`scripts/verify-web.js`, `tools/benchmark.js`, `tools/verify_phase8_live.mjs`) and one in `apps/web/src/components/ContractInitialization.jsx`. See `02_STATIC_ANALYSIS/static_analysis_summary.md`.

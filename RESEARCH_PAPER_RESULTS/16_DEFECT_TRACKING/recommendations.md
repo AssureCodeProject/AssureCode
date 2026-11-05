@@ -1,0 +1,11 @@
+# Recommendations (not applied — per testing campaign rules, source code was not modified)
+
+Ordered by severity of the underlying defect.
+
+1. **DEFECT-003 (CRITICAL — fix first)**: Restore a Postgres migration that adds `scope_checks.dismissed BOOLEAN NOT NULL DEFAULT false` (or equivalent), or revert the `NOT dismissed` SQL clause introduced by commit `32c0913` in `packages/oracle/src/index.ts` until that column exists. This currently blocks every settlement decision on a freshly-migrated environment — see `critical_defects.md` for the full root-cause trace.
+2. **DEFECT-002 (HIGH)**: Fix the always-visible freelancer matching logic in the api-gateway matching route so freelancers with `token_valid=false` (stale GitHub connection) are actually excluded, consistent with the other passing assertions in the same test file.
+3. **DEFECT-002a (MEDIUM)**: Audit the `PG_UP` guard usage in `apps/api-gateway/test/match-always-visible.test.ts` — confirm it is awaited/resolved before the describe block's tests run, and apply `describe.skipIf(!PG_UP)` consistently with how other suites in the same workspace guard against missing Postgres. Fixing this alone does not fix DEFECT-002.
+4. **DEFECT-004 (MEDIUM)**: Decide deliberately for `packages/email-adapter` — either add real unit tests, or explicitly opt that one workspace out of the aggregate `npm test` failure (e.g. a package-scoped `vitest.config.ts` with `passWithNoTests: true`), rather than leaving a workspace that always fails `npm test`.
+5. **DEFECT-001 (LOW)**: Add an explicit timeout argument to the `withIdempotency — cache bound` test in `apps/api-gateway/test/idempotency-unit.test.ts`, matching the `15_000` ms pattern already used by its sibling test in the same file.
+6. (Informational) Consider addressing the 138 `@typescript-eslint/no-explicit-any` / unused-variable lint warnings opportunistically, concentrated in `apps/settlement-worker/src/worker.ts` and `packages/razorpay-adapter/src/index.ts` — they are not blocking but reduce type-safety guarantees in those files.
+7. Extend this testing pass with: security penetration testing, load/performance testing, UI/browser E2E testing, and `apps/ai-service`/`apps/scope-guard` pytest execution (requires their `.venv`s) — see `18_FINAL_AUDIT/limitations.md` for the full list of categories not covered.

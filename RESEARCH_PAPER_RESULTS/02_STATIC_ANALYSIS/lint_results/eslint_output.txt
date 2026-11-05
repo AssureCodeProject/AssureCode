@@ -1,0 +1,195 @@
+npm warn Unknown project config "link-workspace-packages". This will stop working in the next major version of npm.
+
+> assurecode@1.0.0-alpha.0 lint
+> eslint .
+
+
+C:\Users\sowmi\PROJECTS\AssureCode\.agents\teamwork_preview_challenger_sprint6_remediation\verify_sprint6.ts
+  1:8  warning  'pg' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+C:\Users\sowmi\PROJECTS\AssureCode\apps\api-gateway\src\middleware\auth.ts
+  119:38  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  129:19  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  130:19  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  142:30  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  156:19  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\Users\sowmi\PROJECTS\AssureCode\apps\api-gateway\src\middleware\idempotency.ts
+   15:48  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   67:51  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   94:58  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   95:67  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  113:44  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  151:42  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  207:40  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\Users\sowmi\PROJECTS\AssureCode\apps\api-gateway\src\middleware\rbac.ts
+   32:22  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   40:30  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   73:30  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  141:30  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\Users\sowmi\PROJECTS\AssureCode\apps\api-gateway\src\routes\auth.ts
+    71:30  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   324:30  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   339:30  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   376:30  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   394:30  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   423:30  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   460:30  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   784:32  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   817:28  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   826:25  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   835:27  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   835:77  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   971:23  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   993:32  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  1019:32  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  1043:48  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  1057:32  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\Users\sowmi\PROJECTS\AssureCode\apps\api-gateway\src\routes\contracts-chat.ts
+  37:33  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\Users\sowmi\PROJECTS\AssureCode\apps\api-gateway\src\routes\contracts-escrow.ts
+   55:98  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  178:16  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  193:87  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  205:92  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  215:72  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  228:16  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\Users\sowmi\PROJECTS\AssureCode\apps\api-gateway\src\routes\contracts-lifecycle.ts
+   41:98  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   51:10  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  140:30  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  211:30  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  270:32  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  275:82  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  424:58  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  442:16  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  472:21  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  482:18  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  672:29  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  701:34  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  729:18  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  763:25  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  821:34  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  851:18  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  924:81  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\Users\sowmi\PROJECTS\AssureCode\apps\api-gateway\src\routes\health.ts
+  23:19  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\Users\sowmi\PROJECTS\AssureCode\apps\api-gateway\src\routes\kyc.ts
+  31:19  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  33:30  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\Users\sowmi\PROJECTS\AssureCode\apps\api-gateway\src\routes\notifications.ts
+  16:30  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  46:32  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\Users\sowmi\PROJECTS\AssureCode\apps\api-gateway\src\routes\pdf.ts
+  24:32  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  48:19  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\Users\sowmi\PROJECTS\AssureCode\apps\api-gateway\src\routes\webhooks.ts
+  39:33  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\Users\sowmi\PROJECTS\AssureCode\apps\api-gateway\src\server.ts
+   48:12  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   63:42  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   82:11  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   92:13  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  149:42  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  154:30  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\Users\sowmi\PROJECTS\AssureCode\apps\api-gateway\test\auth-register.test.ts
+  8:32  warning  'beforeAll' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+C:\Users\sowmi\PROJECTS\AssureCode\apps\ci-worker\src\sandbox\egress-guard.cjs
+  38:35  warning  'parent' is defined but never used. Allowed unused args must match /^_/u  @typescript-eslint/no-unused-vars
+  38:43  warning  'isMain' is defined but never used. Allowed unused args must match /^_/u  @typescript-eslint/no-unused-vars
+
+C:\Users\sowmi\PROJECTS\AssureCode\apps\ci-worker\src\source-fetcher.ts
+  150:30  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  150:53  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  152:18  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\Users\sowmi\PROJECTS\AssureCode\apps\settlement-worker\src\worker.ts
+    94:17  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   128:38  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   134:22  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   156:19  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   194:18  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   211:20  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   224:38  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   241:19  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   254:38  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   302:21  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   325:21  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   409:22  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   417:82  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   535:19  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   577:13  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   671:22  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   675:17  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   711:22  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   721:13  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   756:19  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   844:21  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   924:21  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   948:17  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  1015:22  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  1027:73  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  1062:55  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  1082:19  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  1169:65  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  1172:19  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  1238:26  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  1274:63  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  1277:17  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\Users\sowmi\PROJECTS\AssureCode\apps\web\src\components\ContractInitialization.jsx
+  277:3  warning  'degradedReason' is defined but never used. Allowed unused args must match /^_/u  @typescript-eslint/no-unused-vars
+
+C:\Users\sowmi\PROJECTS\AssureCode\apps\webhook-ingest\src\server.ts
+  152:43  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  172:13  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  174:17  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  193:17  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  217:31  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  238:50  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\Users\sowmi\PROJECTS\AssureCode\packages\razorpay-adapter\src\index.ts
+  333:48  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  341:49  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  355:48  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  365:78  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  366:60  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  370:76  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  371:58  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  375:77  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  376:59  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  379:48  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  465:17  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  542:54  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  565:54  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  577:54  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  586:54  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  674:54  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  699:54  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\Users\sowmi\PROJECTS\AssureCode\scripts\verify-web.js
+  16:5  warning  'totalPassed' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+  17:5  warning  'totalFailed' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+C:\Users\sowmi\PROJECTS\AssureCode\tools\benchmark.js
+  87:7  warning  'BENCH_PREFIX' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+C:\Users\sowmi\PROJECTS\AssureCode\tools\verify_phase8_live.mjs
+  37:3  warning  'computeRoot' is defined but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+
+✖ 138 problems (0 errors, 138 warnings)
+
+EXIT_CODE=0

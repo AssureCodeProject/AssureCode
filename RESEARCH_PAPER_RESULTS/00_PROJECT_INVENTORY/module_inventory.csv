@@ -1,0 +1,19 @@
+module_path,package_name,type,inferred_purpose
+apps/ai-service,assurecode-ai-service (Python, pyproject.toml),Python service,AI/matchmaking evaluation service (tools/eval/matchmaking_eval.py references it); not an npm workspace
+apps/api-gateway,@assurecode/api-gateway,Node/TypeScript (Fastify),Primary HTTP API gateway for the platform
+apps/ci-worker,@assurecode/ci-worker,Node/TypeScript,Background worker, likely handling CI/verification jobs
+apps/scope-guard,assurecode-scope-guard (Python, pyproject.toml),Python service,Scope-check/guard service referenced in recent commits ("Fix scope rejection dismissal logic"); not an npm workspace
+apps/settlement-worker,@assurecode/settlement-worker,Node/TypeScript,Background worker handling payment/settlement processing
+apps/web,@assurecode/web,Node/TypeScript (frontend),Web frontend application
+apps/webhook-ingest,@assurecode/webhook-ingest,Node/TypeScript,Ingests inbound webhooks (e.g. from Razorpay/KYC providers)
+packages/config,@assurecode/config,Node/TypeScript library,Shared configuration loading/validation
+packages/email-adapter,@assurecode/email-adapter,Node/TypeScript library,Adapter for sending email notifications
+packages/event-bus,@assurecode/event-bus,Node/TypeScript library,Kafka-backed event bus abstraction (kafkajs dependency at root)
+packages/kyc-adapter,@assurecode/kyc-adapter,Node/TypeScript library,Adapter for KYC verification provider integration
+packages/ledger-client,@assurecode/ledger-client,Node/TypeScript library,Client for ledger/accounting service (tools/ledger-legacy-anchor.ts references this)
+packages/oracle,@assurecode/oracle,Node/TypeScript library,Oracle/data-feed abstraction, purpose not fully clear from package.json alone
+packages/razorpay-adapter,@assurecode/razorpay-adapter,Node/TypeScript library,Adapter for Razorpay payment gateway integration
+packages/shared,@assurecode/shared,Node/TypeScript library,Shared types/utilities used across apps
+packages/telemetry,@assurecode/telemetry,Node/TypeScript library,Shared telemetry/observability instrumentation
+
+NOTE: package.json description fields are empty for all workspaces; purposes above are inferred from directory names, dependency usage, and recent commit messages, not from explicit documentation. This is a documented limitation, not a fabricated fact.

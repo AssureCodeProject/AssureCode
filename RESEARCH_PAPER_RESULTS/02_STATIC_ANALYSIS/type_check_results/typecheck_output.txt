@@ -1,0 +1,195 @@
+=== apps/api-gateway ===
+npm warn Unknown project config "link-workspace-packages". This will stop working in the next major version of npm.
+npm error Lifecycle script `typecheck` failed with error:
+npm error workspace assurecode@1.0.0-alpha.0
+npm error location C:\Users\sowmi\PROJECTS\AssureCode
+npm error Missing script: "typecheck"
+npm error
+npm error To see a list of scripts, run:
+npm error   npm run
+
+
+> @assurecode/api-gateway@1.0.0-alpha.0 typecheck
+> tsc -p tsconfig.json --noEmit
+
+EXIT=1
+=== apps/ci-worker ===
+npm warn Unknown project config "link-workspace-packages". This will stop working in the next major version of npm.
+npm error Lifecycle script `typecheck` failed with error:
+npm error workspace assurecode@1.0.0-alpha.0
+npm error location C:\Users\sowmi\PROJECTS\AssureCode
+npm error Missing script: "typecheck"
+npm error
+npm error To see a list of scripts, run:
+npm error   npm run
+
+
+> @assurecode/ci-worker@1.0.0-alpha.0 typecheck
+> tsc -p tsconfig.json --noEmit
+
+EXIT=1
+=== apps/settlement-worker ===
+npm warn Unknown project config "link-workspace-packages". This will stop working in the next major version of npm.
+npm error Lifecycle script `typecheck` failed with error:
+npm error workspace assurecode@1.0.0-alpha.0
+npm error location C:\Users\sowmi\PROJECTS\AssureCode
+npm error Missing script: "typecheck"
+npm error
+npm error To see a list of scripts, run:
+npm error   npm run
+
+
+> @assurecode/settlement-worker@1.0.0-alpha.0 typecheck
+> tsc -p tsconfig.json --noEmit
+
+EXIT=1
+=== apps/webhook-ingest ===
+npm warn Unknown project config "link-workspace-packages". This will stop working in the next major version of npm.
+npm error Lifecycle script `typecheck` failed with error:
+npm error workspace assurecode@1.0.0-alpha.0
+npm error location C:\Users\sowmi\PROJECTS\AssureCode
+npm error Missing script: "typecheck"
+npm error
+npm error To see a list of scripts, run:
+npm error   npm run
+
+
+> @assurecode/webhook-ingest@1.0.0-alpha.0 typecheck
+> tsc --noEmit
+
+EXIT=1
+=== packages/config ===
+npm warn Unknown project config "link-workspace-packages". This will stop working in the next major version of npm.
+npm error Lifecycle script `typecheck` failed with error:
+npm error workspace assurecode@1.0.0-alpha.0
+npm error location C:\Users\sowmi\PROJECTS\AssureCode
+npm error Missing script: "typecheck"
+npm error
+npm error To see a list of scripts, run:
+npm error   npm run
+
+
+> @assurecode/config@1.0.0-alpha.0 typecheck
+> tsc -p tsconfig.json --noEmit
+
+EXIT=1
+=== packages/email-adapter ===
+npm warn Unknown project config "link-workspace-packages". This will stop working in the next major version of npm.
+npm error Lifecycle script `typecheck` failed with error:
+npm error workspace assurecode@1.0.0-alpha.0
+npm error location C:\Users\sowmi\PROJECTS\AssureCode
+npm error Missing script: "typecheck"
+npm error
+npm error To see a list of scripts, run:
+npm error   npm run
+
+
+> @assurecode/email-adapter@1.0.0-alpha.0 typecheck
+> tsc -p tsconfig.json --noEmit
+
+EXIT=1
+=== packages/event-bus ===
+npm warn Unknown project config "link-workspace-packages". This will stop working in the next major version of npm.
+npm error Lifecycle script `typecheck` failed with error:
+npm error workspace assurecode@1.0.0-alpha.0
+npm error location C:\Users\sowmi\PROJECTS\AssureCode
+npm error Missing script: "typecheck"
+npm error
+npm error To see a list of scripts, run:
+npm error   npm run
+
+
+> @assurecode/event-bus@1.0.0-alpha.0 typecheck
+> tsc -p tsconfig.json --noEmit
+
+EXIT=1
+=== packages/kyc-adapter ===
+npm warn Unknown project config "link-workspace-packages". This will stop working in the next major version of npm.
+npm error Lifecycle script `typecheck` failed with error:
+npm error workspace assurecode@1.0.0-alpha.0
+npm error location C:\Users\sowmi\PROJECTS\AssureCode
+npm error Missing script: "typecheck"
+npm error
+npm error To see a list of scripts, run:
+npm error   npm run
+
+
+> @assurecode/kyc-adapter@1.0.0-alpha.0 typecheck
+> tsc -p tsconfig.json --noEmit
+
+EXIT=1
+=== packages/ledger-client ===
+npm warn Unknown project config "link-workspace-packages". This will stop working in the next major version of npm.
+npm error Lifecycle script `typecheck` failed with error:
+npm error workspace assurecode@1.0.0-alpha.0
+npm error location C:\Users\sowmi\PROJECTS\AssureCode
+npm error Missing script: "typecheck"
+npm error
+npm error To see a list of scripts, run:
+npm error   npm run
+
+
+> @assurecode/ledger-client@1.0.0-alpha.0 typecheck
+> tsc -p tsconfig.json --noEmit
+
+EXIT=1
+=== packages/oracle ===
+npm warn Unknown project config "link-workspace-packages". This will stop working in the next major version of npm.
+npm error Lifecycle script `typecheck` failed with error:
+npm error workspace assurecode@1.0.0-alpha.0
+npm error location C:\Users\sowmi\PROJECTS\AssureCode
+npm error Missing script: "typecheck"
+npm error
+npm error To see a list of scripts, run:
+npm error   npm run
+
+
+> @assurecode/oracle@1.0.0-alpha.0 typecheck
+> tsc -p tsconfig.json --noEmit
+
+EXIT=1
+=== packages/razorpay-adapter ===
+npm warn Unknown project config "link-workspace-packages". This will stop working in the next major version of npm.
+npm error Lifecycle script `typecheck` failed with error:
+npm error workspace assurecode@1.0.0-alpha.0
+npm error location C:\Users\sowmi\PROJECTS\AssureCode
+npm error Missing script: "typecheck"
+npm error
+npm error To see a list of scripts, run:
+npm error   npm run
+
+
+> @assurecode/razorpay-adapter@1.0.0-alpha.0 typecheck
+> tsc -p tsconfig.json --noEmit
+
+EXIT=1
+=== packages/shared ===
+npm warn Unknown project config "link-workspace-packages". This will stop working in the next major version of npm.
+npm error Lifecycle script `typecheck` failed with error:
+npm error workspace assurecode@1.0.0-alpha.0
+npm error location C:\Users\sowmi\PROJECTS\AssureCode
+npm error Missing script: "typecheck"
+npm error
+npm error To see a list of scripts, run:
+npm error   npm run
+
+
+> @assurecode/shared@1.0.0-alpha.0 typecheck
+> tsc -p tsconfig.json --noEmit
+
+EXIT=1
+=== packages/telemetry ===
+npm warn Unknown project config "link-workspace-packages". This will stop working in the next major version of npm.
+npm error Lifecycle script `typecheck` failed with error:
+npm error workspace assurecode@1.0.0-alpha.0
+npm error location C:\Users\sowmi\PROJECTS\AssureCode
+npm error Missing script: "typecheck"
+npm error
+npm error To see a list of scripts, run:
+npm error   npm run
+
+
+> @assurecode/telemetry@1.0.0-alpha.0 typecheck
+> tsc -p tsconfig.json --noEmit
+
+EXIT=1

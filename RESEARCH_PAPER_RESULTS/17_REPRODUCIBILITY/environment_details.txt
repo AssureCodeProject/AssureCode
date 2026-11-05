@@ -1,0 +1,17 @@
+AssureCode Testing Campaign — Environment Details
+===================================================
+
+Host OS: Windows 11 Home Single Language 10.0.26200
+Shell used for commands: Git Bash (POSIX sh) on Windows, plus PowerShell 5.1 available
+Node.js: v24.11.1 (repo requires >=22.23.2 per package.json "engines")
+npm: 11.6.2 (npm notice flagged 11.21.2 as available; not upgraded, no impact on results)
+Docker: 29.6.2 (build dfc4efb)
+Docker Compose: v5.3.1
+Python: not version-pinned in this pass; apps/ai-service and apps/scope-guard ship their own .venv (not verified/activated in this pass — see limitations.md)
+
+Repository root: C:\Users\sowmi\PROJECTS\AssureCode
+Git branch at time of testing: main
+Git HEAD at time of testing: 0d73aa1 "Simplify candidate UI; format maintainability"
+Working tree state at start: clean (per gitStatus snapshot)
+
+No production credentials, external API keys, or production database connections were used at any point. All datastore credentials used (Postgres/Neo4j/Redis) are the project's own documented local-dev or test defaults (e.g. "assurecode_local_dev", "assurecode_test") as hardcoded in infra/docker-compose.yml, infra/docker-compose.test.yml, and scripts/e2e.mjs.

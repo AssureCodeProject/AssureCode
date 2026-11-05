@@ -1,0 +1,583 @@
+=== ROOT package.json ===
+{
+  "name": "assurecode",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "type": "module",
+  "description": "Trust-Code 2.0 — Zero-Trust, Event-Driven Multi-Agent Freelance Ecosystem",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "npm -w @assurecode/web run dev",
+    "build:web": "npm -w @assurecode/web run build",
+    "dev:gateway": "npm -w @assurecode/api-gateway run dev",
+    "dev:ci": "npm -w @assurecode/ci-worker run dev",
+    "dev:settlement": "npm -w @assurecode/settlement-worker run dev",
+    "verify": "node scripts/verify-web.js && apps\\ai-service\\.venv\\Scripts\\python.exe tools/eval/matchmaking_eval.py --sizes 100 --no-ablation --no-report && node tools/benchmark.js",
+    "eval:matchmaking": "apps\\ai-service\\.venv\\Scripts\\python.exe tools/eval/matchmaking_eval.py",
+    "benchmark": "node tools/benchmark.js",
+    "build": "node scripts/build-workspaces.mjs",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "validate:k8s": "python scripts/validate-k8s.py",
+    "migrate": "tsx tools/migrate.ts",
+    "seed:neo4j": "tsx tools/seed-neo4j.ts",
+    "test": "npm run test --workspaces --if-present --include-workspace-root=false",
+    "test:coverage": "vitest run --coverage --config vitest.coverage.config.ts",
+    "test:coverage:e2e": "vitest run --coverage --config vitest.coverage.e2e.config.ts",
+    "test:e2e": "node scripts/e2e.mjs",
+    "test:e2e:up": "node scripts/e2e.mjs up",
+    "test:e2e:down": "node scripts/e2e.mjs down",
+    "infra:up": "docker compose --env-file .env -f infra/docker-compose.yml up -d",
+    "infra:down": "docker compose -f infra/docker-compose.yml down",
+    "ledger:legacy": "tsx tools/ledger-legacy-anchor.ts",
+    "audit": "node scripts/audit-check.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@types/pg": "^8.11.10",
+    "@vitest/coverage-v8": "^3.2.6",
+    "eslint": "^9.39.5",
+    "globals": "^15.15.0",
+    "neo4j-driver": "^5.28.3",
+    "typescript-eslint": "^8.67.0"
+  },
+  "engines": {
+    "node": ">=22.23.2"
+  },
+  "dependencies": {
+    "@fastify/multipart": "^8.3.1",
+    "@fastify/rate-limit": "^9.1.0",
+    "kafkajs": "^2.2.4",
+    "pdf-parse": "^2.4.5",
+    "pg": "^8.12.0"
+  },
+  "optionalDependencies": {
+    "@rollup/rollup-linux-x64-gnu": "^4.60.2",
+    "@rollup/rollup-linux-x64-musl": "^4.60.2"
+  },
+  "overrides": {
+    "@fastify/jwt": {
+      "fast-jwt": "^6.2.4"
+    }
+  }
+}
+
+=== apps/api-gateway/package.json ===
+{
+  "name": "@assurecode/api-gateway",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/server.js",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@assurecode/config": "*",
+    "@assurecode/email-adapter": "*",
+    "@assurecode/event-bus": "*",
+    "@assurecode/kyc-adapter": "*",
+    "@assurecode/ledger-client": "*",
+    "@assurecode/oracle": "*",
+    "@assurecode/razorpay-adapter": "*",
+    "@assurecode/shared": "*",
+    "@assurecode/telemetry": "*",
+    "@fastify/cors": "^9.0.1",
+    "@fastify/jwt": "^8.0.1",
+    "@fastify/multipart": "^8.3.1",
+    "@fastify/rate-limit": "^9.1.0",
+    "@fastify/websocket": "^10.0.1",
+    "@node-rs/argon2": "^2.0.2",
+    "fastify": "^4.28.0",
+    "otplib": "^13.5.0",
+    "pdf-parse": "^2.4.5",
+    "pdfkit": "^0.15.0",
+    "pg": "^8.12.0",
+    "validator": "^13.12.0",
+    "zod": "^3.23.8"
+  },
+  "types": "./dist/server.d.ts",
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/pdfkit": "^0.13.4",
+    "@types/validator": "^13.12.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^3.2.6"
+  }
+}
+
+=== apps/ci-worker/package.json ===
+{
+  "name": "@assurecode/ci-worker",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/worker.js",
+  "scripts": {
+    "dev": "tsx watch src/worker.ts",
+    "start": "node dist/worker.js",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@assurecode/config": "*",
+    "@assurecode/event-bus": "*",
+    "@assurecode/shared": "*",
+    "@assurecode/telemetry": "*",
+    "@babel/parser": "^7.29.2",
+    "@babel/traverse": "^7.29.0",
+    "pg": "^8.13.1"
+  },
+  "types": "./dist/worker.d.ts",
+  "devDependencies": {
+    "@babel/types": "^7.29.0",
+    "@types/babel__traverse": "^7.20.6",
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^3.2.6"
+  }
+}
+
+=== apps/settlement-worker/package.json ===
+{
+  "name": "@assurecode/settlement-worker",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/worker.js",
+  "scripts": {
+    "dev": "tsx watch src/worker.ts",
+    "start": "node dist/worker.js",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@assurecode/config": "*",
+    "@assurecode/event-bus": "*",
+    "@assurecode/ledger-client": "*",
+    "@assurecode/oracle": "*",
+    "@assurecode/shared": "*",
+    "@assurecode/razorpay-adapter": "*",
+    "pg": "^8.12.0"
+  },
+  "types": "./dist/worker.d.ts",
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^3.2.6"
+  }
+}
+
+=== apps/web/package.json ===
+{
+  "name": "@assurecode/web",
+  "private": true,
+  "version": "1.0.0-alpha.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "echo 'Pure JS workspace (no TypeScript)'",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "framer-motion": "^11.18.0",
+    "lucide-react": "^0.469.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.5"
+  }
+}
+
+=== apps/webhook-ingest/package.json ===
+{
+  "name": "@assurecode/webhook-ingest",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@assurecode/config": "*",
+    "@assurecode/event-bus": "*",
+    "@assurecode/shared": "*",
+    "@assurecode/telemetry": "*",
+    "@fastify/rate-limit": "^11.2.0",
+    "fastify": "^5.2.0",
+    "pg": "^8.13.1",
+    "pino": "^9.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^3.2.6"
+  }
+}
+
+=== packages/config/package.json ===
+{
+  "name": "@assurecode/config",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@assurecode/telemetry": "*",
+    "pino": "^9.1.0",
+    "zod": "^3.23.8"
+  },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^3.2.6"
+  }
+}
+
+=== packages/email-adapter/package.json ===
+{
+  "name": "@assurecode/email-adapter",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^3.2.6"
+  }
+}
+
+=== packages/event-bus/package.json ===
+{
+  "name": "@assurecode/event-bus",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@assurecode/config": "*",
+    "@assurecode/shared": "*",
+    "@assurecode/telemetry": "*",
+    "@opentelemetry/api": "~1.8.0",
+    "ioredis": "^5.4.1",
+    "kafkajs": "^2.2.4",
+    "pg": "^8.12.0"
+  },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^3.2.6"
+  }
+}
+
+=== packages/kyc-adapter/package.json ===
+{
+  "name": "@assurecode/kyc-adapter",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^3.2.6"
+  }
+}
+
+=== packages/ledger-client/package.json ===
+{
+  "name": "@assurecode/ledger-client",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@assurecode/config": "*",
+    "@assurecode/shared": "*",
+    "@assurecode/telemetry": "*",
+    "@opentelemetry/api": "~1.8.0",
+    "pg": "^8.12.0"
+  },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^3.2.6"
+  }
+}
+
+=== packages/oracle/package.json ===
+{
+  "name": "@assurecode/oracle",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "pg": "^8.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^3.2.6"
+  }
+}
+
+=== packages/razorpay-adapter/package.json ===
+{
+  "name": "@assurecode/razorpay-adapter",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^3.2.6"
+  }
+}
+
+=== packages/shared/package.json ===
+{
+  "name": "@assurecode/shared",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./owasp-2025-rules.json": "./src/owasp-2025-rules.json"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
+  "types": "./dist/index.d.ts",
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^3.2.6"
+  }
+}
+
+=== packages/telemetry/package.json ===
+{
+  "name": "@assurecode/telemetry",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@opentelemetry/api": "~1.8.0",
+    "@opentelemetry/exporter-trace-otlp-grpc": "^0.51.1",
+    "@opentelemetry/instrumentation-fastify": "^0.38.0",
+    "@opentelemetry/instrumentation-http": "^0.51.1",
+    "@opentelemetry/instrumentation-ioredis": "^0.40.0",
+    "@opentelemetry/instrumentation-pg": "^0.41.0",
+    "@opentelemetry/resources": "^1.24.1",
+    "@opentelemetry/sdk-node": "^0.51.1",
+    "@opentelemetry/semantic-conventions": "^1.24.1",
+    "prom-client": "^15.1.2"
+  },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^3.2.6"
+  }
+}
+
+=== apps/ai-service/pyproject.toml ===
+[project]
+name = "assurecode-ai-service"
+version = "1.0.0a0"
+description = "AssureCode AI service (FastAPI): NLP matchmaker, test generation, security audit, RAG, XAI judge."
+requires-python = ">=3.11"
+# Core runtime — light enough to install for tests/offline dev with FakeEmbedder.
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+    "numpy>=1.26.0",
+    "httpx>=0.27.0",
+    "prometheus-client>=0.21.0",
+]
+
+[project.optional-dependencies]
+# Test/dev extras — still no torch.
+test = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.8.0",
+]
+# Full stack — real embedder (torch), live graph, RAG store, S3. Pulls heavy deps.
+full = [
+    "sentence-transformers>=3.3.0",
+    # Upper bound added: the venv resolved 6.x while the adapter was written
+    # against 5.x, so CI and a developer machine could be a major version apart
+    # with nothing reporting it. `execute_query` (the only driver API used here)
+    # is stable across both, but that is luck rather than a guarantee.
+    "neo4j>=5.26.0,<7.0.0",
+    "psycopg[binary]>=3.2.0",
+    "pgvector>=0.3.6",
+    "boto3>=1.35.0",
+    # FIPS 204 ML-DSA-87 for the ledger's Merkle-root signatures. Pure Python,
+    # so it installs on Windows without a toolchain, which liboqs-python does
+    # not. See packages/ledger-client/src/ml_dsa.py.
+    "dilithium-py>=1.4.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+# Shared selection, ignores and excludes live in the repo-root
+# ruff.toml so this service, its sibling, and tools/ are all held
+# to the same rule set. Override here only if this service genuinely
+# needs to differ.
+extend = "../../ruff.toml"

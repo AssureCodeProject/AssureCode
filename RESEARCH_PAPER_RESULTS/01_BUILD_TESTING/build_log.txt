@@ -1,0 +1,28 @@
+npm warn Unknown project config "link-workspace-packages". This will stop working in the next major version of npm.
+
+> assurecode@1.0.0-alpha.0 build
+> node scripts/build-workspaces.mjs
+
+building packages/shared ... ok
+building packages/telemetry ... ok
+building packages/razorpay-adapter ... ok
+building packages/kyc-adapter ... ok
+building packages/config ... ok
+building packages/event-bus ... ok
+building packages/ledger-client ... ok
+building packages/oracle ... ok
+building packages/email-adapter ... ok
+building apps/api-gateway ... ok
+building apps/ci-worker ... ok
+building apps/settlement-worker ... ok
+building apps/webhook-ingest ... ok
+copied apps/ci-worker/src/sandbox/egress-guard.cjs -> apps/ci-worker/dist/sandbox/egress-guard.cjs
+copied apps/ci-worker/src/sandbox/test-harness.cjs -> apps/ci-worker/dist/sandbox/test-harness.cjs
+
+Built 13 workspaces.
+npm notice
+npm notice New minor version of npm available! 11.6.2 -> 11.21.2
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v11.21.2
+npm notice To update run: npm install -g npm@11.21.2
+npm notice
+EXIT_CODE=0

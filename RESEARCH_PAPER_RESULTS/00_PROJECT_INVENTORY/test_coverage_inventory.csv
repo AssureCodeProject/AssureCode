@@ -1,0 +1,17 @@
+module_path,has_test_script,test_framework,test_file_count
+apps/ai-service,unknown(python-no-npm-script),pytest(likely),17
+apps/api-gateway,yes,vitest/jest(TS/JS),26
+apps/ci-worker,yes,vitest/jest(TS/JS),5
+apps/scope-guard,unknown(python-no-npm-script),pytest(likely),3
+apps/settlement-worker,yes,vitest/jest(TS/JS),8
+apps/web,no,unknown,0
+apps/webhook-ingest,yes,vitest/jest(TS/JS),1
+packages/config,yes,vitest/jest(TS/JS),1
+packages/email-adapter,yes,unknown,0
+packages/event-bus,yes,vitest/jest(TS/JS),2
+packages/kyc-adapter,yes,vitest/jest(TS/JS),1
+packages/ledger-client,yes,vitest/jest(TS/JS),4
+packages/oracle,yes,vitest/jest(TS/JS),1
+packages/razorpay-adapter,yes,vitest/jest(TS/JS),1
+packages/shared,yes,vitest/jest(TS/JS),1
+packages/telemetry,yes,vitest/jest(TS/JS),2
